@@ -1,0 +1,49 @@
+{
+  "name": "priceping-whatsapp-bot",
+  "version": "1.0.0",
+  "description": "WhatsApp Trading Alert Bot - PricePing MVP",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node start-render.js",
+    "dev": "nodemon start-render.js",
+    "local": "node src/server.js",
+    "test": "jest"
+  },
+  "keywords": [
+    "whatsapp",
+    "trading",
+    "bot",
+    "alerts",
+    "crypto",
+    "forex"
+  ],
+  "author": "PricePing Team",
+  "license": "MIT",
+  "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "axios": "^1.13.4",
+    "baileys": "^7.0.0-rc.9",
+    "better-sqlite3": "^12.6.2",
+    "body-parser": "^2.2.2",
+    "cors": "^2.8.6",
+    "dotenv": "^17.2.4",
+    "express": "^5.2.1",
+    "helmet": "^8.1.0",
+    "morgan": "^1.10.1",
+    "node-cron": "^4.2.1",
+    "pino": "^10.3.0",
+    "qrcode": "^1.5.4",
+    "twilio": "^4.19.0"
+  },
+  "devDependencies": {
+    "jest": "^30.2.0",
+    "nodemon": "^3.1.11"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "render": {
+    "healthCheckPath": "/health"
+  }
+}

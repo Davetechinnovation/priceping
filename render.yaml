@@ -1,0 +1,10 @@
+services:
+  # Web Service
+  - type: web
+    name: priceping-whatsapp-bot
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: false

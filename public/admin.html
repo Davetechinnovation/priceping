@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PricePing Admin Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+
+        .header h1 {
+            color: #2d3748;
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            color: #718096;
+            font-size: 1.1rem;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            text-align: center;
+            transition: transform 0.3s ease;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-5px);
+        }
+
+        .stat-number {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+
+        .stat-label {
+            color: #718096;
+            font-size: 1rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+        }
+
+        .section {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+
+        .section h2 {
+            color: #2d3748;
+            margin-bottom: 20px;
+            font-size: 1.5rem;
+        }
+
+        .alert-item {
+            background: #f7fafc;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-left: 4px solid #667eea;
+        }
+
+        .alert-item h4 {
+            color: #2d3748;
+            margin-bottom: 5px;
+        }
+
+        .alert-item p {
+            color: #718096;
+            font-size: 0.9rem;
+        }
+
+        .test-section {
+            background: #f7fafc;
+            border-radius: 10px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+
+        .test-section h3 {
+            color: #2d3748;
+            margin-bottom: 15px;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group label {
+            display: block;
+            color: #4a5568;
+            margin-bottom: 5px;
+            font-weight: 500;
+        }
+
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 1rem;
+        }
+
+        .form-group input:focus, .form-group select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: background 0.3s ease;
+        }
+
+        .btn:hover {
+            background: #5a67d8;
+        }
+
+        .btn-secondary {
+            background: #48bb78;
+        }
+
+        .btn-secondary:hover {
+            background: #38a169;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .status-active {
+            background: #48bb78;
+        }
+
+        .status-triggered {
+            background: #ed8936;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #718096;
+        }
+
+        .refresh-btn {
+            background: #4299e1;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            margin-bottom: 20px;
+        }
+
+        .refresh-btn:hover {
+            background: #3182ce;
+        }
+
+        @media (max-width: 768px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+            
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 PricePing Admin</h1>
+            <p>WhatsApp Trading Alert Bot Dashboard</p>
+        </div>
+
+        <div class="stats-grid" id="statsGrid">
+            <div class="stat-card">
+                <div class="stat-number" id="totalAlerts">-</div>
+                <div class="stat-label">Active Alerts</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="totalUsers">-</div>
+                <div class="stat-label">Total Users</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="alertsAbove">-</div>
+                <div class="stat-label">Above Target</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="alertsBelow">-</div>
+                <div class="stat-label">Below Target</div>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <div class="section">
+                <h2>📊 Recent Alerts</h2>
+                <button class="refresh-btn" onclick="loadData()">🔄 Refresh</button>
+                <div id="alertsList">
+                    <div class="loading">Loading alerts...</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>🧪 Test Functions</h2>
+                
+                <div class="test-section">
+                    <h3>Send Test Message</h3>
+                    <div class="form-group">
+                        <label>Phone Number:</label>
+                        <input type="text" id="testPhone" placeholder="2348012345678">
+                    </div>
+                    <div class="form-group">
+                        <label>Message:</label>
+                        <input type="text" id="testMessage" placeholder="Test message from PricePing">
+                    </div>
+                    <button class="btn" onclick="sendTestMessage()">Send Message</button>
+                </div>
+
+                <div class="test-section">
+                    <h3>Test Price Alert</h3>
+                    <div class="form-group">
+                        <label>Alert ID:</label>
+                        <input type="number" id="testAlertId" placeholder="1">
+                    </div>
+                    <button class="btn btn-secondary" onclick="testAlert()">Trigger Alert</button>
+                </div>
+
+                <div class="test-section">
+                    <h3>Check Asset Price</h3>
+                    <div class="form-group">
+                        <label>Asset:</label>
+                        <select id="priceAsset">
+                            <option value="BTC">Bitcoin (BTC)</option>
+                            <option value="ETH">Ethereum (ETH)</option>
+                            <option value="BNB">Binance Coin (BNB)</option>
+                            <option value="ADA">Cardano (ADA)</option>
+                            <option value="SOL">Solana (SOL)</option>
+                            <option value="DOT">Polkadot (DOT)</option>
+                            <option value="AVAX">Avalanche (AVAX)</option>
+                            <option value="MATIC">Polygon (MATIC)</option>
+                            <option value="LINK">Chainlink (LINK)</option>
+                            <option value="LTC">Litecoin (LTC)</option>
+                            <option value="XRP">Ripple (XRP)</option>
+                            <option value="DOGE">Dogecoin (DOGE)</option>
+                            <option value="SHIB">Shiba Inu (SHIB)</option>
+                        </select>
+                    </div>
+                    <button class="btn" onclick="checkPrice()">Check Price</button>
+                    <div id="priceResult" style="margin-top: 10px; color: #4a5568;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function loadData() {
+            try {
+                // Load stats
+                const statsResponse = await fetch('/api/stats');
+                const stats = await statsResponse.json();
+                
+                document.getElementById('totalAlerts').textContent = stats.totalActiveAlerts || 0;
+                document.getElementById('alertsAbove').textContent = stats.alertsByDirection?.above || 0;
+                document.getElementById('alertsBelow').textContent = stats.alertsByDirection?.below || 0;
+
+                // Load alerts
+                const alertsResponse = await fetch('/api/alerts');
+                const alerts = await alertsResponse.json();
+                
+                const alertsList = document.getElementById('alertsList');
+                if (alerts.length === 0) {
+                    alertsList.innerHTML = '<div class="loading">No active alerts</div>';
+                } else {
+                    alertsList.innerHTML = alerts.slice(0, 10).map(alert => `
+                        <div class="alert-item">
+                            <h4>
+                                <span class="status-indicator status-active"></span>
+                                ${alert.asset.toUpperCase()} - ${alert.direction} ${alert.target_price}
+                            </h4>
+                            <p>
+                                User: ${alert.phone_number}<br>
+                                Created: ${new Date(alert.created_at).toLocaleDateString()}<br>
+                                Target: ${alert.direction === 'above' ? '📈' : '📉'} ${alert.target_price}
+                            </p>
+                        </div>
+                    `).join('');
+                }
+            } catch (error) {
+                console.error('Error loading data:', error);
+                document.getElementById('alertsList').innerHTML = '<div class="loading">Error loading data</div>';
+            }
+        }
+
+        async function sendTestMessage() {
+            const phone = document.getElementById('testPhone').value;
+            const message = document.getElementById('testMessage').value;
+            
+            if (!phone || !message) {
+                alert('Please enter both phone number and message');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/test-message', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ phone, message })
+                });
+
+                const result = await response.json();
+                if (response.ok) {
+                    alert('✅ Test message sent successfully!');
+                    document.getElementById('testMessage').value = '';
+                } else {
+                    alert('❌ Error: ' + result.error);
+                }
+            } catch (error) {
+                alert('❌ Error sending message: ' + error.message);
+            }
+        }
+
+        async function testAlert() {
+            const alertId = document.getElementById('testAlertId').value;
+            
+            if (!alertId) {
+                alert('Please enter an alert ID');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/test-alert', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ alertId: parseInt(alertId) })
+                });
+
+                const result = await response.json();
+                if (response.ok) {
+                    alert('✅ Test alert triggered successfully!');
+                } else {
+                    alert('❌ Error: ' + result.error);
+                }
+            } catch (error) {
+                alert('❌ Error testing alert: ' + error.message);
+            }
+        }
+
+        async function checkPrice() {
+            const asset = document.getElementById('priceAsset').value;
+            const priceResult = document.getElementById('priceResult');
+            
+            priceResult.textContent = 'Checking price...';
+            
+            try {
+                const response = await fetch(`/api/price/${asset}`);
+                const result = await response.json();
+                
+                if (response.ok) {
+                    priceResult.innerHTML = `
+                        <strong>${result.asset}:</strong> ${result.formatted}<br>
+                        <small>Raw: $${result.price}</small>
+                    `;
+                } else {
+                    priceResult.textContent = '❌ Error: ' + result.error;
+                }
+            } catch (error) {
+                priceResult.textContent = '❌ Error: ' + error.message;
+            }
+        }
+
+        // Load data on page load
+        loadData();
+        
+        // Auto-refresh every 30 seconds
+        setInterval(loadData, 30000);
+    </script>
+</body>
+</html>
