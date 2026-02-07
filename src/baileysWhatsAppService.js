@@ -109,7 +109,7 @@ class BaileysWhatsAppService {
             console.log('1. Open WhatsApp on your phone');
             console.log('2. Go to Settings > Linked Devices');
             console.log('3. Tap "Link a device"');
-            console.log('4. Point your camera at the QR code above');
+            console.log('4. Point your camera at QR code above');
             console.log('='.repeat(50) + '\n');
             
             // Also save to file for backup
@@ -120,6 +120,14 @@ class BaileysWhatsAppService {
             fs.writeFileSync(qrFilePath, qrCodeData);
             console.log(`📱 QR Code also saved to: ${qrFilePath}`);
             console.log('🌐 File backup available if terminal QR is unclear');
+            console.log('🌐 Web QR available at: /qr');
+            
+            // QR code endpoint
+            app.get('/qr', (req, res) => {
+                res.set("Content-Disposition", `attachment;filename="qr-code.svg"`);
+                res.set("Content-Type", "image/svg+xml");
+                res.sendFile(qrFilePath);
+            });
             
             return qrFilePath;
         } catch (error) {
