@@ -22,7 +22,7 @@ app.use(morgan('combined'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Initialize services
+// Initialize services (Just instantiation here)
 const database = new DatabaseManager();
 const priceService = new PriceService();
 const whatsappService = new BaileysWhatsAppService();
@@ -54,34 +54,53 @@ async function initializeServices() {
     try {
         console.log('🚀 Starting PricePing WhatsApp Bot...');
         
-        // Initialize database
-        database.connect();
+        // 1. Initialize Database
+        // Note: better-sqlite3 usually connects in constructor, but if you have a connect() method, keep this.
+        if (typeof database.connect === 'function') {
+            database.connect();
+        }
         console.log('✅ Database connected');
         
-        // Register command handler
-        whatsappService.on('message', async (message) => {
+        // 2. 🔥 WARM UP CACHE (Optimized)
+        // Downloads Crypto & Forex lists immediately so the first user doesn't wait
+        console.log('🔥 Warming up Crypto and Forex caches...');
+        try {
+            await Promise.all([
+                priceService.getQuotedAssets(),
+                priceService.getForexCurrencies()
+            ]);
+            console.log('✅ Caches warmed up successfully');
+        } catch (e) {
+            console.log('⚠️ Cache warmup warning:', e.message);
+        }
+
+        // 3. Register Command Handler (Matches your Baileys logs)
+        // This ensures the bot actually replies to messages
+        whatsappService.registerMessageHandler('commandParser', async (messageText, phoneNumber) => {
             try {
-                const phoneNumber = message.key.remoteJid;
+                // Determine the input string
+                // Handle different message types (simple text or extended)
+                const text = typeof messageText === 'string' ? messageText : '';
+                
                 const response = await commandParser.handleCommand(
-                    message.message?.conversation || message.message?.extendedTextMessage?.text || '',
+                    text,
                     phoneNumber,
                     database,
                     priceService
                 );
                 
-                if (response) {
-                    await whatsappService.sendMessage(phoneNumber, response);
-                }
+                return response; // BaileysService handles sending the return value
             } catch (error) {
                 console.error('Message handling error:', error);
+                return null;
             }
         });
         
-        // Initialize WhatsApp
+        // 4. Initialize WhatsApp Connection
         await whatsappService.initialize();
         console.log('✅ WhatsApp service initialized');
         
-        // Start alert monitoring
+        // 5. Start Alert Monitor
         const alertMonitor = new AlertMonitor(database, priceService, whatsappService);
         alertMonitor.start();
         console.log('✅ Alert monitoring started');
@@ -90,7 +109,7 @@ async function initializeServices() {
         
     } catch (error) {
         console.error('Failed to initialize services:', error);
-        process.exit(1);
+        process.exit(1); // Exit so Render restarts the process
     }
 }
 
