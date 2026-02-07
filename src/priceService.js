@@ -1,375 +1,354 @@
-const axios = require('axios');
+const axios = require("axios");
 
 class PriceService {
-    constructor() {
-        // Try IP address first, fallback to domain
-        this.diadataApi = 'https://api.diadata.org/v1/assetQuotation';
-        // Alternative: 'https://188.166.227.175/v1/assetQuotation'; // Backup IP if DNS fails
-        this.assetMap = this.initializeAssetMap();
+  constructor() {
+    // Crypto APIs
+    this.diadataApi = "https://api.diadata.org/v1/assetQuotation";
+    this.quotedAssetsApi = "https://api.diadata.org/v1/quotedAssets";
+
+    // Forex API
+    this.forexListApi = "https://api.fxratesapi.com/currencies";
+
+    // Caches
+    this.assetMap = this.initializeAssetMap();
+    this.quotedAssetsCache = null;
+    this.forexCache = null;
+
+    this.lastCacheUpdate = 0;
+    this.cacheExpiry = 60 * 60 * 1000; // 1 hour
+  }
+
+  initializeAssetMap() {
+    return {
+      BTC: {
+        blockchain: "Bitcoin",
+        address: "0x0000000000000000000000000000000000000000",
+      },
+      BITCOIN: {
+        blockchain: "Bitcoin",
+        address: "0x0000000000000000000000000000000000000000",
+      },
+      ETH: {
+        blockchain: "Ethereum",
+        address: "0x0000000000000000000000000000000000000000",
+      },
+      ETHEREUM: {
+        blockchain: "Ethereum",
+        address: "0x0000000000000000000000000000000000000000",
+      },
+      BNB: {
+        blockchain: "Binance",
+        address: "0x0000000000000000000000000000000000000000",
+      },
+      SOL: {
+        blockchain: "Solana",
+        address: "0x0000000000000000000000000000000000000000",
+      },
+      LTC: {
+        blockchain: "Litecoin",
+        address: "0x0000000000000000000000000000000000000000",
+      },
+      XRP: {
+        blockchain: "Ripple",
+        address: "0x0000000000000000000000000000000000000000",
+      },
+      DOGE: {
+        blockchain: "Dogecoin",
+        address: "0x0000000000000000000000000000000000000000",
+      },
+    };
+  }
+
+  // ==========================================
+  // DYNAMIC LIST FETCHING
+  // ==========================================
+
+  async getQuotedAssets() {
+    const now = Date.now();
+    if (
+      this.quotedAssetsCache &&
+      now - this.lastCacheUpdate < this.cacheExpiry
+    ) {
+      return this.quotedAssetsCache;
     }
 
-    initializeAssetMap() {
-        return {
-            // Cryptocurrencies with their blockchain and address
-            'BTC': { blockchain: 'Bitcoin', address: '0x0000000000000000000000000000000000000000' },
-            'BITCOIN': { blockchain: 'Bitcoin', address: '0x0000000000000000000000000000000000000000' },
-            'ETH': { blockchain: 'Ethereum', address: '0x0000000000000000000000000000000000000000' },
-            'ETHEREUM': { blockchain: 'Ethereum', address: '0x0000000000000000000000000000000000000000' },
-            'BNB': { blockchain: 'Binance', address: '0x0000000000000000000000000000000000000000' },
-            'BINANCE': { blockchain: 'Binance', address: '0x0000000000000000000000000000000000000000' },
-            'ADA': { blockchain: 'Cardano', address: '0x0000000000000000000000000000000000000000' },
-            'CARDANO': { blockchain: 'Cardano', address: '0x0000000000000000000000000000000000000000' },
-            'SOL': { blockchain: 'Solana', address: '0x0000000000000000000000000000000000000000' },
-            'SOLANA': { blockchain: 'Solana', address: '0x0000000000000000000000000000000000000000' },
-            'DOT': { blockchain: 'Polkadot', address: '0x0000000000000000000000000000000000000000' },
-            'POLKADOT': { blockchain: 'Polkadot', address: '0x0000000000000000000000000000000000000000' },
-            'AVAX': { blockchain: 'Avalanche', address: '0x0000000000000000000000000000000000000000' },
-            'AVALANCHE': { blockchain: 'Avalanche', address: '0x0000000000000000000000000000000000000000' },
-            'MATIC': { blockchain: 'Polygon', address: '0x0000000000000000000000000000000000000000' },
-            'POLYGON': { blockchain: 'Polygon', address: '0x0000000000000000000000000000000000000000' },
-            'LINK': { blockchain: 'Ethereum', address: '0x514910771AF9Ca656af840dff83E8264EcF986CA' },
-            'CHAINLINK': { blockchain: 'Ethereum', address: '0x514910771AF9Ca656af840dff83E8264EcF986CA' },
-            'LTC': { blockchain: 'Litecoin', address: '0x0000000000000000000000000000000000000000' },
-            'LITECOIN': { blockchain: 'Litecoin', address: '0x0000000000000000000000000000000000000000' },
-            'XRP': { blockchain: 'Ripple', address: '0x0000000000000000000000000000000000000000' },
-            'RIPPLE': { blockchain: 'Ripple', address: '0x0000000000000000000000000000000000000000' },
-            'DOGE': { blockchain: 'Dogecoin', address: '0x0000000000000000000000000000000000000000' },
-            'DOGECOIN': { blockchain: 'Dogecoin', address: '0x0000000000000000000000000000000000000000' },
-            'SHIB': { blockchain: 'Ethereum', address: '0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE' },
-            'SHIBA': { blockchain: 'Ethereum', address: '0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE' },
-            'SHIBAINU': { blockchain: 'Ethereum', address: '0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE' }
-        };
-    }
+    try {
+      // console.log('🔄 Updating Crypto Asset list...');
+      const response = await axios.get(this.quotedAssetsApi, {
+        timeout: 30000,
+      });
 
-    // Get price from DiaData API
-    async getDiaDataPrice(blockchain, address) {
-        try {
-            const url = `${this.diadataApi}/${blockchain}/${address}`;
-            console.log(`🔍 Fetching price from: ${url}`);
-            
-            const response = await axios.get(url, {
-                timeout: 30000, // 30 second timeout - increased from 10 seconds
-                headers: {
-                    'User-Agent': 'PricePing/1.0'
-                }
-            });
-            
-            console.log(`✅ DiaData response status: ${response.status}`);
-            console.log(`📊 Response data:`, response.data);
-            
-            if (response.data && response.data.Price) {
-                return {
-                    price: parseFloat(response.data.Price),
-                    symbol: response.data.Symbol,
-                    name: response.data.Name,
-                    time: response.data.Time,
-                    priceYesterday: response.data.PriceYesterday,
-                    volumeYesterdayUSD: response.data.VolumeYesterdayUSD
-                };
-            }
-            throw new Error('Invalid response from DiaData API');
-        } catch (error) {
-            console.error(`❌ Error fetching DiaData price for ${blockchain}:`, error.message);
-            console.error(`🔧 Full error:`, error);
-            
-            // Add more detailed error information
-            if (error.code === 'ENOTFOUND') {
-                console.error(`🌐 DNS Resolution Error: Cannot resolve ${this.diadataApi}`);
-                console.error(`💡 Check your internet connection or API endpoint URL`);
-            } else if (error.code === 'ECONNREFUSED') {
-                console.error(`🔌 Connection Error: Server refused connection`);
-            } else if (error.response) {
-                console.error(`📡 HTTP Error: ${error.response.status} - ${error.response.statusText}`);
-            }
-            
-            throw error;
-        }
-    }
-
-    // Check if asset is a forex pair
-    isForexPair(asset) {
-        // Common forex currencies
-        const forexCurrencies = ['USD', 'EUR', 'GBP', 'JPY', 'CHF', 'CAD', 'AUD', 'NZD'];
-        
-        // Check if it's 6 characters and contains two forex currencies
-        if (asset.length === 6) {
-            const first3 = asset.substring(0, 3);
-            const last3 = asset.substring(3, 6);
-            return forexCurrencies.includes(first3) && forexCurrencies.includes(last3);
-        }
-        
-        // Check if it's 7 characters (like USDCAD)
-        if (asset.length === 7) {
-            const first3 = asset.substring(0, 3);
-            const last3 = asset.substring(4, 7);
-            return forexCurrencies.includes(first3) && forexCurrencies.includes(last3);
-        }
-        
-        return false;
-    }
-
-    // Get forex price for currency pairs
-    async getForexPrice(pair) {
-        try {
-            // Map common forex pairs to DiaData endpoints
-            const forexMap = {
-                'EURUSD': { blockchain: 'Ethereum', address: '0x0000000000000000000000000000000000000000' },
-                'GBPUSD': { blockchain: 'Ethereum', address: '0x0000000000000000000000000000000000000000' },
-                'USDJPY': { blockchain: 'Ethereum', address: '0x0000000000000000000000000000000000000000' },
-                'USDCHF': { blockchain: 'Ethereum', address: '0x0000000000000000000000000000000000000000' },
-                'AUDUSD': { blockchain: 'Ethereum', address: '0x0000000000000000000000000000000000000000' },
-                'USDCAD': { blockchain: 'Ethereum', address: '0x0000000000000000000000000000000000000000' },
-                'NZDUSD': { blockchain: 'Ethereum', address: '0x0000000000000000000000000000000000000000' }
+      if (response.data && Array.isArray(response.data)) {
+        const assetsMap = {};
+        response.data.forEach((item) => {
+          if (item.Asset && item.Asset.Symbol) {
+            assetsMap[item.Asset.Symbol.toUpperCase()] = {
+              blockchain: item.Asset.Blockchain,
+              address: item.Asset.Address,
+              decimals: item.Asset.Decimals,
+              name: item.Asset.Name,
             };
+          }
+        });
+        this.quotedAssetsCache = assetsMap;
+        return assetsMap;
+      }
+    } catch (error) {
+      console.error("❌ Error fetching crypto list:", error.message);
+    }
+    return this.quotedAssetsCache || {};
+  }
 
-            // Try alternative forex APIs first
-            const forexEndpoints = [
-                `https://api.exchangerate-api.com/v4/latest/${pair.substring(0, 3)}`,
-                `https://api.fxratesapi.com/latest?base=${pair.substring(0, 3)}&symbols=${pair.substring(3, 6)}`,
-                `https://open.er-api.com/v6/latest?api_key=free&symbols=${pair}&base=${pair.substring(0, 3)}`
-            ];
+  async getForexCurrencies() {
+    if (this.forexCache && this.forexCache.size > 0) return this.forexCache;
 
-            for (const endpoint of forexEndpoints) {
-                try {
-                    console.log(`🔍 Trying forex ${pair} on endpoint: ${endpoint}`);
-                    const response = await axios.get(endpoint, {
-                        timeout: 10000,
-                        headers: { 'User-Agent': 'PricePing/1.0' }
-                    });
+    try {
+      console.log("🔄 Updating Forex Currency list...");
+      const response = await axios.get(this.forexListApi, { timeout: 10000 });
 
-                    if (endpoint.includes('exchangerate-api')) {
-                        if (response.data && response.data.rates && response.data.rates[pair.substring(3, 6)]) {
-                            return parseFloat(response.data.rates[pair.substring(3, 6)]);
-                        }
-                    } else if (endpoint.includes('fxratesapi')) {
-                        if (response.data && response.data.rates && response.data.rates[pair.substring(3, 6)]) {
-                            return parseFloat(response.data.rates[pair.substring(3, 6)]);
-                        }
-                    } else if (endpoint.includes('er-api')) {
-                        if (response.data && response.data.rates && response.data.rates[pair.substring(3, 6)]) {
-                            return parseFloat(response.data.rates[pair.substring(3, 6)]);
-                        }
-                    }
-                } catch (error) {
-                    console.warn(`⚠️ Forex endpoint ${endpoint} failed:`, error.message);
-                    continue;
-                }
-            }
+      if (response.data) {
+        this.forexCache = new Set(
+          Object.keys(response.data).map((k) => k.toUpperCase()),
+        );
 
-            // Fallback: try DiaData (though it may not have forex)
-            if (forexMap[pair]) {
-                console.log(`🔍 Trying forex ${pair} on DiaData fallback`);
-                try {
-                    const priceData = await this.getDiaDataPrice(forexMap[pair].blockchain, forexMap[pair].address);
-                    // For forex, we'll return a mock price since DiaData doesn't support forex
-                    return this.getMockForexPrice(pair);
-                } catch (error) {
-                    console.warn(`⚠️ DiaData forex fallback failed:`, error.message);
-                }
-            }
+        // Remove Crypto symbols if they appear in Forex API to ensure strictness
+        this.forexCache.delete("BTC");
+        this.forexCache.delete("ETH");
+        this.forexCache.delete("SOL");
+        this.forexCache.delete("XRP");
 
-            // Final fallback - return mock forex price
-            return this.getMockForexPrice(pair);
+        console.log(
+          `✅ Loaded ${this.forexCache.size} forex currencies dynamically.`,
+        );
 
-        } catch (error) {
-            console.error(`❌ Failed to get forex price for ${pair}:`, error.message);
-            return this.getMockForexPrice(pair);
-        }
+        this.forexCache.add("USD");
+        this.forexCache.add("EUR");
+        return this.forexCache;
+      }
+    } catch (error) {
+      console.error("❌ Error fetching forex list:", error.message);
+      if (!this.forexCache)
+        return new Set(["USD", "EUR", "GBP", "ILS", "TJS", "JPY"]);
+    }
+    return this.forexCache;
+  }
+
+  // ==========================================
+  // STRICT SEPARATION LOGIC
+  // ==========================================
+
+  /**
+   * STRICTLY checks ONLY Crypto APIs.
+   * Returns NULL if not found in Crypto (even if it exists in Forex).
+   */
+  async getCryptoPrice(asset) {
+    const upperAsset = asset.toUpperCase();
+
+    // 1. Check Hardcoded Crypto Map
+    if (this.assetMap[upperAsset]) {
+      return await this.fetchDiaData(this.assetMap[upperAsset]);
     }
 
-    // Get mock forex price for testing
-    getMockForexPrice(pair) {
-        const mockPrices = {
-            'EURUSD': 1.0850,
-            'GBPUSD': 1.2650,
-            'USDJPY': 148.50,
-            'USDCHF': 0.8750,
-            'AUDUSD': 0.6550,
-            'USDCAD': 1.3650,
-            'NZDUSD': 0.6150,
-            'GBPCAD': 1.7550  // Added GBPCAD
-        };
-        
-        const basePrice = mockPrices[pair] || 1.0;
-        // Add small random variation to make it look realistic
-        const variation = (Math.random() - 0.5) * 0.002; // ±0.2% variation
-        return parseFloat((basePrice + variation).toFixed(6));
+    // 2. Check Dynamic Crypto List
+    const cryptoList = await this.getQuotedAssets();
+    if (cryptoList[upperAsset]) {
+      return await this.fetchDiaData(cryptoList[upperAsset]);
     }
 
-    // Get price for any supported asset
-    async getPrice(asset) {
-        const upperAsset = asset.toUpperCase();
-        
-        // Handle forex pairs first (EURUSD, GBPUSD, GBPCAD, etc.)
-        if (this.isForexPair(upperAsset)) {
-            return await this.getForexPrice(upperAsset);
-        }
-        
-        // Check if asset is in our predefined map
-        if (this.assetMap[upperAsset]) {
-            const { blockchain, address } = this.assetMap[upperAsset];
-            try {
-                const priceData = await this.getDiaDataPrice(blockchain, address);
-                return priceData.price; // Return just the price number
-            } catch (error) {
-                console.error(`❌ Failed to get price for ${asset} from primary API:`, error.message);
-                return null;
-            }
-        }
-        
-        // For any other crypto, try common blockchain mappings with fallback
-        const blockchainMappings = {
-            // Default to Ethereum for most ERC-20 tokens
-            'DEFAULT': 'Ethereum',
-            // Major blockchains
-            'BTC': 'Bitcoin',
-            'ETH': 'Ethereum',
-            'BNB': 'Binance',
-            'ADA': 'Cardano',
-            'SOL': 'Solana',
-            'DOT': 'Polkadot',
-            'AVAX': 'Avalanche',
-            'MATIC': 'Polygon',
-            'LTC': 'Litecoin',
-            'XRP': 'Ripple',
-            'DOGE': 'Dogecoin'
-        };
-        
-        const blockchain = blockchainMappings[upperAsset] || 'Ethereum';
-        const address = '0x0000000000000000000000000000000000000000';
-        
-        // Try multiple endpoints with fallback
-        const endpoints = [
-            `${this.diadataApi}/${blockchain}/${address}`,
-            `https://api.coingecko.com/api/v3/simple/price?ids=${asset.toLowerCase()}&vs_currencies=usd`,
-            `https://api.binance.com/api/v3/ticker/price?symbol=${asset.toUpperCase()}USDT`
-        ];
-        
-        for (const endpoint of endpoints) {
-            try {
-                console.log(`🔍 Trying ${asset} on endpoint: ${endpoint}`);
-                const response = await axios.get(endpoint, {
-                    timeout: 30000, // 30 second timeout - increased from 10 seconds
-                    headers: {
-                        'User-Agent': 'PricePing/1.0'
-                    }
-                });
-                
-                if (endpoint.includes('coingecko')) {
-                    if (response.data && response.data[asset.toLowerCase()] && response.data[asset.toLowerCase()].usd) {
-                        return parseFloat(response.data[asset.toLowerCase()].usd);
-                    }
-                } else if (endpoint.includes('binance')) {
-                    if (response.data && response.data.price) {
-                        return parseFloat(response.data.price);
-                    }
-                } else {
-                    if (response.data && response.data.Price) {
-                        return parseFloat(response.data.Price);
-                    }
-                }
-                
-                throw new Error('Invalid response from API');
-            } catch (error) {
-                console.warn(`⚠️ Endpoint ${endpoint} failed:`, error.message);
-                continue; // Try next endpoint
-            }
-        }
-        
-        console.error(`❌ All endpoints failed for ${asset}`);
-        return null;
+    // ❌ STOP HERE. Do not check Forex.
+    console.log(`ℹ️ ${upperAsset} is not a valid Cryptocurrency.`);
+    return null;
+  }
+
+  /**
+   * STRICTLY checks ONLY Forex APIs.
+   * Returns NULL if not found in Forex (even if it exists in Crypto).
+   */
+  async getForexPrice(pair) {
+    const upperPair = pair.toUpperCase();
+
+    // 1. Validate against Forex List
+    const isForex = await this.isForexPair(upperPair);
+    if (!isForex) {
+      console.log(`ℹ️ ${upperPair} is not a valid Forex pair.`);
+      return null;
     }
 
-    // Get multiple prices at once (sequentially to avoid rate limits)
-    async getMultiplePrices(assets) {
-        const prices = {};
-        
-        for (const asset of assets) {
-            try {
-                const price = await this.getPrice(asset);
-                prices[asset.toUpperCase()] = price;
-                
-                // Wait 500ms between requests to be polite to APIs
-                await new Promise(resolve => setTimeout(resolve, 500));
-            } catch (error) {
-                console.error(`Failed to get price for ${asset}:`, error.message);
-                prices[asset.toUpperCase()] = null;
-            }
-        }
-        
-        return prices;
-    }
-
-    // Format price for display
-    formatPrice(price, asset) {
-        if (price === null || price === undefined) {
-            return 'Price unavailable';
-        }
-
-        const assetUpper = asset.toUpperCase();
-        
-        // Handle gold/silver formatting
-        if (assetUpper === 'GOLD' || assetUpper === 'XAU' || assetUpper === 'SILVER' || assetUpper === 'XAG') {
-            return `$${price.toFixed(2)}`;
-        }
-
-        // Handle crypto formatting
-        if (price >= 1000) {
-            return `$${price.toFixed(2)}`;
-        } else if (price >= 1) {
-            return `$${price.toFixed(4)}`;
-        } else {
-            return `$${price.toFixed(6)}`;
-        }
-    }
-
-    // Get supported assets list
-    getSupportedAssets() {
-        return {
-            crypto: [
-                'BTC', 'ETH', 'BNB', 'ADA', 'SOL', 'DOT', 'AVAX', 'MATIC',
-                'LINK', 'LTC', 'XRP', 'DOGE', 'SHIB'
-            ],
-            commodities: []
-            // Note: DiaData API currently supports cryptocurrencies only
-            // Commodities like Gold/Silver may have different endpoints
-        };
-    }
-
-    // Get detailed asset information (for advanced features)
-    async getAssetInfo(asset) {
-        const upperAsset = asset.toUpperCase();
-        const assetInfo = this.assetMap[upperAsset];
-        
+    try {
+      // CASE 1: 3-Letter Code (TJS -> USD)
+      if (upperPair.length === 3) {
+        console.log(`🔍 Getting forex rate for ${upperPair}/USD`);
         try {
-            if (assetInfo) {
-                // For mapped assets, get detailed info from DiaData API
-                const priceData = await this.getDiaDataPrice(assetInfo.blockchain, assetInfo.address);
-                return {
-                    symbol: priceData.symbol,
-                    name: priceData.name,
-                    price: priceData.price,
-                    priceYesterday: priceData.priceYesterday,
-                    volumeYesterdayUSD: priceData.volumeYesterdayUSD,
-                    time: priceData.time,
-                    blockchain: assetInfo.blockchain,
-                    address: assetInfo.address
-                };
-            } else {
-                // For fallback assets, return basic info
-                const price = await this.getPrice(asset);
-                return {
-                    symbol: upperAsset,
-                    name: upperAsset,
-                    price: price,
-                    time: new Date().toISOString()
-                };
-            }
-        } catch (error) {
-            console.error(`Error getting asset info for ${asset}:`, error.message);
-            throw error;
-        }
+          const url = `https://api.fxratesapi.com/latest?base=${upperPair}&currencies=USD&resolution=1m&amount=1&places=6&format=json`;
+          const response = await axios.get(url, { timeout: 8000 });
+          if (response.data?.rates?.USD)
+            return parseFloat(response.data.rates.USD);
+        } catch (e) {}
+
+        try {
+          const res = await axios.get(
+            `https://api.frankfurter.app/latest?from=${upperPair}&to=USD`,
+          );
+          if (res.data?.rates?.USD) return res.data.rates.USD;
+        } catch (e) {}
+      }
+
+      // CASE 2: 6-Letter Pair (USDILS)
+      if (upperPair.length === 6) {
+        const base = upperPair.substring(0, 3);
+        const target = upperPair.substring(3, 6);
+
+        try {
+          const url = `https://api.fxratesapi.com/latest?base=${base}&currencies=${target}&resolution=1m&amount=1&places=6&format=json`;
+          const response = await axios.get(url, { timeout: 8000 });
+          if (response.data?.rates?.[target])
+            return parseFloat(response.data.rates[target]);
+        } catch (e) {}
+      }
+    } catch (error) {
+      console.error(`❌ Forex Error: ${error.message}`);
     }
+
+    return null;
+  }
+
+  /**
+   * Smart wrapper for generic requests (like Alerts).
+   * Checks Crypto first, then Forex.
+   */
+  async getPrice(asset) {
+    // 1. Try Crypto
+    const cryptoPrice = await this.getCryptoPrice(asset);
+    if (cryptoPrice !== null) return cryptoPrice;
+
+    // 2. Try Forex
+    const forexPrice = await this.getForexPrice(asset);
+    if (forexPrice !== null) return forexPrice;
+
+    return null;
+  }
+
+  // ==========================================
+  // HELPERS
+  // ==========================================
+
+  async isForexPair(asset) {
+    const upperAsset = asset.toUpperCase();
+    const validCurrencies = await this.getForexCurrencies();
+
+    if (upperAsset.length === 3) return validCurrencies.has(upperAsset);
+    if (upperAsset.length === 6) {
+      return (
+        validCurrencies.has(upperAsset.substring(0, 3)) &&
+        validCurrencies.has(upperAsset.substring(3, 6))
+      );
+    }
+    return false;
+  }
+
+  async getMultiplePrices(assets) {
+    const prices = {};
+    for (const asset of assets) {
+      prices[asset.toUpperCase()] = await this.getPrice(asset);
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    return prices;
+  }
+
+  // ==========================================
+  // DETAILED INFO (Used for "Crypto [Asset]" command)
+  // ==========================================
+  async getAssetInfo(asset) {
+    const upperAsset = asset.toUpperCase();
+
+    // 1. Find the asset info (Blockchain & Address)
+    let info = this.assetMap[upperAsset];
+    if (!info) {
+      const list = await this.getQuotedAssets();
+      info = list[upperAsset];
+    }
+
+    // 2. Fetch and Calculate
+    if (info) {
+      const url = `${this.diadataApi}/${info.blockchain}/${info.address}`;
+      try {
+        const response = await axios.get(url, { timeout: 10000 });
+        const data = response.data;
+
+        if (data && data.Price) {
+          const currentPrice = parseFloat(data.Price);
+          let changePercent = null;
+          let priceYesterday = null;
+
+          // Calculate 24h Change
+          if (data.PriceYesterday) {
+            priceYesterday = parseFloat(data.PriceYesterday);
+            // Formula: ((Current - Previous) / Previous) * 100
+            changePercent =
+              ((currentPrice - priceYesterday) / priceYesterday) * 100;
+          }
+
+          // Format Time: Remove 'T', 'Z' and milliseconds
+          // Input: "2026-02-07T21:19:59Z" -> Output: "2026-02-07 21:19:59"
+          let readableTime = data.Time;
+          try {
+            if (data.Time) {
+              readableTime = new Date(data.Time)
+                .toISOString()
+                .replace("T", " ") // Replace T with space
+                .split(".")[0]; // Remove .000Z
+            }
+          } catch (e) {
+            // Keep original if parsing fails
+          }
+
+          // Return a "Rich" object
+          return {
+            symbol: data.Symbol,
+            name: data.Name,
+            price: currentPrice,
+            priceYesterday: priceYesterday,
+            change: changePercent,
+            volume: data.VolumeYesterdayUSD,
+            time: readableTime, // <--- Now readable!
+          };
+        }
+      } catch (e) {
+        console.error(`Error fetching asset info: ${e.message}`);
+        return null;
+      }
+    }
+    return null;
+  }
+
+  getSupportedAssets() {
+    return {
+      crypto: Object.keys(this.assetMap),
+      forex: "All Major & Exotic pairs (Dynamic)",
+    };
+  }
+
+  async fetchDiaData(info) {
+    try {
+      const url = `${this.diadataApi}/${info.blockchain}/${info.address}`;
+      const response = await axios.get(url, { timeout: 20000 });
+      return response.data?.Price ? parseFloat(response.data.Price) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  formatPrice(price, asset) {
+    if (price == null) return "Unavailable";
+
+    if (asset.length === 6 || ["JPY", "ILS", "TJS"].includes(asset)) {
+      return price.toFixed(4);
+    }
+
+    if (price >= 1000) return `$${price.toFixed(2)}`;
+    if (price >= 1) return `$${price.toFixed(4)}`;
+    return `$${price.toFixed(6)}`;
+  }
 }
 
 module.exports = PriceService;

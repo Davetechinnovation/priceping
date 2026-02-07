@@ -10,8 +10,8 @@ class CommandParser {
             'my': this.handleMyAlerts.bind(this),
             'status': this.handleStatus.bind(this),
             'subscribe': this.handleSubscribe.bind(this),
-            'price': this.handleGetPrice.bind(this),
-            'get': this.handleGetPrice.bind(this),
+            'crypto': this.handleCryptoPrice.bind(this),
+            'forex': this.handleForexPrice.bind(this),
             'clear': this.handleClearAlerts.bind(this),
             'deleteall': this.handleDeleteAllAlerts.bind(this)
         };
@@ -129,11 +129,11 @@ class CommandParser {
             
             return `👋 Welcome to PricePing!
 
-🤖 *Your Trading Alert Bot* - I can help you track cryptocurrency prices and set alerts:
+🤖 *Your Trading Alert Bot* - I can help you track cryptocurrency and forex prices:
 
 💰 *Price Commands*:
-• Price [ASSET] - Get current price (e.g., "Price BTC")
-• Get [ASSET] - Alternative price command (e.g., "Get ETH")
+• Crypto [ASSET] - Get cryptocurrency price (e.g., "Crypto BTC")
+• Forex [ASSET] - Get forex price (e.g., "Forex TJS" or "Forex EURUSD")
 
 🎯 *Alert Commands*:
 • Set [ASSET] at [PRICE] - Create price alert
@@ -147,14 +147,17 @@ class CommandParser {
 • Help - Show this command menu
 
 💚 *Examples*:
-• "Price BTC" - Get Bitcoin price
+• "Crypto BTC" - Get Bitcoin price
+• "Forex TJS" - Get Tajikistani Somoni to USD rate
+• "Forex EURUSD" - Get Euro to Dollar rate
 • "Set ETH at 3000" - Alert when ETH hits $3000
-• "Set SOL below 100" - Alert when SOL drops below $100
 • "My alerts" - See all your alerts
 
-🪙 *Supported Assets*: ANY cryptocurrency symbol (BTC, ETH, ADA, SOL, DOT, AVAX, MATIC, LINK, LTC, XRP, DOGE, SHIB, and more!)
+🪙 *Supported Assets*: 
+• Crypto: ANY cryptocurrency symbol (BTC, ETH, ADA, SOL, DOT, AVAX, MATIC, LINK, LTC, XRP, DOGE, SHIB, and more!)
+• Forex: ANY currency pair (USD, EUR, TJS, BRL, INR, EURUSD, USDBRL, etc.)
 
-💡 *Quick Start*: Try "Price BTC" to see current prices!
+💡 *Quick Start*: Try "Crypto BTC" or "Forex TJS" to see current prices!
 
 Ready to track prices? Set your first alert! 🚀`;
         } catch (error) {
@@ -195,19 +198,26 @@ Need more help? Just ask! 🤖`;
     }
 
     async handleSetAlert(args, phoneNumber, database, priceService) {
+        // Basic validation: Needs at least 4 parts: "Set", "BTC", "at", "50000"
         if (args.length < 2) {
-            return '❌ Please use format: "Set [ASSET] at [PRICE]" or "Set [ASSET] [PRICE]"\n💡 Examples: "Set BTC at 95000" or "Set BTC 95000"';
+            return `⚠️ *Invalid Format*\n\nUsage:\n• "Set BTC at 65000"\n• "Set TJS at 0.12"`;
         }
 
         const asset = args[0].toUpperCase();
-        let targetPrice;
         
-        // Try to find price using "at" keyword first
-        const priceIndex = args.indexOf('at');
+        // Parse the command to find direction and price
+        let directionWord = 'at'; // default
+        let targetPrice = null;
         
-        if (priceIndex !== -1 && args[priceIndex + 1]) {
-            // Strict "at" format
-            targetPrice = args[priceIndex + 1];
+        // Check for explicit direction words
+        const directionIndex = args.findIndex(arg => ['above', 'below', 'at'].includes(arg.toLowerCase()));
+        
+        if (directionIndex !== -1) {
+            directionWord = args[directionIndex].toLowerCase();
+            // Price should be the next argument after direction
+            if (args[directionIndex + 1]) {
+                targetPrice = args[directionIndex + 1];
+            }
         } else {
             // Try to find the first number in the args (excluding the asset name)
             const numberRegex = /^[\d,]+(k)?$/i;
@@ -218,7 +228,7 @@ Need more help? Just ask! 🤖`;
         }
 
         if (!targetPrice) {
-            return '❌ Could not find a price. Please use format: "Set [ASSET] at [PRICE]" or "Set [ASSET] [PRICE]"\n💡 Examples: "Set BTC at 95000" or "Set BTC 95000"';
+            return `❌ Please provide a valid number for the price.\n\nUsage:\n• "Set BTC at 65000"\n• "Set TJS at 0.12"`;
         }
 
         // Clean and parse price - remove commas and handle "k" notation
@@ -231,60 +241,78 @@ Need more help? Just ask! 🤖`;
         }
 
         if (isNaN(parsedPrice) || parsedPrice <= 0) {
-            return '❌ Please provide a valid positive price.\n💡 Examples: "Set BTC at 95000" or "Set BTC 95000"';
+            return `❌ Please provide a valid positive number for the price.\n\nUsage:\n• "Set BTC at 65000"\n• "Set TJS at 0.12"`;
         }
 
-        // Check if asset is supported (now accepts any crypto)
-        const supportedAssets = priceService.getSupportedAssets();
-        
-        // For now, we'll accept any 3-5 letter crypto symbol
-        if (asset.length < 2 || asset.length > 10) {
-            return `❌ Invalid asset symbol "${asset}".\n\n💡 Please use a valid cryptocurrency symbol (e.g., BTC, ETH, ADA, etc.)`;
+        // 1. GET CURRENT PRICE FIRST (To be smart!)
+        // This checks BOTH Crypto and Forex because we updated priceService
+        const currentPrice = await priceService.getPrice(asset);
+
+        if (currentPrice === null) {
+            return `❌ Could not find asset "${asset}".\n\nPlease check if it's a valid Crypto or Forex pair.\n\n💡 Examples: "Set BTC at 65000" or "Set TJS at 0.12"`;
         }
 
+        // 2. DETERMINE CONDITION (The Smart Logic)
+        let condition = '';
+
+        if (directionWord === 'above') {
+            condition = 'above';
+        } else if (directionWord === 'below') {
+            condition = 'below';
+        } else {
+            // User used "at" - Automatic Decision
+            if (parsedPrice > currentPrice) {
+                condition = 'above'; // Price is 50k, Target is 60k -> Alert when ABOVE
+            } else {
+                condition = 'below'; // Price is 50k, Target is 40k -> Alert when BELOW
+            }
+        }
+
+        // 3. LOGIC CHECK (Prevent immediate triggers)
+        // If user says "Set BTC above 50000" but BTC is already 60000
+        if (condition === 'above' && currentPrice >= parsedPrice) {
+            return `⚠️ *Alert Not Set*\n\nCurrent price (${priceService.formatPrice(currentPrice, asset)}) is already *above* ${parsedPrice}.`;
+        }
+        if (condition === 'below' && currentPrice <= parsedPrice) {
+            return `⚠️ *Alert Not Set*\n\nCurrent price (${priceService.formatPrice(currentPrice, asset)}) is already *below* ${parsedPrice}.`;
+        }
+
+        // 4. CHECK USER ALERT LIMIT
         try {
-            // Get user first to check alert limit
             let user = await database.getUserByPhoneNumber(phoneNumber);
-            if (user) {
-                const userAlerts = await database.getUserAlerts(user.id);
-                const activeAlerts = userAlerts.filter(alert => !alert.triggered);
-                
-                if (activeAlerts.length >= 5) {
-                    return `❌ You have reached the maximum of 5 active alerts.\n\n📱 Type "My alerts" to see your alerts.\n💡 Type "Delete [ID]" to remove an alert.`;
-                }
+            if (!user) {
+                user = await database.createUser(phoneNumber, phoneNumber);
+            }
+            
+            const userAlerts = await database.getUserAlerts(user.id);
+            const activeAlerts = userAlerts.filter(alert => !alert.triggered);
+            
+            if (activeAlerts.length >= 5) {
+                return `❌ You have reached the maximum of 5 active alerts.\n\n📱 Type "My alerts" to see your alerts.\n💡 Type "Delete [ID]" to remove an alert.`;
             }
 
-            // Get current price for reference
-            const currentPrice = await priceService.getPrice(asset);
+            // 5. SAVE ALERT (Database Logic)
+            const alert = await database.createAlert(phoneNumber, asset, parsedPrice, condition);
+            
+            const directionEmoji = condition === 'above' ? '📈' : '📉';
+            const formattedTargetPrice = priceService.formatPrice(parsedPrice, asset);
             const formattedCurrentPrice = priceService.formatPrice(currentPrice, asset);
 
-            // Create alert
-            const alert = await database.createAlert(phoneNumber, asset, parsedPrice, 'above');
+            return `✅ *Alert Set Successfully!*
             
-            const directionEmoji = '📈';
-            const formattedTargetPrice = priceService.formatPrice(parsedPrice, asset);
-
-            return `✅ *Alert Created Successfully!*
-
-${directionEmoji} *Asset*: ${asset}
-🎯 *Target*: ${formattedTargetPrice}
-📊 *Current*: ${formattedCurrentPrice}
-🔔 *Direction*: Above target
-🆔 *Alert ID*: ${alert.id}
+📦 *Asset:* ${asset}
+🎯 *Target:* ${formattedTargetPrice}
+📊 *Current:* ${formattedCurrentPrice}
+🔔 *Condition:* Alert when price goes *${condition.toUpperCase()}* target.
+🆔 *Alert ID:* ${alert.id}
 
 📱 You'll get a WhatsApp message when ${asset} hits ${formattedTargetPrice}!
 
 💡 *Manage alerts*: "My alerts" to view, "Delete ${alert.id}" to remove`;
+
         } catch (error) {
-            if (error.message.includes('Unsupported asset')) {
-                return `❌ Unsupported asset: ${asset}
-
-🪙 *Supported Crypto*: BTC, ETH, BNB, ADA, SOL, DOT, AVAX, MATIC, LINK, LTC, XRP, DOGE, SHIB
-💡 *Note*: Currently supports cryptocurrencies only. Commodities coming soon!
-
-Type "Help" for more examples.`;
-            }
-            throw error;
+            console.error('Error creating alert:', error);
+            return `❌ Database error while creating alert.`;
         }
     }
 
@@ -517,12 +545,88 @@ Ready to track new price targets! 🚀`;
         }
     }
 
+    // Handle explicit crypto price requests
+    async handleCryptoPrice(args, phoneNumber, database, priceService) {
+        if (args.length === 0) {
+            return '❌ Please specify a cryptocurrency. Use: "Crypto [SYMBOL]"\n💡 Examples: "Crypto BTC", "Crypto ETH", "Crypto SOL"';
+        }
+
+        const asset = args[0].toUpperCase();
+        
+        try {
+            console.log(`🔍 Getting crypto price for ${asset}`);
+            const currentPrice = await priceService.getCryptoPrice(asset);
+            
+            if (currentPrice === null) {
+                return `❌ Cryptocurrency "${asset}" not found or price unavailable.\n\n💡 Try: "Crypto BTC" or "Crypto ETH"`;
+            }
+
+            const formattedPrice = priceService.formatPrice(currentPrice, asset);
+            
+            try {
+                const assetInfo = await priceService.getAssetInfo(asset);
+                const change = assetInfo.priceYesterday ? 
+                    ((currentPrice - assetInfo.priceYesterday) / assetInfo.priceYesterday * 100).toFixed(2) : null;
+                const changeEmoji = change && change > 0 ? '📈' : change && change < 0 ? '📉' : '➡️';
+                
+                return `💰 *${asset} Crypto Price*
+
+📊 *Current Price*: ${formattedPrice}
+📈 *24h Change*: ${change ? `${changeEmoji} ${change}%` : 'No data'}
+📅 *Last Updated*: ${assetInfo.time || 'Just now'}
+
+💡 *Usage*: "Set ${asset} at [price]" to create alert`;
+            } catch (infoError) {
+                return `💰 *${asset} Crypto Price*
+
+📊 *Current Price*: ${formattedPrice}
+📅 *Last Updated*: Just now
+
+💡 *Usage*: "Set ${asset} at [price]" to create alert`;
+            }
+        } catch (error) {
+            console.error(`Error getting crypto price for ${asset}:`, error.message);
+            return `❌ Could not get crypto price for ${asset}. Please check the symbol and try again.\n\n💡 Example: "Crypto BTC"`;
+        }
+    }
+
+    // Handle explicit forex price requests
+    async handleForexPrice(args, phoneNumber, database, priceService) {
+        if (args.length === 0) {
+            return '❌ Please specify a forex pair. Use: "Forex [PAIR]"\n💡 Examples: "Forex TJS", "Forex EURUSD", "Forex USDBRL"';
+        }
+
+        const pair = args[0].toUpperCase();
+        
+        try {
+            console.log(`🔍 Getting forex price for ${pair}`);
+            const currentPrice = await priceService.getForexPrice(pair);
+            
+            if (currentPrice === null) {
+                return `❌ Forex pair "${pair}" not found or price unavailable.\n\n💡 Try: "Forex TJS", "Forex EURUSD", or "Forex USDBRL"`;
+            }
+
+            const formattedPrice = priceService.formatPrice(currentPrice, pair);
+            
+            return `💰 *${pair} Forex Rate*
+
+📊 *Current Rate*: ${formattedPrice}
+📅 *Last Updated*: Just now
+
+💡 *Usage*: "Set ${pair} at [rate]" to create alert`;
+        } catch (error) {
+            console.error(`Error getting forex price for ${pair}:`, error.message);
+            return `❌ Could not get forex rate for ${pair}. Please check the pair and try again.\n\n💡 Example: "Forex EURUSD"`;
+        }
+    }
+
     getHelpMessage() {
         return `❓ *Unknown Command*
 
 📖 *Available Commands*:
 • Hi/Hello - Get started
-• Price/Get [ASSET] - Get current price
+• Crypto [ASSET] - Get cryptocurrency price
+• Forex [ASSET] - Get forex price
 • Set [ASSET] at [PRICE] - Create alert
 • Clear - Clear all your alerts
 • Delete All - Delete all your alerts
@@ -532,7 +636,11 @@ Ready to track new price targets! 🚀`;
 • Status - Account status
 • Subscribe - Upgrade to premium
 
-💡 *Example*: "Set BTC at 95000"
+💡 *Examples*: 
+• "Crypto BTC" - Get Bitcoin price
+• "Forex TJS" - Get Tajikistani Somoni rate
+• "Forex EURUSD" - Get Euro to Dollar rate
+• "Set BTC at 95000" - Create Bitcoin alert
 
 Type "Help" for detailed instructions.`;
     }
