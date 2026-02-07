@@ -9,6 +9,15 @@ class DatabaseManager {
 
     init() {
         const dbPath = process.env.DB_PATH || './data/priceping.db';
+        const dbDir = path.dirname(dbPath);
+        
+        // Create database directory if it doesn't exist
+        const fs = require('fs');
+        if (!fs.existsSync(dbDir)) {
+            fs.mkdirSync(dbDir, { recursive: true });
+            console.log(`📁 Created database directory: ${dbDir}`);
+        }
+        
         this.db = new DatabaseLib(dbPath);
         console.log('Connected to SQLite database (better-sqlite3)');
         this.createTables();

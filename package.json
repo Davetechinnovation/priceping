@@ -2,7 +2,7 @@
   "name": "priceping-whatsapp-bot",
   "version": "1.0.0",
   "description": "WhatsApp Trading Alert Bot - PricePing MVP",
-  "main": "src/server.js",
+  "main": "start-render.js",
   "scripts": {
     "start": "node start-render.js",
     "dev": "nodemon start-render.js",
