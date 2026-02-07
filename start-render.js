@@ -109,9 +109,9 @@ async function initializeBot() {
         memoryMonitor.start();
         
         // Initialize database with error handling
+        let database;
         try {
-            const database = new DatabaseManager();
-            database.connect();
+            database = new DatabaseManager();
             console.log('✅ Database connected successfully');
         } catch (error) {
             console.error('❌ Database connection failed:', error.message);
@@ -120,21 +120,14 @@ async function initializeBot() {
         }
         
         // Initialize services
-        const database = new DatabaseManager();
         const priceService = new PriceService();
         const whatsappService = new BaileysWhatsAppService();
         const commandParser = new CommandParser();
         
         // Register message handler
-        whatsappService.on('message', async (message) => {
+        whatsappService.registerMessageHandler('commandParser', async (messageText, phoneNumber) => {
             try {
-                const phoneNumber = message.key.remoteJid;
-                const messageText = message.message?.conversation || 
-                                  message.message?.extendedTextMessage?.text || '';
-                
-                if (!messageText.trim()) return;
-                
-                console.log(`📨 Received message from ${phoneNumber}: "${messageText}"`);
+                console.log(`📨 Processing message from ${phoneNumber}: "${messageText}"`);
                 
                 const response = await commandParser.handleCommand(
                     messageText,
@@ -144,11 +137,13 @@ async function initializeBot() {
                 );
                 
                 if (response) {
-                    await whatsappService.sendMessage(phoneNumber, response);
-                    console.log(`📤 Message sent to ${phoneNumber}: ${response.substring(0, 50)}...`);
+                    console.log(`📤 Response to ${phoneNumber}: ${response.substring(0, 50)}...`);
+                    return response;
                 }
+                return null;
             } catch (error) {
                 console.error('❌ Message handling error:', error);
+                return null;
             }
         });
         

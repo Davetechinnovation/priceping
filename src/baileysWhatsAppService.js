@@ -95,13 +95,31 @@ class BaileysWhatsAppService {
     async generateQRCodeFile(qr) {
         try {
             console.log('🔍 Starting QR code generation...');
+            
+            // Generate QR code for console display (terminal-friendly)
+            console.log('\n' + '='.repeat(50));
+            console.log('📱 WHATSAPP QR CODE - SCAN WITH YOUR PHONE');
+            console.log('='.repeat(50));
+            
+            // Display QR code in terminal
+            await qrcode.toString(qr, { type: 'terminal', small: true });
+            
+            console.log('\n' + '='.repeat(50));
+            console.log('💡 Instructions:');
+            console.log('1. Open WhatsApp on your phone');
+            console.log('2. Go to Settings > Linked Devices');
+            console.log('3. Tap "Link a device"');
+            console.log('4. Point your camera at the QR code above');
+            console.log('='.repeat(50) + '\n');
+            
+            // Also save to file for backup
             const qrCodeData = await qrcode.toString(qr, { type: 'svg', margin: 1 });
             const qrFilePath = path.join(process.cwd(), 'data', 'qr-code.svg');
             
-            console.log('💾 Writing QR code to file:', qrFilePath);
+            console.log('💾 Saving QR code backup to file:', qrFilePath);
             fs.writeFileSync(qrFilePath, qrCodeData);
-            console.log(`📱 QR Code saved to: ${qrFilePath}`);
-            console.log('🌐 Open this file in a browser and scan with WhatsApp');
+            console.log(`📱 QR Code also saved to: ${qrFilePath}`);
+            console.log('🌐 File backup available if terminal QR is unclear');
             
             return qrFilePath;
         } catch (error) {
