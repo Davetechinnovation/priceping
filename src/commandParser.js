@@ -80,6 +80,11 @@ class CommandParser {
                              originalMessage.includes('💡 *Manage alerts*') ||
                              originalMessage.includes('🔄 *Fresh start*') ||
                              originalMessage.includes('Ready to track new price targets') ||
+                             originalMessage.includes('💰 *') ||
+                             originalMessage.includes('📊 *Current Price*') ||
+                             originalMessage.includes('📈 *24h Change*') ||
+                             originalMessage.includes('📅 *Last Updated*') ||
+                             originalMessage.includes('💡 *Usage*') ||
                              // Check if message starts with common bot response patterns
                              originalMessage.startsWith('❌') ||
                              originalMessage.startsWith('✅') ||
