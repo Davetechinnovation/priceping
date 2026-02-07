@@ -124,11 +124,15 @@ class BaileysWhatsAppService {
             console.log('🌐 Web QR available at: /qr');
             
             // QR code endpoint
-            app.get('/qr', (req, res) => {
-                res.set("Content-Disposition", `attachment;filename="qr-code.svg"`);
-                res.set("Content-Type", "image/svg+xml");
-                res.sendFile(qrFilePath);
-            });
+            if (this.app) {
+                this.app.get('/qr', (req, res) => {
+                    res.set("Content-Disposition", `attachment;filename="qr-code.svg"`);
+                    res.set("Content-Type", "image/svg+xml");
+                    res.sendFile(qrFilePath);
+                });
+            } else {
+                console.log('⚠️ Express app not available for QR endpoint');
+            }
             
             return qrFilePath;
         } catch (error) {
