@@ -85,6 +85,12 @@ class CommandParser {
                              originalMessage.includes('📈 *24h Change*') ||
                              originalMessage.includes('📅 *Last Updated*') ||
                              originalMessage.includes('💡 *Usage*') ||
+                             // Working/waiting messages
+                             originalMessage.includes('⏳ *Working on it...*') ||
+                             originalMessage.includes('🔍 *Searching...*') ||
+                             originalMessage.includes('💹 *Checking prices...*') ||
+                             originalMessage.includes('⚡ *Processing...*') ||
+                             originalMessage.includes('📊 *Loading data...*') ||
                              // Check if message starts with common bot response patterns
                              originalMessage.startsWith('❌') ||
                              originalMessage.startsWith('✅') ||
@@ -100,7 +106,11 @@ class CommandParser {
                              originalMessage.startsWith('📱') ||
                              originalMessage.startsWith('🔄') ||
                              originalMessage.startsWith('👋') ||
-                             originalMessage.startsWith('🤖');
+                             originalMessage.startsWith('🤖') ||
+                             originalMessage.startsWith('⏳') ||
+                             originalMessage.startsWith('🔍') ||
+                             originalMessage.startsWith('💹') ||
+                             originalMessage.startsWith('⚡');
         
         if (isBotMessage) {
             return null; // Don't respond to potential bot messages
