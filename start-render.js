@@ -121,6 +121,22 @@ async function initializeBot() {
         
         // Initialize services
         const priceService = new PriceService();
+        
+        // ============================================================
+        // 🔥 WARM UP CACHE (Add this block)
+        // This downloads the lists immediately so first user request is fast
+        console.log('🔥 Warming up Crypto and Forex caches...');
+        try {
+            await Promise.all([
+                priceService.getQuotedAssets(),
+                priceService.getForexCurrencies()
+            ]);
+            console.log('✅ Caches warmed up successfully');
+        } catch (e) {
+            console.log('⚠️ Cache warmup warning:', e.message);
+        }
+        // ============================================================
+
         const whatsappService = new BaileysWhatsAppService();
         const commandParser = new CommandParser();
         
