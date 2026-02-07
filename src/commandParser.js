@@ -33,6 +33,7 @@ class CommandParser {
         const { command, args, originalMessage } = this.parseMessage(message);
         
         // Prevent infinite loop - ignore messages that look like bot responses
+        // Check for common bot response patterns
         const isBotMessage = originalMessage.includes('❓') || 
                              originalMessage.includes('📖') || 
                              originalMessage.includes('Available Commands') || 
@@ -52,7 +53,49 @@ class CommandParser {
                              originalMessage.includes('📅 *') ||
                              originalMessage.includes('💡 *Usage') ||
                              originalMessage.includes('Could not get price') ||
-                             originalMessage.includes('Error getting price');
+                             originalMessage.includes('Error getting price') ||
+                             originalMessage.includes('No account found') ||
+                             originalMessage.includes('Send "Hi" to get started') ||
+                             originalMessage.includes('❌ No account found') ||
+                             originalMessage.includes('Alert Created Successfully') ||
+                             originalMessage.includes('Your Active Alerts') ||
+                             originalMessage.includes('No Active Alerts') ||
+                             originalMessage.includes('Alert Deleted') ||
+                             originalMessage.includes('All Alerts Cleared') ||
+                             originalMessage.includes('Account Status') ||
+                             originalMessage.includes('Upgrade to Premium') ||
+                             originalMessage.includes('Invalid asset symbol') ||
+                             originalMessage.includes('Please provide a valid') ||
+                             originalMessage.includes('Please use format') ||
+                             originalMessage.includes('Please specify') ||
+                             originalMessage.includes('📋 *Your Active Alerts*') ||
+                             originalMessage.includes('📋 *No Active Alerts*') ||
+                             originalMessage.includes('✅ *Alert Created*') ||
+                             originalMessage.includes('❌ Alert #') ||
+                             originalMessage.includes('📊 *Your Account Status*') ||
+                             originalMessage.includes('💰 *Upgrade to Premium*') ||
+                             originalMessage.includes('🔔 *Direction*') ||
+                             originalMessage.includes('🆔 *Alert ID*') ||
+                             originalMessage.includes('📱 You\'ll get a WhatsApp message') ||
+                             originalMessage.includes('💡 *Manage alerts*') ||
+                             originalMessage.includes('🔄 *Fresh start*') ||
+                             originalMessage.includes('Ready to track new price targets') ||
+                             // Check if message starts with common bot response patterns
+                             originalMessage.startsWith('❌') ||
+                             originalMessage.startsWith('✅') ||
+                             originalMessage.startsWith('📋') ||
+                             originalMessage.startsWith('📊') ||
+                             originalMessage.startsWith('💰') ||
+                             originalMessage.startsWith('🎯') ||
+                             originalMessage.startsWith('📈') ||
+                             originalMessage.startsWith('📅') ||
+                             originalMessage.startsWith('💡') ||
+                             originalMessage.startsWith('🔔') ||
+                             originalMessage.startsWith('🆔') ||
+                             originalMessage.startsWith('📱') ||
+                             originalMessage.startsWith('🔄') ||
+                             originalMessage.startsWith('👋') ||
+                             originalMessage.startsWith('🤖');
         
         if (isBotMessage) {
             return null; // Don't respond to potential bot messages

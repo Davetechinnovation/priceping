@@ -2,7 +2,7 @@
 
 /**
  * Render Startup Script for PricePing WhatsApp Bot
- * This script handles the specific requirements for Render deployment
+ * This script handles specific requirements for Render deployment
  */
 
 const express = require('express');
@@ -16,10 +16,19 @@ const DatabaseManager = require('./src/database');
 const CommandParser = require('./src/commandParser');
 const AlertMonitor = require('./src/alertMonitor');
 const PriceService = require('./src/priceService');
+const MemoryMonitor = require('./src/memoryMonitor');
 
 // Initialize Express app for Render health checks
 const app = express();
 const PORT = process.env.PORT || 10000;
+
+// Initialize memory monitor
+const memoryMonitor = new MemoryMonitor({
+    interval: 30000, // 30 seconds
+    warningThreshold: 450, // MB
+    criticalThreshold: 500, // MB
+    renderLimit: 512 // MB
+});
 
 // Middleware
 app.use(helmet());
@@ -30,34 +39,53 @@ app.use(express.urlencoded({ extended: true }));
 
 // Health check endpoint (required by Render)
 app.get('/health', (req, res) => {
+    const memory = memoryMonitor.getStats();
     res.status(200).json({
         status: 'healthy',
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
-        memory: process.memoryUsage(),
+        memory: memory.current,
         version: require('./package.json').version
     });
 });
 
+// Memory stats endpoint for monitoring
+app.get('/memory', (req, res) => {
+    const stats = memoryMonitor.getStats();
+    res.json(stats);
+});
+
 // Status endpoint for monitoring
 app.get('/status', (req, res) => {
+    const memory = memoryMonitor.getStats();
     res.json({
         service: 'PricePing WhatsApp Bot',
         status: 'running',
         uptime: process.uptime(),
-        memory: process.memoryUsage(),
+        memory: memory.current,
+        memoryStats: memory.stats,
         nodeVersion: process.version,
-        platform: process.platform
+        platform: process.platform,
+        renderLimit: memory.limits.render
     });
 });
 
 // Root endpoint
 app.get('/', (req, res) => {
+    const memory = memoryMonitor.getStats();
     res.json({
         message: '🤖 PricePing WhatsApp Bot',
         status: 'operational',
+        memory: {
+            current: memory.current.rss,
+            peak: memory.stats.rss.max,
+            limit: memory.limits.render,
+            status: memory.current.rss > memory.limits.critical ? '🚨 CRITICAL' : 
+                     memory.current.rss > memory.limits.warning ? '⚠️ WARNING' : '✅ OK'
+        },
         endpoints: {
             health: '/health',
+            memory: '/memory',
             status: '/status',
             whatsapp: 'Connect via WhatsApp to use bot'
         },
@@ -76,6 +104,9 @@ async function initializeBot() {
 
     try {
         console.log('🚀 Initializing PricePing WhatsApp Bot for Render...');
+        
+        // Start memory monitoring immediately
+        memoryMonitor.start();
         
         // Initialize database with error handling
         try {
@@ -145,13 +176,17 @@ async function initializeBot() {
         
     } catch (error) {
         console.error('❌ Failed to initialize bot:', error);
-        // Don't exit - Render will restart the service
+        // Don't exit - Render will restart service
     }
 }
 
 // Handle graceful shutdown
 function gracefulShutdown(signal) {
     console.log(`🛑 ${signal} received, shutting down gracefully...`);
+    
+    // Stop memory monitoring
+    memoryMonitor.stop();
+    
     botInitialized = false;
     
     setTimeout(() => {
@@ -166,6 +201,7 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 app.listen(PORT, () => {
     console.log(`🌐 Express server running on port ${PORT}`);
     console.log(`🏥 Health check: http://localhost:${PORT}/health`);
+    console.log(`🧠 Memory stats: http://localhost:${PORT}/memory`);
     console.log(`📊 Status: http://localhost:${PORT}/status`);
     
     // Initialize bot services after server starts
