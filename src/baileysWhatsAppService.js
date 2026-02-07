@@ -11,6 +11,7 @@ class BaileysWhatsAppService {
         this.qrCode = null;
         this.isConnected = false;
         this.messageHandlers = new Map();
+        this.app = null; // Express app reference
         this.logger = pino({ level: 'info' });
     }
 
@@ -254,6 +255,12 @@ ${directionEmoji} *${asset}* Alert Hit!
     registerMessageHandler(name, handler) {
         this.messageHandlers.set(name, handler);
         console.log(`📝 Registered message handler: ${name}`);
+    }
+
+    // Set Express app reference for QR endpoint
+    setExpressApp(app) {
+        this.app = app;
+        console.log('🌐 Express app reference set for QR endpoint');
     }
 
     // Get connection status

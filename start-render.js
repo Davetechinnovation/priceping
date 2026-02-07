@@ -140,6 +140,9 @@ async function initializeBot() {
         const whatsappService = new BaileysWhatsAppService();
         const commandParser = new CommandParser();
         
+        // Pass Express app to WhatsApp service for QR endpoint
+        whatsappService.setExpressApp(app);
+        
         // Register message handler
         whatsappService.registerMessageHandler('commandParser', async (messageText, phoneNumber) => {
             try {
