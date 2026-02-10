@@ -144,7 +144,7 @@ async function initializeBot() {
         console.log('🔥 Warming up Crypto and Forex caches...');
         try {
             await Promise.all([
-                priceService.getQuotedAssets(),
+                priceService.loadAssetList(), // 🟢 FIX: Changed name to match PriceService.js
                 priceService.getForexCurrencies()
             ]);
             console.log('✅ Caches warmed up successfully');
@@ -160,15 +160,16 @@ async function initializeBot() {
         whatsappService.setExpressApp(app);
         
         // Register message handler
-        whatsappService.registerMessageHandler('commandParser', async (messageText, phoneNumber) => {
+        whatsappService.registerMessageHandler('commandParser', async (messageText, phoneNumber, pushName) => {
             try {
-                console.log(`📨 Processing message from ${phoneNumber}: "${messageText}"`);
+                console.log(`📨 Processing message from ${phoneNumber} (${pushName}): "${messageText}"`);
                 
                 const response = await commandParser.handleCommand(
                     messageText,
                     phoneNumber,
                     database,
-                    priceService
+                    priceService,
+                    pushName // 🟢 CRITICAL FIX: Pass pushName to parser!
                 );
                 
                 if (response) {

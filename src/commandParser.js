@@ -49,11 +49,8 @@ class CommandParser {
     };
   }
 
-  // 🟢 UPDATED: NOW ACCEPTS 'pushName' (the 5th argument)
+  // UPDATED: NOW ACCEPTS 'pushName' (the 5th argument)
   async handleCommand(message, jid, database, priceService, pushName) {
-    console.log(`🔍 CommandParser Debug: message="${message}", jid="${jid}", pushName="${pushName}"`);
-    // 🛑 CRITICAL FIX: Clean the ID (Remove @s.whatsapp.net, :lid, etc)
-    // This ensures "12345@s.whatsapp.net" becomes "12345"
     const cleanPhoneNumber = jid.replace(/\D/g, "");
 
     // Check DB using the CLEAN number
