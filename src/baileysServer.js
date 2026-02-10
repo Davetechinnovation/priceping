@@ -22,10 +22,10 @@ class BaileysPricePingServer {
             await this.whatsappService.initialize();
             
             // Register command handler
-            this.whatsappService.registerMessageHandler('commandParser', async (message, phoneNumber, pushName) => {
+            this.whatsappService.registerMessageHandler('commandParser', async (message, jid, pushName) => {
                 return await this.commandParser.handleCommand(
                     message, 
-                    phoneNumber, 
+                    jid, 
                     this.database, 
                     this.priceService,
                     pushName

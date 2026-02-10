@@ -50,23 +50,22 @@ class CommandParser {
   }
 
   // 🟢 UPDATED: NOW ACCEPTS 'pushName' (the 5th argument)
-  async handleCommand(message, phoneNumber, database, priceService, pushName) {
+  async handleCommand(message, jid, database, priceService, pushName) {
     // 🛑 CRITICAL FIX: Clean the ID (Remove @s.whatsapp.net, :lid, etc)
     // This ensures "12345@s.whatsapp.net" becomes "12345"
-    const cleanPhoneNumber = phoneNumber.replace(/\D/g, "");
+    const cleanPhoneNumber = jid.replace(/\D/g, "");
 
     // Check DB using the CLEAN number
     let user = database.getUserByPhoneNumber(cleanPhoneNumber);
 
     // 🆕 FIRST TIME USER CHECK
     if (!user) {
-      console.log(`🔍 Debug: pushName="${pushName}", type=${typeof pushName}`);
       // 🟢 Pass 'pushName' to creation
       database.createUser(cleanPhoneNumber, cleanPhoneNumber, pushName);
       console.log(`👤 Created new user: ${cleanPhoneNumber} (${pushName})`);
       return this.getWelcomeDashboard(pushName || "Trader");
     } else {
-      console.log(`👤 Found existing user: ${cleanPhoneNumber}, name in DB="${user.name}"`);
+      console.log(`👤 Found existing user: ${cleanPhoneNumber}`);
     }
 
     const { command, args, originalMessage } = this.parseMessage(message);
@@ -191,11 +190,9 @@ Your account is active.
   // 🟢 UPDATED: GREETING LOGIC
   async handleGreeting(args, phoneNumber, database, priceService, pushName) {
     const user = database.getUserByPhoneNumber(phoneNumber);
-    console.log(`🔍 Greeting Debug: user=${JSON.stringify(user)}, pushName="${pushName}"`);
     
     // Logic: 1. DB Name -> 2. WhatsApp Name -> 3. "Trader"
     const displayName = (user && user.name) ? user.name : (pushName || "Trader");
-    console.log(`🔍 DisplayName chosen: "${displayName}"`);
 
     return `👋 *Welcome back, ${displayName}!* 
 ━━━━━━━━━━━━━━━━━━━━
