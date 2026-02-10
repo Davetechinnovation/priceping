@@ -205,7 +205,9 @@ class BaileysWhatsAppService {
           // 🟢 2. PASS PUSHNAME TO HANDLER
           // We pass: (text, jid, pushName)
           console.log(`🔍 Handler Debug: messageText="${messageText}", remoteJid="${remoteJid}", pushName="${pushName}"`);
+          console.log(`🔍 About to call handler: ${handlerName}`);
           const response = await handler(messageText, remoteJid, pushName);
+          console.log(`🔍 Handler ${handlerName} returned:`, response);
 
           if (response && response.trim()) {
             await this.sendMessage(remoteJid, response);
