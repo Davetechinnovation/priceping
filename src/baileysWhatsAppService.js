@@ -190,6 +190,7 @@ class BaileysWhatsAppService {
       }
 
       console.log(`📨 From ${pushName} (${remoteJid}): "${messageText}"`);
+      console.log(`🔍 WhatsApp Debug: pushName extracted="${pushName}", type=${typeof pushName}`);
 
       // Process message through all registered handlers
       for (const [handlerName, handler] of this.messageHandlers) {
@@ -203,6 +204,7 @@ class BaileysWhatsAppService {
           // Wait for the bot logic (PriceService/CommandParser) to finish
           // 🟢 2. PASS PUSHNAME TO HANDLER
           // We pass: (text, jid, pushName)
+          console.log(`🔍 Handler Debug: messageText="${messageText}", remoteJid="${remoteJid}", pushName="${pushName}"`);
           const response = await handler(messageText, remoteJid, pushName);
 
           if (response && response.trim()) {
