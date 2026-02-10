@@ -9,6 +9,8 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
+const fs = require('fs');
+const path = require('path');
 require('dotenv').config();
 
 const BaileysWhatsAppService = require('./src/baileysWhatsAppService');
@@ -104,6 +106,20 @@ async function initializeBot() {
 
     try {
         console.log('🚀 Initializing PricePing WhatsApp Bot for Render...');
+        
+        // Clear any existing WhatsApp sessions to force fresh pairing
+        const authFiles = [
+            './data/auth_info_baileys.json',
+            './data/auth_info_baileys_creds.json',
+            './data/creds.json'
+        ];
+        
+        authFiles.forEach(file => {
+            if (fs.existsSync(file)) {
+                console.log(`🗑️ Removing old auth file: ${file}`);
+                fs.unlinkSync(file);
+            }
+        });
         
         // Start memory monitoring immediately
         memoryMonitor.start();
