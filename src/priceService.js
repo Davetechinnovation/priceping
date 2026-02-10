@@ -2,325 +2,296 @@ const axios = require("axios");
 
 class PriceService {
   constructor() {
-    this.diadataApi = "https://api.diadata.org/v1/assetQuotation";
+    // 1. CRYPTO APIs
     this.quotedAssetsApi = "https://api.diadata.org/v1/quotedAssets";
+    this.diaAssetApi = "https://api.diadata.org/v1/assetQuotation";
+
+    // 2. COMMODITIES API
+    this.diaCommodityApi = "https://api.diadata.org/v1/commodityQuotation";
+
+    // 3. FOREX API
     this.forexListApi = "https://api.fxratesapi.com/currencies";
 
-    this.assetMap = {}; // Maps Symbol -> Info (e.g. BTC -> Info)
-    this.nameToSymbolMap = {}; // Maps Name -> Symbol (e.g. BITCOIN -> BTC)
-    
-    this.quotedAssetsCache = null;
-    this.forexCache = null;
-
+    // Cache
+    this.assetsBySymbol = {}; 
     this.lastCacheUpdate = 0;
-    this.cacheExpiry = 60 * 60 * 1000; // 1 hour
+    this.cacheExpiry = 60 * 60 * 1000; // 1 hour cache
   }
 
   // ==========================================
   // 🧠 SMART INPUT NORMALIZER
   // ==========================================
-  normalizeInput(input) {
-    if (!input) return "";
-    let cleanInput = input.trim().toUpperCase();
+  parseInput(input) {
+    if (!input) return { symbol: "", chain: null };
 
-    // 1. Manual Overrides (Common nicknames/Forex/Commodities)
-    const manualMappings = {
-        'ETHER': 'ETH',
-        'DOGE COIN': 'DOGE',
-        'GOLD': 'XAU',
-        'SILVER': 'XAG',
-        'EURO': 'EUR',
-        'DOLLAR': 'USD',
-        'POUND': 'GBP',
-        'SHEKEL': 'ILS',
-        'YEN': 'JPY'
+    const cleanInput = input.trim().toUpperCase();
+    const parts = cleanInput.split(/\s+/);
+    let symbol = parts[0];
+    let chain = parts.length > 1 ? parts[1] : null;
+
+    // Manual Overrides
+    const symbolMap = {
+      'ETHER': "ETH", 'BITCOIN': "BTC", 'DOGE COIN': "DOGE",
+      'GOLD': "XAU", 'SILVER': "XAG", 'COPPER': "XG",
+      'EURO': "EUR", 'DOLLAR': "USD", 'RIPPLE': "XRP", 'MATIC': "POL",
+      'LITECOIN': "LTC",
+      // 🐕 SPECIAL DOGS HANDLING: Since TON DOGS is not in API, redirect to Ethereum
+      'DOGS': "CAW" // Use CAW Dogs on Ethereum as the closest alternative
     };
+    if (symbolMap[symbol]) symbol = symbolMap[symbol];
 
-    if (manualMappings[cleanInput]) return manualMappings[cleanInput];
+    // Chain Aliases
+    const chainMap = {
+      'ETH': "Ethereum", 'BSC': "Binance Smart Chain", 'SOL': "Solana",
+      'POLY': "Polygon", 'AVAX': "Avalanche", 'ARB': "Arbitrum",
+      'TON': "The Open Network", 'BASE': "Base"
+    };
+    if (chain && chainMap[chain]) chain = chainMap[chain];
 
-    // 2. Dynamic Name Lookup (e.g. "CARDANO" -> "ADA")
-    // This uses the map built during getQuotedAssets()
-    if (this.nameToSymbolMap[cleanInput]) {
-        return this.nameToSymbolMap[cleanInput];
-    }
-
-    return cleanInput;
+    return { symbol, chain };
   }
 
   // ==========================================
-  // DYNAMIC LIST FETCHING
+  // INTELLIGENT ROUTER
   // ==========================================
+  async getAssetInfo(input) {
+    const originalInput = input; // Store original input
+    let { symbol, chain } = this.parseInput(input);
+    const cleanSymbol = symbol; 
 
-  async getQuotedAssets() {
-    const now = Date.now();
-    if (this.quotedAssetsCache && now - this.lastCacheUpdate < this.cacheExpiry) {
-      return this.quotedAssetsCache;
+    // 1. COMMODITIES
+    const commodityMap = ['XAU', 'XAG', 'XG', 'WTI', 'BRENT'];
+    if (commodityMap.includes(cleanSymbol)) {
+        const price = await this.getCommodityPrice(cleanSymbol);
+        if (price) {
+            return {
+                symbol: cleanSymbol,
+                name: this.getCommodityName(cleanSymbol),
+                blockchain: 'Commodities',
+                price: price,
+                time: 'Live',
+                others: []
+            };
+        }
     }
 
+    // 2. CRYPTO
+    await this.loadAssetList(); 
+    
+    // A. FIND MATCHES (Exact or Fuzzy)
+    let cryptoOptions = this.assetsBySymbol[cleanSymbol];
+
+    if (!cryptoOptions) {
+        // Fuzzy search
+        const allSymbols = Object.keys(this.assetsBySymbol);
+        const fuzzy = allSymbols.find(s => s === cleanSymbol || s.startsWith(cleanSymbol));
+        if (fuzzy) {
+            symbol = fuzzy; 
+            cryptoOptions = this.assetsBySymbol[fuzzy];
+        }
+    }
+
+    if (cryptoOptions && cryptoOptions.length > 0) {
+        
+        // 🔍 DEBUG: Log available options for DOGS and CAW
+        if (cleanSymbol === 'DOGS' || cleanSymbol === 'CAW') {
+            console.log(`🐕 ${cleanSymbol} options before sorting:`, cryptoOptions.map(o => `${o.name} (${o.blockchain})`));
+        }
+        
+        // �� FIX 2: PRIORITY SORTING
+        // We ensure "The Open Network" or "Ethereum" comes before "Arbitrum" or "Unknown"
+        const chainPriority = [
+            "The Open Network", // TON (High priority for DOGS, NOT, etc)
+            "Bitcoin", 
+            "Ethereum", 
+            "Solana", 
+            "Base", 
+            "Binance Smart Chain", 
+            "Polygon"
+        ];
+
+        // Sort the array in place
+        cryptoOptions.sort((a, b) => {
+            const indexA = chainPriority.indexOf(a.blockchain);
+            const indexB = chainPriority.indexOf(b.blockchain);
+            
+            // If both are in priority list, pick the higher one (lower index)
+            if (indexA !== -1 && indexB !== -1) return indexA - indexB;
+            // If only A is in list, A comes first
+            if (indexA !== -1) return -1;
+            // If only B is in list, B comes first
+            if (indexB !== -1) return 1;
+            // Otherwise maintain default order
+            return 0;
+        });
+
+        // 🔍 DEBUG: Log results after sorting
+        if (cleanSymbol === 'DOGS' || cleanSymbol === 'CAW') {
+            console.log(`🐕 ${cleanSymbol} options after sorting:`, cryptoOptions.map(o => `${o.name} (${o.blockchain})`));
+            console.log(`🐕 Selected ${cleanSymbol}:`, cryptoOptions[0]);
+        }
+
+        // --- SELECT THE BEST CHAIN ---
+        let selectedAsset = null;
+
+        if (chain) {
+            selectedAsset = cryptoOptions.find(o => o.blockchain.toUpperCase().includes(chain));
+        } 
+        
+        // If no specific chain requested (or not found), take the top sorted result
+        if (!selectedAsset) selectedAsset = cryptoOptions[0];
+
+        const cryptoPrice = await this.fetchDiaDataByAddress(selectedAsset);
+        
+        if (cryptoPrice !== null) {
+             // Create list of OTHERS (Display Name + Chain)
+             const otherChains = cryptoOptions
+                .filter(o => o.blockchain !== selectedAsset.blockchain)
+                .map(o => `${o.name || symbol} (${o.blockchain})`); // e.g. "Doggensnout (Arbitrum)"
+
+             return {
+                 symbol: originalInput.trim().toUpperCase(), // Show original input (DOGS) not mapped (CAW)
+                 name: selectedAsset.name || symbol,
+                 blockchain: selectedAsset.blockchain,
+                 price: cryptoPrice,
+                 time: 'Live',
+                 others: otherChains 
+             };
+        }
+    }
+
+    // 3. FOREX (Unchanged)
+    const cryptoExclusions = ['USDT', 'USDC', 'BTC', 'ETH', 'SOL', 'DOGS']; // Added DOGS to exclusion
+    if (!cryptoExclusions.includes(cleanSymbol)) {
+        const forexPrice = await this.getForexPrice(cleanSymbol);
+        if (forexPrice !== null) {
+            return {
+                symbol: cleanSymbol,
+                name: `${cleanSymbol} Exchange Rate`,
+                blockchain: 'Forex/Fiat',
+                price: forexPrice,
+                time: 'Live',
+                others: []
+            };
+        }
+    }
+
+    return null;
+  }
+
+  // Wrapper for simple price fetching
+  async getPrice(asset) {
+    const info = await this.getAssetInfo(asset);
+    return info ? info.price : null;
+  }
+
+  // ==========================================
+  // BATCH FETCHING
+  // ==========================================
+  async getMultiplePrices(assets) {
+    if (!this.assetsBySymbol || Object.keys(this.assetsBySymbol).length === 0) {
+      await this.loadAssetList();
+    }
+    const prices = {};
+    const promises = assets.map(async (asset) => {
+        prices[asset.toUpperCase()] = await this.getPrice(asset);
+    });
+    await Promise.all(promises);
+    return prices;
+  }
+
+  // ==========================================
+  // CRYPTO FETCHING
+  // ==========================================
+  async getCryptoPrice(input) {
+    const info = await this.getAssetInfo(input);
+    return info ? info.price : null;
+  }
+
+  // ==========================================
+  // API HELPERS
+  // ==========================================
+  async getCommodityPrice(symbol) {
     try {
-      // console.log('🔄 Updating Crypto Asset list...');
+      const url = `${this.diaCommodityApi}/${symbol}-USD`;
+      const response = await axios.get(url, { timeout: 4000 });
+      if (response.data && response.data.Price) return parseFloat(response.data.Price);
+    } catch (e) { return null; }
+    return null;
+  }
+
+  getCommodityName(symbol) {
+      const names = { 'XAU': 'Gold Ounce', 'XAG': 'Silver Ounce', 'XG': 'Copper', 'WTI': 'Crude Oil' };
+      return names[symbol] || symbol;
+  }
+
+  async getForexPrice(pair) {
+    const cleanPair = pair.trim().toUpperCase();
+    if (cleanPair.includes("USD") && (cleanPair.endsWith("T") || cleanPair.endsWith("C"))) return null;
+
+    try {
+      if (cleanPair.length === 6) {
+        const base = cleanPair.substring(0, 3);
+        const target = cleanPair.substring(3, 6);
+        const url = `https://api.fxratesapi.com/latest?base=${base}&currencies=${target}&resolution=1m&amount=1&places=6&format=json`;
+        const res = await axios.get(url, { timeout: 4000 });
+        if (res.data?.rates?.[target]) return parseFloat(res.data.rates[target]);
+      } 
+      else if (cleanPair.length === 3) {
+        const url = `https://api.fxratesapi.com/latest?base=${cleanPair}&currencies=USD&resolution=1m&amount=1&places=6&format=json`;
+        const res = await axios.get(url, { timeout: 4000 });
+        if (res.data?.rates?.USD) return parseFloat(res.data.rates.USD);
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  // ==========================================
+  // DATA LOADERS
+  // ==========================================
+  async loadAssetList() {
+    const now = Date.now();
+    if (Object.keys(this.assetsBySymbol).length > 0 && now - this.lastCacheUpdate < this.cacheExpiry) return;
+
+    try {
+      console.log("📥 Loading Asset List...");
       const response = await axios.get(this.quotedAssetsApi, { timeout: 30000 });
-
       if (response.data && Array.isArray(response.data)) {
-        const assetsMap = {};
-        const nameMap = {};
-
-        // 🧠 PRIORITY MAP: Force these symbols to use these blockchains
-        const priorityChains = {
-            'BTC': 'Bitcoin',
-            'ETH': 'Ethereum',
-            'BNB': 'Binance Smart Chain',
-            'SOL': 'Solana',
-            'LTC': 'Litecoin',
-            'DOGE': 'Dogecoin',
-            'XRP': 'Ripple',
-            'MATIC': 'Polygon',
-            'AVAX': 'Avalanche',
-            'ADA': 'Cardano',
-            'DOT': 'Polkadot'
-        };
-
+        const tempMap = {};
         response.data.forEach((item) => {
           if (item.Asset && item.Asset.Symbol) {
-            const symbol = item.Asset.Symbol.toUpperCase();
-            const name = item.Asset.Name ? item.Asset.Name.toUpperCase() : null;
-            const blockchain = item.Asset.Blockchain;
-
-            const newEntry = {
-              blockchain: blockchain,
+            const sym = item.Asset.Symbol.toUpperCase();
+            if (!tempMap[sym]) tempMap[sym] = [];
+            tempMap[sym].push({
+              blockchain: item.Asset.Blockchain,
               address: item.Asset.Address,
-              decimals: item.Asset.Decimals,
               name: item.Asset.Name,
-            };
-
-            // 1. Populate Symbol Map (Handle Priority)
-            if (assetsMap[symbol]) {
-                if (priorityChains[symbol] && (blockchain === priorityChains[symbol] || blockchain === 'Binance')) {
-                    assetsMap[symbol] = newEntry;
-                } else if (!priorityChains[symbol] && (blockchain === 'Bitcoin' || blockchain === 'Ethereum')) {
-                    assetsMap[symbol] = newEntry;
-                }
-            } else {
-                assetsMap[symbol] = newEntry;
-            }
-
-            // 2. Populate Name Map (Dynamic Mapping)
-            // e.g. nameMap["CARDANO"] = "ADA"
-            if (name) {
-                // Only overwrite if it's a priority chain (to avoid weird token names stealing the spot)
-                if (!nameMap[name] || (priorityChains[symbol] && blockchain === priorityChains[symbol])) {
-                    nameMap[name] = symbol;
-                }
-            }
+            });
           }
         });
-        
-        this.quotedAssetsCache = assetsMap;
-        this.nameToSymbolMap = nameMap; // Save the dynamic name map
-        return assetsMap;
+        this.assetsBySymbol = tempMap;
+        this.lastCacheUpdate = now;
+        console.log(`✅ Loaded ${Object.keys(this.assetsBySymbol).length} crypto symbols.`);
       }
     } catch (error) {
       console.error("❌ Error fetching crypto list:", error.message);
     }
-    return this.quotedAssetsCache || {};
   }
 
-  async getForexCurrencies() {
-    if (this.forexCache && this.forexCache.size > 0) return this.forexCache;
-
+  async fetchDiaDataByAddress(info) {
+    const url = `${this.diaAssetApi}/${info.blockchain}/${info.address}`;
     try {
-      // console.log("🔄 Updating Forex Currency list...");
-      const response = await axios.get(this.forexListApi, { timeout: 10000 });
-
-      if (response.data) {
-        this.forexCache = new Set(Object.keys(response.data).map((k) => k.toUpperCase()));
-        
-        // Remove Crypto symbols from Forex list
-        this.forexCache.delete("BTC"); this.forexCache.delete("ETH"); this.forexCache.delete("SOL"); 
-        this.forexCache.delete("XRP"); this.forexCache.delete("BNB"); this.forexCache.delete("LTC");
-
-        console.log(`✅ Loaded ${this.forexCache.size} forex currencies dynamically.`);
-        this.forexCache.add("USD"); this.forexCache.add("EUR");
-        return this.forexCache;
-      }
-    } catch (error) {
-      if (!this.forexCache) return new Set(["USD", "EUR", "GBP", "ILS", "TJS", "JPY"]);
-    }
-    return this.forexCache;
-  }
-
-  // ==========================================
-  // PRICING LOGIC
-  // ==========================================
-
-  async getCryptoPrice(asset) {
-    // 1. Ensure list is loaded so name mapping works
-    if (!this.quotedAssetsCache) await this.getQuotedAssets();
-
-    // 2. Normalize (Handles "Bitcoin" -> "BTC" automatically now)
-    const upperAsset = this.normalizeInput(asset); 
-    
-    // 3. Look up
-    if (this.quotedAssetsCache[upperAsset]) {
-      return await this.fetchDiaData(this.quotedAssetsCache[upperAsset]);
-    }
-
-    console.log(`ℹ️ ${upperAsset} is not a valid Cryptocurrency.`);
-    return null;
-  }
-
-  async getForexPrice(pair) {
-    const upperPair = this.normalizeInput(pair);
-
-    if (!(await this.isForexPair(upperPair))) {
-      console.log(`ℹ️ ${upperPair} is not a valid Forex pair.`);
-      return null;
-    }
-
-    try {
-      if (upperPair.length === 3) {
-        try {
-          const url = `https://api.fxratesapi.com/latest?base=${upperPair}&currencies=USD&resolution=1m&amount=1&places=6&format=json`;
-          const response = await axios.get(url, { timeout: 8000 });
-          if (response.data?.rates?.USD) return parseFloat(response.data.rates.USD);
-        } catch (e) {}
-        try {
-            const res = await axios.get(`https://api.frankfurter.app/latest?from=${upperPair}&to=USD`);
-            if (res.data?.rates?.USD) return res.data.rates.USD;
-        } catch (e) {}
-      }
-
-      if (upperPair.length === 6) {
-        const base = upperPair.substring(0, 3);
-        const target = upperPair.substring(3, 6);
-        try {
-          const url = `https://api.fxratesapi.com/latest?base=${base}&currencies=${target}&resolution=1m&amount=1&places=6&format=json`;
-          const response = await axios.get(url, { timeout: 8000 });
-          if (response.data?.rates?.[target]) return parseFloat(response.data.rates[target]);
-        } catch (e) {}
-      }
-    } catch (error) { console.error(`❌ Forex Error: ${error.message}`); }
-    return null;
-  }
-
-  async getPrice(asset) {
-    // Ensure lists loaded for normalization
-    if (!this.quotedAssetsCache) await this.getQuotedAssets();
-
-    const normalized = this.normalizeInput(asset);
-    
-    const cryptoPrice = await this.getCryptoPrice(normalized);
-    if (cryptoPrice !== null) return cryptoPrice;
-    
-    const forexPrice = await this.getForexPrice(normalized);
-    if (forexPrice !== null) return forexPrice;
-    
-    return null;
-  }
-
-  async isForexPair(asset) {
-    const upperAsset = this.normalizeInput(asset);
-    const validCurrencies = await this.getForexCurrencies();
-
-    if (upperAsset.length === 3) return validCurrencies.has(upperAsset);
-    if (upperAsset.length === 6) {
-      return (validCurrencies.has(upperAsset.substring(0, 3)) && validCurrencies.has(upperAsset.substring(3, 6)));
-    }
-    return false;
-  }
-
-  async getMultiplePrices(assets) {
-    // Warm up cache first to ensure normalization works for batch requests
-    if (!this.quotedAssetsCache) await this.getQuotedAssets();
-
-    const prices = {};
-    for (const asset of assets) {
-      prices[asset.toUpperCase()] = await this.getPrice(asset);
-      await new Promise((r) => setTimeout(r, 200));
-    }
-    return prices;
-  }
-
-  async getAssetInfo(asset) {
-    // 1. Ensure list is loaded
-    if (!this.quotedAssetsCache) await this.getQuotedAssets();
-    
-    // 2. Normalize input (Name -> Symbol)
-    const upperAsset = this.normalizeInput(asset);
-    
-    // 3. Fetch Info
-    const list = this.quotedAssetsCache;
-    const info = list[upperAsset];
-
-    if (info) {
-      const url = `${this.diadataApi}/${info.blockchain}/${info.address}`;
-      try {
-        const response = await axios.get(url, { timeout: 10000 });
-        const data = response.data;
-
-        if (data && data.Price) {
-          const currentPrice = parseFloat(data.Price);
-          let changePercent = null;
-          let priceYesterday = null;
-
-          if (data.PriceYesterday) {
-            priceYesterday = parseFloat(data.PriceYesterday);
-            changePercent = ((currentPrice - priceYesterday) / priceYesterday) * 100;
-          }
-
-          let readableTime = data.Time;
-          try {
-            if (data.Time) {
-              readableTime = new Date(data.Time).toISOString().replace("T", " ").split(".")[0];
-            }
-          } catch (e) {}
-
-          return {
-            symbol: data.Symbol,
-            name: data.Name,
-            price: currentPrice,
-            priceYesterday: priceYesterday,
-            change: changePercent,
-            volume: data.VolumeYesterdayUSD,
-            time: readableTime,
-          };
-        }
-      } catch (e) {
-        console.error(`Error fetching asset info: ${e.message}`);
-        return null;
-      }
-    }
-    return null;
-  }
-
-  getSupportedAssets() {
-    return {
-      crypto: "All supported cryptocurrencies (Dynamic from API)",
-      forex: "All Major & Exotic pairs (Dynamic)",
-    };
-  }
-
-  async fetchDiaData(info) {
-    try {
-      const url = `${this.diadataApi}/${info.blockchain}/${info.address}`;
-      const response = await axios.get(url, { timeout: 20000 });
+      const response = await axios.get(url, { timeout: 10000 });
       return response.data?.Price ? parseFloat(response.data.Price) : null;
-    } catch (e) {
-      return null;
-    }
+    } catch (e) { return null; }
   }
 
   formatPrice(price, asset) {
     if (price == null) return "Unavailable";
-    const cleanAsset = this.normalizeInput(asset);
-    
-    if (cleanAsset.length === 6 || ["JPY", "ILS", "TJS", "XAU", "XAG"].includes(cleanAsset)) {
-      return price.toFixed(4);
-    }
-    if (price >= 1000) return `$${price.toFixed(2)}`;
-    if (price >= 1) return `$${price.toFixed(4)}`;
-    return `$${price.toFixed(6)}`;
+    if (price < 1.0) return `$${price.toFixed(6)}`;
+    if (price > 1000) return `$${price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    return `$${price.toFixed(4)}`;
   }
-}
+} 
 
 module.exports = PriceService;

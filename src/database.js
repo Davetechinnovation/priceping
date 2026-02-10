@@ -30,6 +30,7 @@ class DatabaseManager {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 phone_number TEXT UNIQUE NOT NULL,
                 whatsapp_number TEXT NOT NULL,
+                name TEXT DEFAULT NULL,
                 subscription_type TEXT DEFAULT 'free',
                 subscription_start_date DATETIME,
                 subscription_end_date DATETIME,
@@ -69,14 +70,34 @@ class DatabaseManager {
         this.db.exec(usersTable);
         this.db.exec(alertsTable);
         this.db.exec(priceHistoryTable);
+
+        // Add name column to existing users table if it doesn't exist
+        try {
+            this.db.exec(`ALTER TABLE users ADD COLUMN name TEXT DEFAULT NULL`);
+            console.log("✅ Added name column to users table");
+        } catch (error) {
+            // Column already exists, which is fine
+            console.log("ℹ️ Name column already exists in users table");
+        }
     }
 
     // User operations
-    createUser(phoneNumber, whatsappNumber) {
+    // 🟢 UPDATED: Accept 'name' parameter
+    createUser(phoneNumber, whatsappNumber, name = null) {
         try {
-            const stmt = this.db.prepare(`INSERT OR IGNORE INTO users (phone_number, whatsapp_number) VALUES (?, ?)`);
-            const result = stmt.run(phoneNumber, whatsappNumber);
-            return { id: result.lastInsertRowid, phoneNumber, whatsappNumber };
+            const stmt = this.db.prepare(`INSERT OR IGNORE INTO users (phone_number, whatsapp_number, name) VALUES (?, ?, ?)`);
+            const result = stmt.run(phoneNumber, whatsappNumber, name);
+            return { id: result.lastInsertRowid, phoneNumber, whatsappNumber, name };
+        } catch (error) {
+            throw error;
+        }
+    }
+
+    updateUserName(phoneNumber, name) {
+        try {
+            const stmt = this.db.prepare(`UPDATE users SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE phone_number = ?`);
+            const result = stmt.run(name, phoneNumber);
+            return result.changes > 0;
         } catch (error) {
             throw error;
         }
@@ -103,17 +124,28 @@ class DatabaseManager {
     // Alert operations
     async createAlert(userId, asset, targetPrice, direction) {
         try {
+            console.log(`🔍 createAlert called with userId: ${userId}, asset: ${asset}, price: ${targetPrice}, direction: ${direction}`);
+            
             // Ensure user exists first
-            let user = await this.getUserByPhoneNumber(userId);
+            let user = this.getUserByPhoneNumber(userId);
+            console.log(`👤 User lookup in createAlert:`, user);
+            
             if (!user) {
                 // Create user if doesn't exist (use same number for both fields)
-                user = await this.createUser(userId, userId);
+                console.log(`🆕 Creating user in createAlert: ${userId}`);
+                user = this.createUser(userId, userId);
+                console.log(`👤 Created user in createAlert:`, user);
             }
             
+            console.log(`📋 Inserting alert with user_id: ${user.id}, asset: ${asset}, price: ${targetPrice}, direction: ${direction}`);
             const stmt = this.db.prepare(`INSERT INTO alerts (user_id, asset, target_price, direction) VALUES (?, ?, ?, ?)`);
             const result = stmt.run(user.id, asset, targetPrice, direction);
+            console.log(`✅ Alert inserted successfully:`, result);
+            
             return { id: result.lastInsertRowid, userId: user.id, asset, targetPrice, direction };
         } catch (error) {
+            console.error(`❌ createAlert Error:`, error);
+            console.error(`❌ createAlert Stack:`, error.stack);
             throw error;
         }
     }
