@@ -23,14 +23,17 @@ class BaileysPricePingServer {
             
             // Register command handler
             this.whatsappService.registerMessageHandler('commandParser', async (message, jid, pushName) => {
-                console.log(`🔍 Server Debug: message="${message}", jid="${jid}", pushName="${pushName}"`);
-                return await this.commandParser.handleCommand(
+                console.log(`🔍 Server Debug: START - handler called with message="${message}", jid="${jid}", pushName="${pushName}"`);
+                console.log(`🔍 Server Debug: Handler function is:`, typeof this.commandParser.handleCommand);
+                const result = await this.commandParser.handleCommand(
                     message, 
                     jid, 
                     this.database, 
                     this.priceService,
                     pushName
                 );
+                console.log(`🔍 Server Debug: CommandParser returned:`, result);
+                return result;
             });
 
             // Start alert monitor
