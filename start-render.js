@@ -107,19 +107,25 @@ async function initializeBot() {
     try {
         console.log('🚀 Initializing PricePing WhatsApp Bot for Render...');
         
-        // Clear any existing WhatsApp sessions to force fresh pairing
-        const authFiles = [
-            './data/auth_info_baileys.json',
-            './data/auth_info_baileys_creds.json',
-            './data/creds.json'
-        ];
-        
-        authFiles.forEach(file => {
-            if (fs.existsSync(file)) {
-                console.log(`🗑️ Removing old auth file: ${file}`);
-                fs.unlinkSync(file);
-            }
-        });
+        // Clear WhatsApp sessions only if CLEAR_AUTH env var is set
+        // This avoids having to re-link every time during development
+        if (process.env.CLEAR_AUTH === 'true') {
+            console.log('🗑️ CLEAR_AUTH detected, removing old auth files...');
+            const authFiles = [
+                './data/auth_info_baileys.json',
+                './data/auth_info_baileys_creds.json',
+                './data/creds.json'
+            ];
+            
+            authFiles.forEach(file => {
+                if (fs.existsSync(file)) {
+                    console.log(`🗑️ Removing old auth file: ${file}`);
+                    fs.unlinkSync(file);
+                }
+            });
+        } else {
+            console.log('🔐 Keeping existing auth session (set CLEAR_AUTH=true to clear)');
+        }
         
         // Start memory monitoring immediately
         memoryMonitor.start();
