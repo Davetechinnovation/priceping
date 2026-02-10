@@ -60,12 +60,13 @@ class CommandParser {
 
     // 🆕 FIRST TIME USER CHECK
     if (!user) {
+      console.log(`🔍 Debug: pushName="${pushName}", type=${typeof pushName}`);
       // 🟢 Pass 'pushName' to creation
       database.createUser(cleanPhoneNumber, cleanPhoneNumber, pushName);
       console.log(`👤 Created new user: ${cleanPhoneNumber} (${pushName})`);
       return this.getWelcomeDashboard(pushName || "Trader");
     } else {
-      console.log(`👤 Found existing user: ${cleanPhoneNumber}`);
+      console.log(`👤 Found existing user: ${cleanPhoneNumber}, name in DB="${user.name}"`);
     }
 
     const { command, args, originalMessage } = this.parseMessage(message);
@@ -190,9 +191,11 @@ Your account is active.
   // 🟢 UPDATED: GREETING LOGIC
   async handleGreeting(args, phoneNumber, database, priceService, pushName) {
     const user = database.getUserByPhoneNumber(phoneNumber);
+    console.log(`🔍 Greeting Debug: user=${JSON.stringify(user)}, pushName="${pushName}"`);
     
     // Logic: 1. DB Name -> 2. WhatsApp Name -> 3. "Trader"
     const displayName = (user && user.name) ? user.name : (pushName || "Trader");
+    console.log(`🔍 DisplayName chosen: "${displayName}"`);
 
     return `👋 *Welcome back, ${displayName}!* 
 ━━━━━━━━━━━━━━━━━━━━
