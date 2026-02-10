@@ -213,7 +213,7 @@ class BaileysWhatsAppService {
             await this.sendMessage(remoteJid, response);
 
             // ============================================================
-            // 🔥 NEW: STOP TYPING ANIMATION
+            // 🔥 NEW: STOP TYPING ANIMATIONn
             // Usually sending a message stops it, but this is good practice
             // ============================================================
             await this.sock.sendPresenceUpdate("paused", remoteJid);
