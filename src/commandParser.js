@@ -59,7 +59,9 @@ class CommandParser {
     if (!handler) {
         // If not a command, maybe just show menu if it looks like "Hi"
         if(["hey", "bot", "test"].includes(command)) return this.handleGreeting([], jid, db, priceService, pushName);
-        return null; // Ignore non-commands
+        
+        // 🆕 Handle unknown commands with helpful message
+        return this.handleUnknownCommand(command, args);
     }
 
     try {
@@ -68,6 +70,76 @@ class CommandParser {
       console.error(error);
       return "⚠️ *System Error*: My brain confused itself. Try again!";
     }
+  }
+
+  // ==========================================
+  // ❌ UNKNOWN COMMAND HANDLER
+  // ==========================================
+  async handleUnknownCommand(command, args) {
+      // Try to suggest similar commands
+      const suggestions = this.getSuggestions(command);
+      
+      if (suggestions.length > 0) {
+          return `🤔 *Unknown Command: "${command}"*
+
+💡 *Did you mean:*
+${suggestions.map(s => `• ${s}`).join('\n')}
+
+━━━━━━━━━━━━━━━━━
+🎯 *Popular Commands:*
+• Price BTC
+• Set ETH at 3500  
+• My alerts
+• Status
+• Help
+
+💡 *Type "Help" for all commands*`;
+      } else {
+          return `🤔 *Unknown Command: "${command}"*
+
+🎯 *Try these commands:*
+━━━━━━━━━━━━━━━━━
+🔎 *Price [asset]* - Check prices
+🔔 *Set [asset] at [price]* - Create alerts
+📋 *My alerts* - View watchlist
+📊 *Status* - System status
+📧 *Subscribe* - Premium features
+❓ *Help* - All commands
+
+💡 *Examples:* "Price BTC" or "Set ETH at 3500"`;
+      }
+  }
+
+  // Helper method to find similar commands
+  getSuggestions(command) {
+      const availableCommands = Object.keys(this.commands);
+      const suggestions = [];
+      
+      // Check for partial matches
+      availableCommands.forEach(cmd => {
+          if (cmd.includes(command) || command.includes(cmd)) {
+              suggestions.push(cmd);
+          }
+      });
+      
+      // Check for common typos
+      const commonTypos = {
+          'pric': 'price',
+          'prices': 'price',
+          'alert': 'alerts',
+          'alret': 'alerts',
+          'delete': 'del',
+          'remove': 'del',
+          'stat': 'status',
+          'subscription': 'subscribe',
+          'sub': 'subscribe'
+      };
+      
+      if (commonTypos[command]) {
+          suggestions.push(commonTypos[command]);
+      }
+      
+      return [...new Set(suggestions)].slice(0, 3); // Remove duplicates, max 3 suggestions
   }
 
   // ==========================================
