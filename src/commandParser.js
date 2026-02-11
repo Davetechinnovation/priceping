@@ -21,6 +21,10 @@ class CommandParser {
       
       // Account
       name: this.handleSetName.bind(this),
+      
+      // System
+      status: this.handleStatus.bind(this),
+      subscribe: this.handleSubscribe.bind(this),
     };
   }
 
@@ -314,6 +318,85 @@ _Simply reply with any command!_`;
       if(!name) return "⚠️ Usage: `Name Tony Stark`";
       await db.updateUserName(phoneNumber, name);
       return `✅ Nice to meet you, *${name}*!`;
+  }
+
+  // ==========================================
+  // 📊 SYSTEM STATUS
+  // ==========================================
+  async handleStatus(args, phoneNumber, db, priceService) {
+      try {
+          const alerts = await db.getUserAlerts(phoneNumber);
+          const activeAlerts = alerts.filter(a => a.status === 'active');
+          
+          // Get system uptime (simplified)
+          const uptime = process.uptime();
+          const hours = Math.floor(uptime / 3600);
+          const minutes = Math.floor((uptime % 3600) / 60);
+          
+          return `${this.getHeader("System Status")}
+          
+🤖 *Bot Status:* Online ✅
+⏰ *Uptime:* ${hours}h ${minutes}m
+📊 *Your Alerts:* ${activeAlerts.length} active
+💾 *Database:* Connected
+🌐 *Markets:* Crypto, Forex, Commodities
+
+━━━━━━━━━━━━━━━━━
+🔧 *Commands Available:*
+• Price [asset] - Check prices
+• Set [asset] at [price] - Create alerts
+• My alerts - View your watchlist
+• Status - Show this status
+• Help - Show all commands
+
+💡 *Pro Tip:* Try "Price BTC" or "Set ETH at 3500"`;
+      } catch (error) {
+          console.error("Status command error:", error);
+          return "⚠️ *System Error*: Couldn't fetch status right now.";
+      }
+  }
+
+  // ==========================================
+  // 📧 SUBSCRIBE/PREMIUM INFO
+  // ==========================================
+  async handleSubscribe(args, phoneNumber, db) {
+      const user = await db.getUserByPhoneNumber(phoneNumber);
+      const alerts = await db.getUserAlerts(phoneNumber);
+      const activeAlerts = alerts.filter(a => a.status === 'active');
+      
+      return `${this.getHeader("Premium Features")}
+
+👋 *Hi ${user.name || 'Trader'}!*
+
+📊 *Current Usage:*
+• Active Alerts: ${activeAlerts.length}
+• Plan: Free Tier
+
+🌟 *Premium Benefits:*
+━━━━━━━━━━━━━━━━━
+✅ Unlimited alerts (vs 5 free)
+✅ Real-time price notifications  
+✅ Advanced market analytics
+✅ Portfolio tracking
+✅ Priority support
+✅ Custom price thresholds
+
+💰 *Pricing:*
+━━━━━━━━━━━━━━━━━
+🥉 *Monthly:* $9.99/month
+🥈 *Quarterly:* $24.99 (save 17%)
+🥇 *Yearly:* $79.99 (save 33%)
+
+🚀 *Ready to upgrade?*
+━━━━━━━━━━━━━━━━━
+Reply "Upgrade Pro" to get started
+
+
+💡 *Free Forever:*
+Basic price checking & 5 alerts
+always free - no credit card required!
+
+Need help? Reply "Support"`;
   }
 }
 
