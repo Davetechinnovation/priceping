@@ -68,16 +68,48 @@ class BaileysWhatsAppService {
       this.sock.ev.on("creds.update", saveCreds);
 
       this.sock.ev.on("connection.update", (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update;
 
         if (connection === "close") {
           const statusCode = lastDisconnect?.error?.output?.statusCode;
-          const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-          console.log("🔌 Connection closed, reconnecting:", shouldReconnect);
-          if (shouldReconnect) this.initialize();
+          const reason = lastDisconnect?.error?.message;
+          
+          console.log("🔌 Connection closed, status:", statusCode, "reason:", reason);
+          
+          // Handle different disconnect reasons
+          if (reason?.includes("device_removed") || reason?.includes("conflict")) {
+            console.log("🔄 Device conflict detected, clearing auth and reconnecting...");
+            // Clear auth files for fresh connection
+            const fs = require('fs');
+            const path = require('path');
+            const authFiles = [
+                path.join(__dirname, '..', 'data', 'auth', 'creds.json'),
+                path.join(__dirname, '..', 'data', 'auth_info_baileys.json'),
+                path.join(__dirname, '..', 'data', 'auth_info_baileys_creds.json')
+            ];
+            
+            authFiles.forEach(file => {
+              if (fs.existsSync(file)) {
+                console.log(`🗑️ Removing auth file: ${file}`);
+                fs.unlinkSync(file);
+              }
+            });
+            
+            setTimeout(() => this.initialize(), 5000);
+          } else if (statusCode !== DisconnectReason.loggedOut) {
+            console.log("🔄 Reconnecting...");
+            setTimeout(() => this.initialize(), 5000);
+          } else {
+            console.log("❌ Logged out, manual reconnection required");
+          }
         } else if (connection === "open") {
           console.log("✅ WhatsApp connection established");
           this.isConnected = true;
+        }
+        
+        // Handle QR code updates
+        if (qr) {
+          console.log("📱 New QR code generated");
         }
       });
 

@@ -112,9 +112,9 @@ async function initializeBot() {
         if (process.env.CLEAR_AUTH === 'true') {
             console.log('🗑️ CLEAR_AUTH detected, removing old auth files...');
             const authFiles = [
+                './data/auth/creds.json',
                 './data/auth_info_baileys.json',
-                './data/auth_info_baileys_creds.json',
-                './data/creds.json'
+                './data/auth_info_baileys_creds.json'
             ];
             
             authFiles.forEach(file => {
