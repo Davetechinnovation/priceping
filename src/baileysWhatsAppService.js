@@ -268,6 +268,10 @@ class BaileysWhatsAppService {
         throw new Error("WhatsApp not connected - message cannot be sent");
       }
 
+      if (!to) {
+        throw new Error("Recipient phone number is required");
+      }
+
       const jid = to.includes("@") ? to : `${to}@s.whatsapp.net`;
 
       await this.sock.sendMessage(jid, {

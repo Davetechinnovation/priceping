@@ -122,18 +122,18 @@ class DatabaseManager {
     }
 
     // Alert operations
-    async createAlert(userId, asset, targetPrice, direction) {
+    async createAlert(phoneNumber, asset, targetPrice, direction) {
         try {
-            console.log(`🔍 createAlert called with userId: ${userId}, asset: ${asset}, price: ${targetPrice}, direction: ${direction}`);
+            console.log(`🔍 createAlert called with phoneNumber: ${phoneNumber}, asset: ${asset}, price: ${targetPrice}, direction: ${direction}`);
             
             // Ensure user exists first
-            let user = this.getUserByPhoneNumber(userId);
+            let user = this.getUserByPhoneNumber(phoneNumber);
             console.log(`👤 User lookup in createAlert:`, user);
             
             if (!user) {
                 // Create user if doesn't exist (use same number for both fields)
-                console.log(`🆕 Creating user in createAlert: ${userId}`);
-                user = this.createUser(userId, userId);
+                console.log(`🆕 Creating user in createAlert: ${phoneNumber}`);
+                user = this.createUser(phoneNumber, phoneNumber);
                 console.log(`👤 Created user in createAlert:`, user);
             }
             
@@ -150,11 +150,34 @@ class DatabaseManager {
         }
     }
 
+    // Debug method to check alerts by phone number
+    getAlertsByPhoneNumber(phoneNumber) {
+        try {
+            console.log(`🔍 getAlertsByPhoneNumber called with: ${phoneNumber}`);
+            const stmt = this.db.prepare(`
+                SELECT a.*, u.phone_number, u.whatsapp_number 
+                FROM alerts a 
+                JOIN users u ON a.user_id = u.id 
+                WHERE u.phone_number = ? OR u.whatsapp_number = ?
+            `);
+            const alerts = stmt.all(phoneNumber, phoneNumber);
+            console.log(`🔍 getAlertsByPhoneNumber result: ${alerts.length} alerts found:`, alerts);
+            return alerts;
+        } catch (error) {
+            console.error(`❌ getAlertsByPhoneNumber error:`, error);
+            throw error;
+        }
+    }
+
     getUserAlerts(userId) {
         try {
+            console.log(`🔍 getUserAlerts called with userId: ${userId}`);
             const stmt = this.db.prepare(`SELECT * FROM alerts WHERE user_id = ? AND status = 'active' ORDER BY created_at DESC`);
-            return stmt.all(userId);
+            const alerts = stmt.all(userId);
+            console.log(`🔍 getUserAlerts query result: ${alerts.length} alerts found:`, alerts);
+            return alerts;
         } catch (error) {
+            console.error(`❌ getUserAlerts error:`, error);
             throw error;
         }
     }
@@ -198,7 +221,26 @@ class DatabaseManager {
         try {
             const stmt = this.db.prepare(`INSERT INTO price_history (asset, price) VALUES (?, ?)`);
             const result = stmt.run(asset, price);
-            return { id: result.lastInsertRowid };
+            return { id: result.lastInsertRowid, asset, price };
+        } catch (error) {
+            throw error;
+        }
+    }
+
+    // Utility methods for migration
+    getAllUsers() {
+        try {
+            const stmt = this.db.prepare(`SELECT * FROM users ORDER BY created_at DESC`);
+            return stmt.all();
+        } catch (error) {
+            throw error;
+        }
+    }
+
+    getAllAlerts() {
+        try {
+            const stmt = this.db.prepare(`SELECT * FROM alerts ORDER BY created_at DESC`);
+            return stmt.all();
         } catch (error) {
             throw error;
         }

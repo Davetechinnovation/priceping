@@ -82,15 +82,21 @@ class AlertMonitor {
                 if (shouldTrigger) {
                     console.log(`🚨 Alert triggered: ${alert.asset} ${alert.direction} ${alert.target_price} (Current: ${currentPrice})`);
                     
+                    // Check if we have valid contact info
+                    if (!alert.phone_number && !alert.whatsapp_number) {
+                        console.error(`❌ Alert ${alert.id} has no contact information, skipping...`);
+                        continue;
+                    }
+                    
                     try {
                         // Send notification
-                        await this.whatsappService.sendAlert(alert.phone_number, alert, currentPrice, this.priceService);
+                        await this.whatsappService.sendAlert(alert.phone_number || alert.whatsapp_number, alert, currentPrice, this.priceService);
                         
                         // ONLY mark triggered if the line above didn't throw an error
                         await this.database.markAlertTriggered(alert.id);
                         alertsTriggered++;
                     } catch (sendError) {
-                        console.error(`Failed to send alert to ${alert.phone_number}, will retry next cycle:`, sendError.message);
+                        console.error(`Failed to send alert to ${alert.phone_number || alert.whatsapp_number}, will retry next cycle:`, sendError.message);
                     }
                 }
             }

@@ -7,7 +7,9 @@
     "start": "node start-render.js",
     "dev": "nodemon start-render.js",
     "local": "node src/server.js",
-    "test": "jest"
+    "test": "jest",
+    "migrate": "node migrate-to-mongo.js",
+    "clear-mongo": "node clear-mongodb.js"
   },
   "keywords": [
     "whatsapp",
@@ -30,6 +32,7 @@
     "dotenv": "^17.2.4",
     "express": "^5.2.1",
     "helmet": "^8.1.0",
+    "mongodb": "^6.21.0",
     "morgan": "^1.10.1",
     "node-cron": "^4.2.1",
     "pino": "^10.3.0",

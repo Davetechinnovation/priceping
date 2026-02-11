@@ -14,7 +14,7 @@ const path = require('path');
 require('dotenv').config();
 
 const BaileysWhatsAppService = require('./src/baileysWhatsAppService');
-const DatabaseManager = require('./src/database');
+const MongoDBManager = require('./src/mongoDBManager');
 const CommandParser = require('./src/commandParser');
 const AlertMonitor = require('./src/alertMonitor');
 const PriceService = require('./src/priceService');
@@ -98,6 +98,10 @@ app.get('/', (req, res) => {
 // Initialize bot services
 let botInitialized = false;
 
+// 🧠 STATE MEMORY (The "Press 1" Logic)
+// Stores: { "phone_number": { type: "SELECT_CHAIN_PRICE", data: [...] } }
+const userState = new Map();
+
 async function initializeBot() {
     if (botInitialized) {
         console.log('🔄 Bot already initialized, skipping...');
@@ -133,10 +137,11 @@ async function initializeBot() {
         // Initialize database with error handling
         let database;
         try {
-            database = new DatabaseManager();
-            console.log('✅ Database connected successfully');
+            database = new MongoDBManager();
+            await database.connect();
+            console.log('✅ MongoDB connected successfully');
         } catch (error) {
-            console.error('❌ Database connection failed:', error.message);
+            console.error('❌ MongoDB connection failed:', error.message);
             // Don't exit, Render will restart
             return;
         }
@@ -170,12 +175,59 @@ async function initializeBot() {
             try {
                 console.log(`📨 Processing message from ${phoneNumber} (${pushName}): "${messageText}"`);
                 
+                // 1️⃣ CHECK IF USER IS IN A MENU STATE (Replying 1, 2, etc.)
+                const cleanPhone = phoneNumber.replace(/\D/g, "");
+                if (userState.has(cleanPhone)) {
+                    const state = userState.get(cleanPhone);
+                    const selection = parseInt(messageText.trim());
+
+                    if (!isNaN(selection) && selection > 0 && selection <= state.options.length) {
+                        // User picked a valid number
+                        const selectedOption = state.options[selection - 1]; // 0-indexed
+                        
+                        // CLEAR STATE
+                        userState.delete(cleanPhone);
+
+                        // ROUTE BASED ON STATE TYPE
+                        if (state.type === 'SELECT_CHAIN_PRICE') {
+                            // User selected a chain to VIEW PRICE
+                            const cmd = `Price ${state.symbol} ${selectedOption.blockchain}`;
+                            const response = await commandParser.handleCommand(
+                                cmd, phoneNumber, database, priceService, pushName, userState
+                            );
+                            if (response) {
+                                console.log(`📤 Response to ${phoneNumber}: ${response.substring(0, 50)}...`);
+                                return response;
+                            }
+                        } 
+                        
+                        else if (state.type === 'SELECT_CHAIN_ALERT') {
+                            // User selected a chain to SET ALERT
+                            // We reconstruct the command: "Set [Symbol] [Chain] at [Price]"
+                            const cmd = `Set ${state.symbol} ${selectedOption.blockchain} at ${state.targetPrice} ${state.direction || 'at'}`;
+                            const response = await commandParser.handleCommand(
+                                cmd, phoneNumber, database, priceService, pushName, userState
+                            );
+                            if (response) {
+                                console.log(`📤 Response to ${phoneNumber}: ${response.substring(0, 50)}...`);
+                                return response;
+                            }
+                        }
+                    } else if (state) {
+                        // User typed text instead of a number, cancel the menu and proceed as normal command
+                        userState.delete(cleanPhone);
+                    }
+                }
+
+                // 2️⃣ NORMAL COMMAND PROCESSING
+                // Note: We pass 'userState' so Parser can SET a state if needed
                 const response = await commandParser.handleCommand(
                     messageText,
                     phoneNumber,
                     database,
                     priceService,
-                    pushName // 🟢 CRITICAL FIX: Pass pushName to parser!
+                    pushName,
+                    userState // 🟢 CRITICAL: Pass userState to parser!
                 );
                 
                 if (response) {
