@@ -476,38 +476,59 @@ class MongoDBManager {
     }
 
     // ==========================================
-    // 📱 WHATSAPP SESSION STORAGE
+    // 📱 WHATSAPP SESSION STORAGE (CRITICAL)
     // ==========================================
+    
+    // Retrieves session data
     async getWhatsAppSession() {
         try {
+            // We look for a document with session_id: 'primary_session'
             const session = await this.db.collection('whatsapp_sessions')
-                .findOne()
-                .sort({ updated_at: -1 });
+                .findOne({ session_id: 'primary_session' });
             
             if (session && session.session_data) {
+                console.log('📖 Retrieved existing WhatsApp session from MongoDB');
                 return session.session_data;
             }
             return null;
         } catch (error) {
-            console.error('Error getting WhatsApp session:', error);
+            console.error('❌ Error getting WhatsApp session:', error);
             return null;
         }
     }
 
+    // Saves session data SAFELY (Upsert)
     async saveWhatsAppSession(sessionData) {
         try {
-            // Clear existing sessions
-            await this.db.collection('whatsapp_sessions').deleteMany({});
-            
-            // Insert new session
-            await this.db.collection('whatsapp_sessions').insertOne({
-                session_data: sessionData.state,
-                updated_at: new Date()
-            });
+            if (!sessionData) return;
+
+            // Uses updateOne with upsert: true
+            // This prevents deleting session if save fails halfway
+            await this.db.collection('whatsapp_sessions').updateOne(
+                { session_id: 'primary_session' },
+                { 
+                    $set: { 
+                        session_data: sessionData,
+                        updated_at: new Date()
+                    } 
+                },
+                { upsert: true }
+            );
             
             console.log('💾 WhatsApp session saved to MongoDB');
         } catch (error) {
-            console.error('Error saving WhatsApp session:', error);
+            console.error('❌ Error saving WhatsApp session:', error);
+            throw error;
+        }
+    }
+
+    // Call this only when logging out explicitly
+    async clearWhatsAppSession() {
+        try {
+            await this.db.collection('whatsapp_sessions').deleteOne({ session_id: 'primary_session' });
+            console.log('🗑️ WhatsApp session cleared from MongoDB');
+        } catch (error) {
+            console.error('❌ Error clearing WhatsApp session:', error);
             throw error;
         }
     }

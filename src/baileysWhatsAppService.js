@@ -1,430 +1,248 @@
 const {
   default: makeWASocket,
-  useMultiFileAuthState,
   DisconnectReason,
+  fetchLatestBaileysVersion,
+  makeCacheableSignalKeyStore,
+  initAuthCreds,
+  BufferJSON,
+  proto,
+  Browsers // Import Browsers helper
 } = require("@whiskeysockets/baileys");
-const { Boom } = require("@hapi/boom");
-const qrcode = require("qrcode");
-const fs = require("fs");
-const path = require("path");
 const pino = require("pino");
 
 class BaileysWhatsAppService {
   constructor(database = null) {
     this.sock = null;
-    this.qrCode = null;
     this.isConnected = false;
     this.messageHandlers = new Map();
-    this.app = null; // Express app reference
-    this.logger = pino({ level: "info" });
-    this.database = database; // MongoDB reference for session storage
+    this.app = null;
+    this.logger = pino({ level: "silent" });
+    this.database = database;
+    this.retryCount = 0; // Track retries to prevent infinite loops
   }
 
   async initialize() {
     try {
       // ============================================================
-      // ⚙️ SETUP: PUT YOUR PHONE NUMBER HERE FOR PAIRING CODE
-      // Format: CountryCode + Number (No '+' sign, no spaces)
-      // Example for Nigeria: "2349168071385"
+      // ⚙️ SETUP: YOUR PHONE NUMBER
       const myPhoneNumber = "2348103393608";
       // ============================================================
 
-      const startTime = Math.floor(Date.now() / 1000);
       const { state, saveCreds } = await this.useMongoAuthState();
+      const { version } = await fetchLatestBaileysVersion();
 
-      // Create WhatsApp socket
       this.sock = makeWASocket({
-        printQRInTerminal: false, // Turn off QR because we want the code
-        auth: state,
+        version,
+        printQRInTerminal: false,
+        auth: {
+          creds: state.creds,
+          keys: makeCacheableSignalKeyStore(state.keys, this.logger),
+        },
         logger: this.logger,
-        browser: ["Ubuntu", "Chrome", "20.0.04"], // "Ubuntu" often helps pairing codes work better
+        // FIX 1: Use a standard browser string to avoid immediate rejection
+        browser: Browsers.ubuntu("Chrome"),
         markOnlineOnConnect: true,
-        syncFullHistory: false,
+        generateHighQualityLinkPreview: true,
+        connectTimeoutMs: 60000,
+        // FIX 2: Retry configuration for fetching messages
+        retryRequestDelayMs: 250,
       });
 
       // 🟢 PAIRING CODE LOGIC
       if (!this.sock.authState.creds.registered) {
-        console.log("⏳ Waiting for connection to generate pairing code...");
-
-        // Wait 4 seconds to ensure connection is ready, then request code
+        // Wait longer (6s) to ensure connection is actually stable before requesting
         setTimeout(async () => {
           try {
-            const code = await this.sock.requestPairingCode(myPhoneNumber);
-            console.log("\n================================================");
-            console.log("📱 PAIRING CODE REQUIRED");
-            console.log("1. Open WhatsApp on your phone");
-            console.log("2. Go to Settings > Linked Devices > Link a Device");
-            console.log('3. Tap "Link with phone number" instead of scanning');
-            console.log("4. Enter this code:");
-            console.log(
-              `\x1b[32m\x1b[1m   ${code?.match(/.{1,4}/g)?.join("-") || code}   \x1b[0m`,
-            );
-            console.log("================================================\n");
+            // Check if socket exists and isn't closed
+            if (this.sock && !this.sock.authState.creds.registered) {
+              console.log("🔄 Requesting Pairing Code...");
+              const code = await this.sock.requestPairingCode(myPhoneNumber);
+              console.log("\n================================================");
+              console.log("📱 PAIRING CODE REQUIRED");
+              console.log(`\x1b[32m\x1b[1m   ${code?.match(/.{1,4}/g)?.join("-") || code}   \x1b[0m`);
+              console.log("================================================\n");
+            }
           } catch (err) {
-            console.error("❌ Failed to request pairing code:", err);
+            console.error("❌ Failed to request pairing code:", err.message);
           }
-        }, 4000);
+        }, 6000);
       }
 
       this.sock.ev.on("creds.update", saveCreds);
 
-      this.sock.ev.on("connection.update", (update) => {
-        const { connection, lastDisconnect, qr } = update;
+      this.sock.ev.on("connection.update", async (update) => {
+        const { connection, lastDisconnect } = update;
 
         if (connection === "close") {
-          const statusCode = lastDisconnect?.error?.output?.statusCode;
-          const reason = lastDisconnect?.error?.message;
+          const error = lastDisconnect?.error;
+          const statusCode = error?.output?.statusCode;
           
-          console.log("🔌 Connection closed, status:", statusCode, "reason:", reason);
-          
-          // Handle different disconnect reasons
-          if (reason?.includes("device_removed") || reason?.includes("conflict")) {
-            console.log("🔄 Device conflict detected, clearing auth and reconnecting...");
-            // Clear auth files for fresh connection
-            const fs = require('fs');
-            const path = require('path');
-            const authFiles = [
-                path.join(__dirname, '..', 'data', 'auth', 'creds.json'),
-                path.join(__dirname, '..', 'data', 'auth_info_baileys.json'),
-                path.join(__dirname, '..', 'data', 'auth_info_baileys_creds.json')
-            ];
-            
-            authFiles.forEach(file => {
-              if (fs.existsSync(file)) {
-                console.log(`🗑️ Removing auth file: ${file}`);
-                fs.unlinkSync(file);
-              }
-            });
-            
-            setTimeout(() => this.initialize(), 5000);
-          } else if (statusCode !== DisconnectReason.loggedOut) {
-            console.log("🔄 Reconnecting...");
-            setTimeout(() => this.initialize(), 5000);
+          console.log(`🔌 Connection closed. Status: ${statusCode}`);
+
+          // FIX 3: Detect Corrupt Session (undefined status or 401/403 loop)
+          // If status is undefined, it means the socket died instantly (bad session data)
+          const isCorruptSession = statusCode === undefined;
+          const shouldReconnect = statusCode !== DisconnectReason.loggedOut && !isCorruptSession;
+
+          if (isCorruptSession) {
+            console.log("⚠️ Corrupt session detected (Status: undefined).");
+            console.log("🗑️ Clearing MongoDB session to fix the loop...");
+            await this.database.clearWhatsAppSession();
+            this.retryCount = 0;
+            console.log("🔄 Restarting fresh in 3 seconds...");
+            setTimeout(() => this.initialize(), 3000);
+            return;
+          }
+
+          if (shouldReconnect) {
+            if (this.retryCount < 5) {
+                console.log(`🔄 Reconnecting... (Attempt ${this.retryCount + 1})`);
+                this.retryCount++;
+                setTimeout(() => this.initialize(), 3000);
+            } else {
+                console.log("❌ Too many reconnection attempts. Clearing session.");
+                await this.database.clearWhatsAppSession();
+                this.retryCount = 0;
+                process.exit(1); // Restart the process entirely
+            }
           } else {
-            console.log("❌ Logged out, manual reconnection required");
+            console.log("❌ Logged out or Session Expired.");
+            await this.database.clearWhatsAppSession();
+            setTimeout(() => this.initialize(), 3000);
           }
         } else if (connection === "open") {
           console.log("✅ WhatsApp connection established");
           this.isConnected = true;
-        }
-        
-        // Handle QR code updates
-        if (qr) {
-          console.log("📱 New QR code generated");
+          this.retryCount = 0; // Reset retries on success
         }
       });
 
       this.sock.ev.on("messages.upsert", async (m) => {
         const msg = m.messages[0];
-        if (!msg.message || msg.key.fromMe) return;
-
-        // Speed fix: Ignore old history messages
-        const messageTimestamp =
-          typeof msg.messageTimestamp === "number"
-            ? msg.messageTimestamp
-            : msg.messageTimestamp.low;
-        if (messageTimestamp < startTime) return;
-
-        if (msg.key.remoteJid === "status@broadcast") return;
+        if (!msg.message || msg.key.fromMe || msg.key.remoteJid === "status@broadcast") return;
         await this.handleMessage(msg);
       });
 
       console.log("🔄 Initializing WhatsApp connection...");
     } catch (error) {
       console.error("❌ Error initializing WhatsApp:", error);
-      throw error;
+      setTimeout(() => this.initialize(), 5000);
     }
   }
 
   async useMongoAuthState() {
-    if (!this.database) {
-      console.warn("⚠️ No database provided, falling back to file storage");
-      // Fallback to file storage if no database
-      return await this.useMultiFileAuthState();
-    }
+    if (!this.database) throw new Error("Database required");
 
-    try {
-      // Load session from MongoDB
-      const sessionData = await this.database.getWhatsAppSession();
-      
-      if (sessionData) {
-        console.log("📥 Loaded WhatsApp session from MongoDB");
-        return {
-          state: sessionData.state,
-          saveCreds: async (creds) => {
-            await this.database.saveWhatsAppSession({
-              state: creds,
-              updatedAt: new Date()
-            });
-            console.log("💾 Saved WhatsApp session to MongoDB");
-          }
-        };
-      } else {
-        console.log("🆕 No session found in MongoDB, creating new session");
-        return {
-          state: {},
-          saveCreds: async (creds) => {
-            await this.database.saveWhatsAppSession({
-              state: creds,
-              updatedAt: new Date()
-            });
-            console.log("💾 Created new WhatsApp session in MongoDB");
-          }
-        };
+    const dbData = await this.database.getWhatsAppSession();
+
+    let creds;
+    let keys = {};
+
+    if (dbData) {
+      try {
+        const parsedData = JSON.parse(JSON.stringify(dbData), BufferJSON.reviver);
+        creds = parsedData.creds || initAuthCreds();
+        keys = parsedData.keys || {};
+        console.log("📥 Loaded session from MongoDB");
+      } catch (e) {
+        console.error("❌ Failed to parse session data, starting fresh:", e);
+        creds = initAuthCreds();
       }
-    } catch (error) {
-      console.error("❌ MongoDB auth error, falling back to files:", error);
-      // Fallback to file storage if MongoDB fails
-      return await this.useMultiFileAuthState();
-    }
-  }
-
-  async useMultiFileAuthState() {
-    const authFolder = path.join(__dirname, "..", "data", "auth");
-
-    // Create auth folder if it doesn't exist
-    if (!fs.existsSync(authFolder)) {
-      fs.mkdirSync(authFolder, { recursive: true });
+    } else {
+      console.log("🆕 Creating fresh session");
+      creds = initAuthCreds();
     }
 
-    return useMultiFileAuthState(authFolder);
-  }
-
-  async generateQRCodeFile(qr) {
-    try {
-      console.log("🔍 Starting QR code generation...");
-
-      // Generate QR code for console display (terminal-friendly)
-      console.log("\n" + "=".repeat(50));
-      console.log("📱 WHATSAPP QR CODE - SCAN WITH YOUR PHONE");
-      console.log("=".repeat(50));
-
-      // Display QR code in terminal
-      await qrcode.toString(qr, { type: "terminal", small: true });
-
-      console.log("\n" + "=".repeat(50));
-      console.log("💡 Instructions:");
-      console.log("1. Open WhatsApp on your phone");
-      console.log("2. Go to Settings > Linked Devices");
-      console.log('3. Tap "Link a device"');
-      console.log("4. Point your camera at QR code above");
-      console.log("=".repeat(50) + "\n");
-
-      // Also save to file for backup
-      const qrCodeData = await qrcode.toString(qr, { type: "svg", margin: 1 });
-      const qrFilePath = path.join(process.cwd(), "data", "qr-code.svg");
-
-      console.log("💾 Saving QR code backup to file:", qrFilePath);
-      fs.writeFileSync(qrFilePath, qrCodeData);
-      console.log(`📱 QR Code also saved to: ${qrFilePath}`);
-      console.log("🌐 File backup available if terminal QR is unclear");
-      console.log("🌐 Web QR available at: /qr");
-
-      // QR code endpoint
-      if (this.app) {
-        this.app.get("/qr", (req, res) => {
-          res.set("Content-Disposition", `attachment;filename="qr-code.svg"`);
-          res.set("Content-Type", "image/svg+xml");
-          res.sendFile(qrFilePath);
-        });
-      } else {
-        console.log("⚠️ Express app not available for QR endpoint");
+    const saveCreds = async () => {
+      try {
+        // Only save if we actually have credentials to save
+        if (!this.sock || !this.sock.authState) return;
+        
+        const jsonString = JSON.stringify({
+            creds: this.sock.authState.creds,
+            keys: this.sock.authState.keys
+        }, BufferJSON.replacer);
+        
+        const saveableData = JSON.parse(jsonString);
+        await this.database.saveWhatsAppSession(saveableData);
+      } catch (error) {
+        console.error("❌ Failed to save session:", error);
       }
+    };
 
-      return qrFilePath;
-    } catch (error) {
-      console.error("❌ Error generating QR code:", error);
-      console.error("❌ Full error details:", error.stack);
-    }
+    return {
+      state: {
+        creds,
+        keys: {
+          get: (type, ids) => {
+            const data = {};
+            for (const id of ids) {
+              let value = keys[`${type}-${id}`];
+              if (type === 'app-state-sync-key' && value) {
+                value = proto.Message.AppStateSyncKeyData.fromObject(value);
+              }
+              data[id] = value;
+            }
+            return data;
+          },
+          set: (data) => {
+            for (const category in data) {
+              for (const id in data[category]) {
+                const value = data[category][id];
+                const key = `${category}-${id}`;
+                if (value) {
+                  keys[key] = value;
+                } else {
+                  delete keys[key];
+                }
+              }
+            }
+            saveCreds();
+          }
+        }
+      },
+      saveCreds
+    };
   }
 
   async handleMessage(message) {
     try {
       const remoteJid = message.key.remoteJid;
-      
-      // 🟢 1. EXTRACT PROFILE NAME
-      const pushName = message.pushName || null;
+      const pushName = message.pushName || "User";
+      let messageText = message.message?.conversation || message.message?.extendedTextMessage?.text || "";
 
-      // Extract text from different message types
-      let messageText = "";
+      if (!messageText) return;
 
-      if (message.message.conversation) {
-        messageText = message.message.conversation;
-      } else if (message.message.extendedTextMessage) {
-        messageText = message.message.extendedTextMessage.text;
-      } else if (message.message.imageMessage) {
-        messageText = message.message.imageMessage.caption || "";
-      } else if (message.message.videoMessage) {
-        messageText = message.message.videoMessage.caption || "";
-      } else if (message.message.documentMessage) {
-        messageText = message.message.documentMessage.caption || "";
-      }
+      console.log(`📨 ${pushName}: "${messageText}"`);
 
-      if (!messageText || !messageText.trim()) {
-        console.log("📨 Empty or non-text message, ignoring");
-        return;
-      }
-
-      console.log(`📨 From ${pushName} (${remoteJid}): "${messageText}"`);
-
-      // Process message through all registered handlers
-      for (const [handlerName, handler] of this.messageHandlers) {
-        try {
-          // ============================================================
-          // 🔥 NEW: START TYPING ANIMATION
-          // This tells WhatsApp to show "Typing..." in the status bar
-          // ============================================================
-          await this.sock.sendPresenceUpdate("composing", remoteJid);
-
-          // Wait for the bot logic (PriceService/CommandParser) to finish
-          // 🟢 2. PASS PUSHNAME TO HANDLER
-          // We pass: (text, jid, pushName)
-          const response = await handler(messageText, remoteJid, pushName);
-
-          if (response && response.trim()) {
-            await this.sendMessage(remoteJid, response);
-
-            // ============================================================
-            // 🔥 NEW: STOP TYPING ANIMATIONn
-            // Usually sending a message stops it, but this is good practice
-            // ============================================================
-            await this.sock.sendPresenceUpdate("paused", remoteJid);
-
-            return; // Stop after first handler responds
-          } else {
-            // If logic finished but no response was generated, stop typing
-            await this.sock.sendPresenceUpdate("paused", remoteJid);
-          }
-        } catch (error) {
-          console.error(`❌ Error in handler ${handlerName}:`, error);
-          // Stop typing if there was an error
+      for (const [_, handler] of this.messageHandlers) {
+        await this.sock.sendPresenceUpdate("composing", remoteJid);
+        const response = await handler(messageText, remoteJid, pushName);
+        if (response) {
+          await this.sendMessage(remoteJid, response);
           await this.sock.sendPresenceUpdate("paused", remoteJid);
+          return;
         }
       }
     } catch (error) {
-      console.error("❌ Error handling message:", error);
+      console.error("Error handling message:", error);
     }
   }
 
   async sendMessage(to, message) {
-    try {
-      if (!this.isConnected) {
-        throw new Error("WhatsApp not connected - message cannot be sent");
-      }
-
-      if (!to) {
-        throw new Error("Recipient phone number is required");
-      }
-
-      const jid = to.includes("@") ? to : `${to}@s.whatsapp.net`;
-
-      await this.sock.sendMessage(jid, {
-        text: message,
-      });
-
-      console.log(`📤 Message sent to ${to}: ${message.substring(0, 50)}...`);
-      return true;
-    } catch (error) {
-      console.error("❌ Error sending message:", error);
-      throw error; // Propagate error so AlertMonitor knows it failed
-    }
+    if (!this.isConnected) return;
+    const jid = to.includes("@") ? to : `${to}@s.whatsapp.net`;
+    await this.sock.sendMessage(jid, { text: message });
   }
 
   async sendAlert(to, alert, currentPrice, priceService) {
-    const asset = alert.asset.toUpperCase();
-    const targetPrice = alert.target_price;
-    const direction = alert.direction;
-
-    const formattedCurrentPrice = priceService.formatPrice(currentPrice, asset);
-    const formattedTargetPrice = priceService.formatPrice(targetPrice, asset);
-
-    const directionEmoji = direction === "above" ? "📈" : "📉";
-    const hitEmoji =
-      direction === "above"
-        ? currentPrice >= targetPrice
-          ? "🎯"
-          : "⏳"
-        : currentPrice <= targetPrice
-          ? "🎯"
-          : "⏳";
-
-    const message = `🚨 *PRICE ALERT TRIGGERED!* 🚨
-
-${directionEmoji} *${asset}* Alert Hit!
-
-🎯 *Target*: ${formattedTargetPrice}
-📊 *Current*: ${formattedCurrentPrice}
-📈 *Direction*: ${direction === "above" ? "Above" : "Below"} target
-⏰ *Time*: ${new Date().toLocaleString()}
-
-📈 *Quick Actions*:
-• Set new alert: "Set ${asset} at [new_price]"
-• View all alerts: "My alerts"
-• Delete this alert: "Delete ${alert.id}"
-
-💡 *Tip*: Price alerts help you catch important market movements!
-
----
-*PricePing - Your Trading Alert Companion* 🤖`;
-
-    return await this.sendMessage(to, message);
+      const asset = alert.asset.toUpperCase();
+      const message = `🚨 *PRICE ALERT* 🚨\n${asset} hit target: ${alert.target_price}\nCurrent: ${currentPrice}`;
+      return await this.sendMessage(to, message);
   }
 
-  async sendPriceUpdate(to, asset, price, priceService) {
-    const formattedPrice = priceService.formatPrice(price, asset);
-
-    const message = `📊 *Price Update*
-
-💰 ${asset}: ${formattedPrice}
-⏰ ${new Date().toLocaleString()}
-
-🎯 *Set Alert*: "Set ${asset} at [your_price]"
-
----
-*PricePing - Your Trading Alert Companion* 🤖`;
-
-    return await this.sendMessage(to, message);
-  }
-
-  // Register message handler (for command parser)
-  registerMessageHandler(name, handler) {
-    this.messageHandlers.set(name, handler);
-    console.log(`📝 Registered message handler: ${name}`);
-  }
-
-  // Set Express app reference for QR endpoint
-  setExpressApp(app) {
-    this.app = app;
-    console.log("🌐 Express app reference set for QR endpoint");
-  }
-
-  // Get connection status
-  getConnectionStatus() {
-    return {
-      isConnected: this.isConnected,
-      hasQRCode: !!this.qrCode,
-      qrCodePath: this.qrCode
-        ? path.join(__dirname, "..", "data", "qr-code.svg")
-        : null,
-    };
-  }
-
-  // Disconnect from WhatsApp
-  async disconnect() {
-    try {
-      if (this.sock) {
-        await this.sock.logout();
-        console.log("🔌 Disconnected from WhatsApp");
-      }
-    } catch (error) {
-      console.error("❌ Error disconnecting:", error);
-    }
-  }
-
-  // Get phone number from JID
-  extractPhoneNumber(jid) {
-    return jid.replace("@s.whatsapp.net", "").replace("@whatsapp.net", "");
-  }
+  registerMessageHandler(name, handler) { this.messageHandlers.set(name, handler); }
+  setExpressApp(app) { this.app = app; }
 }
 
 module.exports = BaileysWhatsAppService;

@@ -164,7 +164,7 @@ async function initializeBot() {
         }
         // ============================================================
 
-        const whatsappService = new BaileysWhatsAppService();
+        const whatsappService = new BaileysWhatsAppService(database);
         const commandParser = new CommandParser();
         
         // Pass Express app to WhatsApp service for QR endpoint
