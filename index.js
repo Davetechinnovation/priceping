@@ -1,12 +1,12 @@
 require("dotenv").config();
-const MongoDBManager = require("./src/mongoDBManager"); // Your file
+const MongoDBManager = require("./src/mongoDBManager"); // MongoDB database
 const BaileysWhatsAppService = require("./src/baileysWhatsAppService"); // Your file
 const CommandParser = require("./src/commandParser"); // Updated below
 const PriceService = require("./src/priceService"); // Updated below
 
 // Services
 const db = new MongoDBManager();
-const whatsapp = new BaileysWhatsAppService();
+const whatsapp = new BaileysWhatsAppService(db); // Pass database to WhatsApp service
 const priceService = new PriceService();
 const parser = new CommandParser();
 

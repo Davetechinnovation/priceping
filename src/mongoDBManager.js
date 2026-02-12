@@ -475,6 +475,43 @@ class MongoDBManager {
         }
     }
 
+    // ==========================================
+    // 📱 WHATSAPP SESSION STORAGE
+    // ==========================================
+    async getWhatsAppSession() {
+        try {
+            const session = await this.db.collection('whatsapp_sessions')
+                .findOne()
+                .sort({ updated_at: -1 });
+            
+            if (session && session.session_data) {
+                return session.session_data;
+            }
+            return null;
+        } catch (error) {
+            console.error('Error getting WhatsApp session:', error);
+            return null;
+        }
+    }
+
+    async saveWhatsAppSession(sessionData) {
+        try {
+            // Clear existing sessions
+            await this.db.collection('whatsapp_sessions').deleteMany({});
+            
+            // Insert new session
+            await this.db.collection('whatsapp_sessions').insertOne({
+                session_data: sessionData.state,
+                updated_at: new Date()
+            });
+            
+            console.log('💾 WhatsApp session saved to MongoDB');
+        } catch (error) {
+            console.error('Error saving WhatsApp session:', error);
+            throw error;
+        }
+    }
+
     async close() {
         if (this.client) {
             await this.client.close();

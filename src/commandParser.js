@@ -25,6 +25,7 @@ class CommandParser {
       // System
       status: this.handleStatus.bind(this),
       subscribe: this.handleSubscribe.bind(this),
+      "upgrade pro": this.handleUpgradePro.bind(this),
     };
   }
 
@@ -469,6 +470,54 @@ Basic price checking & 5 alerts
 always free - no credit card required!
 
 Need help? Reply "Support"`;
+  }
+
+  // ==========================================
+  // 🚀 UPGRADE PRO HANDLER
+  // ==========================================
+  async handleUpgradePro(args, phoneNumber, db) {
+      const user = await db.getUserByPhoneNumber(phoneNumber);
+      const alerts = await db.getUserAlerts(phoneNumber);
+      const activeAlerts = alerts.filter(a => a.status === 'active');
+      
+      return `${this.getHeader("🚀 Upgrade to Pro")}
+
+👋 *Hi ${user.name || 'Trader'}!*
+
+📊 *Current Usage:*
+• Active Alerts: ${activeAlerts.length}
+• Plan: Free Tier
+
+🌟 *Premium Benefits:*
+━━━━━━━━━━━━━━━━━
+✅ Unlimited alerts (vs 5 free)
+✅ Real-time price notifications  
+✅ Advanced market analytics
+✅ Portfolio tracking
+✅ Priority support
+✅ Custom price thresholds
+
+💰 *Pricing:*
+━━━━━━━━━━━━━━━━━
+🥉 *Monthly:* $9.99/month
+🥈 *Quarterly:* $24.99 (save 17%)
+🥇 *Yearly:* $79.99 (save 33%)
+
+🚀 *Ready to Upgrade?*
+━━━━━━━━━━━━━━━━━
+📞 *Contact Admin Directly:*
+• WhatsApp: +2349160766236
+• Message: "Upgrade Pro"
+
+💡 *What to say:*
+"Hi, I want to upgrade to Pro plan. My number is ${phoneNumber}"
+
+━━━━━━━━━━━━━━━━━
+🎁 *Special Offer:* 
+Mention this message for 10% discount!
+
+📧 *Need help?*
+Reply "Support" for assistance`;
   }
 }
 

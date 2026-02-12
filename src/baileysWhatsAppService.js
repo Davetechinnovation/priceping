@@ -10,13 +10,14 @@ const path = require("path");
 const pino = require("pino");
 
 class BaileysWhatsAppService {
-  constructor() {
+  constructor(database = null) {
     this.sock = null;
     this.qrCode = null;
     this.isConnected = false;
     this.messageHandlers = new Map();
     this.app = null; // Express app reference
     this.logger = pino({ level: "info" });
+    this.database = database; // MongoDB reference for session storage
   }
 
   async initialize() {
@@ -29,7 +30,7 @@ class BaileysWhatsAppService {
       // ============================================================
 
       const startTime = Math.floor(Date.now() / 1000);
-      const { state, saveCreds } = await this.useMultiFileAuthState();
+      const { state, saveCreds } = await this.useMongoAuthState();
 
       // Create WhatsApp socket
       this.sock = makeWASocket({
@@ -132,6 +133,49 @@ class BaileysWhatsAppService {
     } catch (error) {
       console.error("❌ Error initializing WhatsApp:", error);
       throw error;
+    }
+  }
+
+  async useMongoAuthState() {
+    if (!this.database) {
+      console.warn("⚠️ No database provided, falling back to file storage");
+      // Fallback to file storage if no database
+      return await this.useMultiFileAuthState();
+    }
+
+    try {
+      // Load session from MongoDB
+      const sessionData = await this.database.getWhatsAppSession();
+      
+      if (sessionData) {
+        console.log("📥 Loaded WhatsApp session from MongoDB");
+        return {
+          state: sessionData.state,
+          saveCreds: async (creds) => {
+            await this.database.saveWhatsAppSession({
+              state: creds,
+              updatedAt: new Date()
+            });
+            console.log("💾 Saved WhatsApp session to MongoDB");
+          }
+        };
+      } else {
+        console.log("🆕 No session found in MongoDB, creating new session");
+        return {
+          state: {},
+          saveCreds: async (creds) => {
+            await this.database.saveWhatsAppSession({
+              state: creds,
+              updatedAt: new Date()
+            });
+            console.log("💾 Created new WhatsApp session in MongoDB");
+          }
+        };
+      }
+    } catch (error) {
+      console.error("❌ MongoDB auth error, falling back to files:", error);
+      // Fallback to file storage if MongoDB fails
+      return await this.useMultiFileAuthState();
     }
   }
 
