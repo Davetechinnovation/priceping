@@ -6,7 +6,8 @@ const {
   initAuthCreds,
   BufferJSON,
   proto,
-  Browsers // Import Browsers helper
+  Browsers,
+  jidNormalizedUser // 👈 IMPORTED THIS HELPER
 } = require("@whiskeysockets/baileys");
 const pino = require("pino");
 
@@ -18,7 +19,8 @@ class BaileysWhatsAppService {
     this.app = null;
     this.logger = pino({ level: "silent" });
     this.database = database;
-    this.retryCount = 0; // Track retries to prevent infinite loops
+    this.retryCount = 0;
+    this.pairingRetries = 0;
   }
 
   async initialize() {
@@ -31,6 +33,11 @@ class BaileysWhatsAppService {
       const { state, saveCreds } = await this.useMongoAuthState();
       const { version } = await fetchLatestBaileysVersion();
 
+      if (!state.creds.registered) {
+          console.log("⚠️ No active session found in MongoDB.");
+          console.log("🔄 Automatically entering Pairing Mode...");
+      }
+
       this.sock = makeWASocket({
         version,
         printQRInTerminal: false,
@@ -39,23 +46,28 @@ class BaileysWhatsAppService {
           keys: makeCacheableSignalKeyStore(state.keys, this.logger),
         },
         logger: this.logger,
-        // FIX 1: Use a standard browser string to avoid immediate rejection
         browser: Browsers.ubuntu("Chrome"),
         markOnlineOnConnect: true,
         generateHighQualityLinkPreview: true,
         connectTimeoutMs: 60000,
-        // FIX 2: Retry configuration for fetching messages
         retryRequestDelayMs: 250,
+        keepAliveIntervalMs: 10000, 
+        syncFullHistory: false,
       });
 
-      // 🟢 PAIRING CODE LOGIC
+      // PAIRING LOGIC
       if (!this.sock.authState.creds.registered) {
-        // Wait longer (6s) to ensure connection is actually stable before requesting
         setTimeout(async () => {
           try {
-            // Check if socket exists and isn't closed
             if (this.sock && !this.sock.authState.creds.registered) {
-              console.log("🔄 Requesting Pairing Code...");
+              if (this.pairingRetries >= 5) {
+                console.log("\n❌ MAX PAIRING ATTEMPTS REACHED (5/5). Shutting down.");
+                process.exit(0);
+              }
+
+              this.pairingRetries++; 
+              console.log(`🔄 Requesting Pairing Code... (Attempt ${this.pairingRetries}/5)`);
+              
               const code = await this.sock.requestPairingCode(myPhoneNumber);
               console.log("\n================================================");
               console.log("📱 PAIRING CODE REQUIRED");
@@ -79,41 +91,33 @@ class BaileysWhatsAppService {
           
           console.log(`🔌 Connection closed. Status: ${statusCode}`);
 
-          // FIX 3: Detect Corrupt Session (undefined status or 401/403 loop)
-          // If status is undefined, it means the socket died instantly (bad session data)
           const isCorruptSession = statusCode === undefined;
-          const shouldReconnect = statusCode !== DisconnectReason.loggedOut && !isCorruptSession;
-
-          if (isCorruptSession) {
-            console.log("⚠️ Corrupt session detected (Status: undefined).");
-            console.log("🗑️ Clearing MongoDB session to fix the loop...");
+          const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+          
+          if (isCorruptSession || isLoggedOut) {
+            console.log("⚠️ Corrupt session or Logged out.");
+            console.log("🗑️ Clearing MongoDB session...");
             await this.database.clearWhatsAppSession();
             this.retryCount = 0;
-            console.log("🔄 Restarting fresh in 3 seconds...");
+            this.pairingRetries = 0;
+            console.log("🔄 Restarting in 3 seconds...");
             setTimeout(() => this.initialize(), 3000);
             return;
           }
 
-          if (shouldReconnect) {
-            if (this.retryCount < 5) {
-                console.log(`🔄 Reconnecting... (Attempt ${this.retryCount + 1})`);
-                this.retryCount++;
-                setTimeout(() => this.initialize(), 3000);
-            } else {
-                console.log("❌ Too many reconnection attempts. Clearing session.");
-                await this.database.clearWhatsAppSession();
-                this.retryCount = 0;
-                process.exit(1); // Restart the process entirely
-            }
+          if (this.retryCount < 5) {
+              console.log(`🔄 Reconnecting... (Attempt ${this.retryCount + 1})`);
+              this.retryCount++;
+              setTimeout(() => this.initialize(), 3000);
           } else {
-            console.log("❌ Logged out or Session Expired.");
-            await this.database.clearWhatsAppSession();
-            setTimeout(() => this.initialize(), 3000);
+              console.log("❌ Too many reconnection attempts.");
+              process.exit(1); 
           }
         } else if (connection === "open") {
           console.log("✅ WhatsApp connection established");
           this.isConnected = true;
-          this.retryCount = 0; // Reset retries on success
+          this.retryCount = 0;
+          this.pairingRetries = 0;
         }
       });
 
@@ -130,13 +134,11 @@ class BaileysWhatsAppService {
     }
   }
 
+  // DATABASE AUTH
   async useMongoAuthState() {
     if (!this.database) throw new Error("Database required");
-
     const dbData = await this.database.getWhatsAppSession();
-
-    let creds;
-    let keys = {};
+    let creds, keys = {};
 
     if (dbData) {
       try {
@@ -144,30 +146,29 @@ class BaileysWhatsAppService {
         creds = parsedData.creds || initAuthCreds();
         keys = parsedData.keys || {};
         console.log("📥 Loaded session from MongoDB");
-      } catch (e) {
-        console.error("❌ Failed to parse session data, starting fresh:", e);
-        creds = initAuthCreds();
-      }
+      } catch (e) { creds = initAuthCreds(); }
     } else {
-      console.log("🆕 Creating fresh session");
+      console.log("🆕 Database empty: Creating fresh session");
       creds = initAuthCreds();
     }
 
-    const saveCreds = async () => {
+    let isSaving = false;
+    let saveTimeout = null;
+
+    const flushToDB = async () => {
+      if (isSaving) return;
+      isSaving = true;
       try {
-        // Only save if we actually have credentials to save
-        if (!this.sock || !this.sock.authState) return;
-        
-        const jsonString = JSON.stringify({
-            creds: this.sock.authState.creds,
-            keys: this.sock.authState.keys
-        }, BufferJSON.replacer);
-        
+        const jsonString = JSON.stringify({ creds, keys }, BufferJSON.replacer);
         const saveableData = JSON.parse(jsonString);
         await this.database.saveWhatsAppSession(saveableData);
-      } catch (error) {
-        console.error("❌ Failed to save session:", error);
-      }
+      } catch (error) { console.error("❌ Failed to save session:", error.message); } 
+      finally { isSaving = false; saveTimeout = null; }
+    };
+
+    const saveCreds = () => {
+      if (saveTimeout) return;
+      saveTimeout = setTimeout(flushToDB, 10000);
     };
 
     return {
@@ -190,11 +191,7 @@ class BaileysWhatsAppService {
               for (const id in data[category]) {
                 const value = data[category][id];
                 const key = `${category}-${id}`;
-                if (value) {
-                  keys[key] = value;
-                } else {
-                  delete keys[key];
-                }
+                if (value) { keys[key] = value; } else { delete keys[key]; }
               }
             }
             saveCreds();
@@ -207,30 +204,52 @@ class BaileysWhatsAppService {
 
   async handleMessage(message) {
     try {
-      const remoteJid = message.key.remoteJid;
+      const rawJid = message.key.remoteJid;
+      
+      // ============================================
+      // 🛠️ CRITICAL FIX: JID NORMALIZATION
+      // ============================================
+      // 1. Use Baileys helper to standardize (handles :42 suffixes)
+      // 2. Split @ to get the number part
+      const normalizedJid = jidNormalizedUser(rawJid); 
+      const cleanPhone = normalizedJid.split('@')[0];
+
+      // Handle LIDs (if WhatsApp sends 15+ digit ID instead of phone)
+      if (cleanPhone.length > 14 && !cleanPhone.startsWith('234')) {
+         console.warn(`⚠️ Warning: Detected LID instead of Phone Number: ${cleanPhone}`);
+      }
+
       const pushName = message.pushName || "User";
       let messageText = message.message?.conversation || message.message?.extendedTextMessage?.text || "";
 
       if (!messageText) return;
 
-      console.log(`📨 ${pushName}: "${messageText}"`);
+      console.log(`📨 ${pushName} (${cleanPhone}): "${messageText}"`);
 
+      // PASS THE NORMALIZED JID to command parser
       for (const [_, handler] of this.messageHandlers) {
-        await this.sock.sendPresenceUpdate("composing", remoteJid);
-        const response = await handler(messageText, remoteJid, pushName);
+        try { await this.sock.sendPresenceUpdate("composing", rawJid); } catch(e){}
+        
+        // We pass 'normalizedJid' so the parser sees "234..." not "234...:42"
+        const response = await handler(messageText, normalizedJid, pushName);
+        
         if (response) {
-          await this.sendMessage(remoteJid, response);
-          await this.sock.sendPresenceUpdate("paused", remoteJid);
+          try {
+            await this.sendMessage(rawJid, response);
+          } catch (sendErr) {
+            console.error("❌ Failed to send reply:", sendErr.message);
+          }
+          try { await this.sock.sendPresenceUpdate("paused", rawJid); } catch(e){}
           return;
         }
       }
     } catch (error) {
-      console.error("Error handling message:", error);
+      console.error("Error handling message:", error.message);
     }
   }
 
   async sendMessage(to, message) {
-    if (!this.isConnected) return;
+    if (!this.isConnected) throw new Error("WhatsApp not connected");
     const jid = to.includes("@") ? to : `${to}@s.whatsapp.net`;
     await this.sock.sendMessage(jid, { text: message });
   }
@@ -243,6 +262,14 @@ class BaileysWhatsAppService {
 
   registerMessageHandler(name, handler) { this.messageHandlers.set(name, handler); }
   setExpressApp(app) { this.app = app; }
+  
+  getConnectionStatus() {
+    return { isConnected: this.isConnected, hasQRCode: false, qrCodePath: null };
+  }
+
+  async disconnect() {
+      if (this.sock) { await this.sock.end(undefined); this.isConnected = false; }
+  }
 }
 
 module.exports = BaileysWhatsAppService;

@@ -25,43 +25,96 @@ class CommandParser {
       // System
       status: this.handleStatus.bind(this),
       subscribe: this.handleSubscribe.bind(this),
-      "upgrade pro": this.handleUpgradePro.bind(this),
+      upgrade: this.handleUpgradePro.bind(this),
     };
+    
+    
+    this.adminNumber = "2349160766236";
   }
 
-  // 🎨 UI UTILITY: The "Read More" Spacer
+  // ==========================================
+  // 🛠️ UTILITIES
+  // ==========================================
+
+  extractPhone(jid) {
+    if (!jid) return "";
+    let number = jid.split('@')[0];
+    number = number.split(':')[0];
+    return number;
+  }
+
+  formatPhone(number) {
+    if (!number) return "Unknown";
+    if (number.startsWith('+')) return number;
+    return `+${number}`;
+  }
+
+  getDisplayName(user, pushName) {
+    return user?.name || pushName || "Trader";
+  }
+
   getReadMore() {
     return String.fromCharCode(8206).repeat(4001);
   }
 
-  // 🎨 UI UTILITY: Header Builder
   getHeader(title) {
     return `╔══════════════════════════╗
 ║ 🚀 *${title}*
 ╚══════════════════════════╝`;
   }
 
+  getUsageBar(used, limit) {
+    if (limit >= 999) return "♾️ Unlimited (Pro)";
+    const filled = Math.min(used, limit);
+    const bar = "█".repeat(filled) + "░".repeat(limit - filled);
+    return `${bar} ${used}/${limit}`;
+  }
+
+  // ==========================================
+  // 🛡️ SMART ADMIN LINK GENERATOR
+  // ==========================================
+  getAdminLink(phoneNumber, displayName) {
+    let displayPhone = this.formatPhone(phoneNumber);
+
+    // 🛑 DETECT LID (Internal ID)
+    // If the number is too long (15+ digits), it's not a real phone number.
+    // It is a WhatsApp Device ID. We shouldn't show it.
+    if (phoneNumber.length > 14) {
+        displayPhone = "[Enter Your Number]";
+    }
+
+    const msg = encodeURIComponent(
+      `Hi, my name is ${displayName}. I would like to upgrade to PricePing Pro.\n\nMy number: ${displayPhone}`
+    );
+    return `wa.me/${this.adminNumber}?text=${msg}`;
+  }
+
   parseMessage(message) {
     const text = message.toLowerCase().trim();
+    
+    if (text.startsWith("upgrade")) {
+      return { command: "upgrade", args: text.split(/\s+/).slice(1) };
+    }
+    
     const words = text.split(/\s+/);
     return { command: words[0], args: words.slice(1) };
   }
 
-  // MAIN HANDLER
+  // ==========================================
+  // 🎯 MAIN HANDLER
+  // ==========================================
   async handleCommand(message, jid, db, priceService, pushName, userState) {
     const { command, args } = this.parseMessage(message);
-    const cleanPhone = jid.replace(/\D/g, "");
+    const cleanPhone = this.extractPhone(jid);
 
-    // 1. Get/Create User
     let user = await db.getUserByPhoneNumber(cleanPhone);
-    if (!user) user = await db.createUser(cleanPhone, cleanPhone, pushName);
+    if (!user) {
+      user = await db.createUser(cleanPhone, cleanPhone, null);
+    }
 
     const handler = this.commands[command];
     if (!handler) {
-        // If not a command, maybe just show menu if it looks like "Hi"
-        if(["hey", "bot", "test"].includes(command)) return this.handleGreeting([], jid, db, priceService, pushName);
-        
-        // 🆕 Handle unknown commands with helpful message
+        if(["hey", "bot", "test"].includes(command)) return this.handleGreeting([], cleanPhone, db, priceService, pushName);
         return this.handleUnknownCommand(command, args);
     }
 
@@ -69,15 +122,14 @@ class CommandParser {
       return await handler(args, cleanPhone, db, priceService, pushName, userState);
     } catch (error) {
       console.error(error);
-      return "⚠️ *System Error*: My brain confused itself. Try again!";
+      return "⚠️ *System Error*: Something went wrong. Try again!";
     }
   }
 
   // ==========================================
-  // ❌ UNKNOWN COMMAND HANDLER
+  // ❌ UNKNOWN COMMAND
   // ==========================================
-  async handleUnknownCommand(command, args) {
-      // Try to suggest similar commands
+  handleUnknownCommand(command, args) {
       const suggestions = this.getSuggestions(command);
       
       if (suggestions.length > 0) {
@@ -91,10 +143,8 @@ ${suggestions.map(s => `• ${s}`).join('\n')}
 • Price BTC
 • Set ETH at 3500  
 • My alerts
-• Status
-• Help
-
-💡 *Type "Help" for all commands*`;
+• Subscribe
+• Help`;
       } else {
           return `🤔 *Unknown Command: "${command}"*
 
@@ -103,57 +153,50 @@ ${suggestions.map(s => `• ${s}`).join('\n')}
 🔎 *Price [asset]* - Check prices
 🔔 *Set [asset] at [price]* - Create alerts
 📋 *My alerts* - View watchlist
-📊 *Status* - System status
-📧 *Subscribe* - Premium features
-❓ *Help* - All commands
-
-💡 *Examples:* "Price BTC" or "Set ETH at 3500"`;
+📧 *Subscribe* - View plan & limits
+❓ *Help* - All commands`;
       }
   }
 
-  // Helper method to find similar commands
   getSuggestions(command) {
       const availableCommands = Object.keys(this.commands);
       const suggestions = [];
       
-      // Check for partial matches
       availableCommands.forEach(cmd => {
           if (cmd.includes(command) || command.includes(cmd)) {
               suggestions.push(cmd);
           }
       });
       
-      // Check for common typos
       const commonTypos = {
-          'pric': 'price',
-          'prices': 'price',
-          'alert': 'alerts',
-          'alret': 'alerts',
-          'delete': 'del',
-          'remove': 'del',
-          'stat': 'status',
-          'subscription': 'subscribe',
-          'sub': 'subscribe'
+          'pric': 'price', 'prices': 'price',
+          'alert': 'alerts', 'alret': 'alerts',
+          'remove': 'del', 'stat': 'status',
+          'subscription': 'subscribe', 'sub': 'subscribe',
+          'pro': 'upgrade'
       };
       
-      if (commonTypos[command]) {
-          suggestions.push(commonTypos[command]);
-      }
+      if (commonTypos[command]) suggestions.push(commonTypos[command]);
       
-      return [...new Set(suggestions)].slice(0, 3); // Remove duplicates, max 3 suggestions
+      return [...new Set(suggestions)].slice(0, 3);
   }
 
   // ==========================================
-  // 🟢 GREETING (Friendly UI)
+  // 🟢 GREETING
   // ==========================================
   async handleGreeting(args, phoneNumber, db, priceService, pushName) {
     const user = await db.getUserByPhoneNumber(phoneNumber);
-    const name = user.name || pushName || "Trader";
+    const name = this.getDisplayName(user, pushName);
+    const usage = await db.getAlertUsage(phoneNumber);
 
     return `${this.getHeader("PricePing Terminal")}
 
 👋 *Hi, ${name}!*
 I'm ready to track markets for you.
+
+📊 *Your Alert Quota:*
+${this.getUsageBar(usage.used, usage.limit)}
+${usage.isPro ? "👑 Pro Plan - Unlimited alerts!" : `⏰ Resets in: ${usage.resetIn}`}
 
 🎯 *QUICK ACTIONS*
 ━━━━━━━━━━━━━━━━━
@@ -166,40 +209,28 @@ I'm ready to track markets for you.
 📋 *My Dashboard:*
    Type \`My Alerts\` 
 
-⚙️ *Personalize:*
-   Type \`Name ${name}\` to change nickname.
-
+${usage.isPro ? "" : "🚀 Want unlimited alerts? Type *Subscribe*\n"}
 💡 *Tip:* _I support Crypto, Forex, and Commodities!_`;
   }
 
   // ==========================================
-  // 🔎 PRICE CHECKER (With "Press 1" Logic)
+  // 🔎 PRICE CHECKER
   // ==========================================
   async handleGenericPrice(args, phoneNumber, db, priceService, pushName, userState) {
     if (args.length === 0) return "⚠️ *Usage:* `Price [CoinName]` (e.g., Price SOL)";
 
     const input = args.join(" ");
-    
-    // 1. Fetch Info
     const info = await priceService.getAssetInfo(input);
 
-    // ❌ ERROR HANDLING (Visual Fix)
-    // We use .toUpperCase() here so the error says "EURUSD", not "eurusd"
     if (!info) {
         return `❌ *Not Found*\n\nI searched high and low for *"${input.toUpperCase()}"* but couldn't find it.\n\n💡 *Try:* \`Price BTC\` or \`Price Gold\``;
     }
 
-    // 🎨 DYNAMIC ICON & LABEL
-    let icon = "💎"; // Default Crypto
+    let icon = "💎";
     let label = "Crypto Asset";
     
-    if (info.blockchain === 'Commodities') {
-        icon = "🏆";
-        label = "Commodity";
-    } else if (info.blockchain === 'Forex Market') {
-        icon = "💱";
-        label = "Foreign Exchange";
-    }
+    if (info.blockchain === 'Commodities') { icon = "🏆"; label = "Commodity"; }
+    else if (info.blockchain === 'Forex Market') { icon = "💱"; label = "Foreign Exchange"; }
 
     const fPrice = priceService.formatPrice(info.price, info.symbol);
     const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -214,16 +245,14 @@ I'm ready to track markets for you.
 💡 *Quick Alert:* 
 Reply "Set ${info.symbol} at ${info.price.toFixed(2)}"`;
 
-    // 🟢 MULTI-CHAIN LOGIC
     if (info.others && info.others.length > 0) {
-        // SAVE STATE
         userState.set(phoneNumber, {
             type: 'SELECT_CHAIN_PRICE',
             symbol: info.symbol,
-            options: info.others // Array of { name, blockchain }
+            options: info.others
         });
 
-        response += this.getReadMore(); // Hide list behind Read More
+        response += this.getReadMore();
         response += `\n\n📋 *Wait! I found other versions:*`;
         response += `\n_Reply with a number to check specific price:_\n`;
 
@@ -236,47 +265,50 @@ Reply "Set ${info.symbol} at ${info.price.toFixed(2)}"`;
   }
 
   // ==========================================
-  // 🔔 SET ALERT (With Price Preview & Selection)
+  // 🔔 SET ALERT
   // ==========================================
   async handleSetAlert(args, phoneNumber, db, priceService, pushName, userState) {
-    // Parse: "Set BTC at 50000" or "Set BTC 50000"
     if (args.length < 2) return "⚠️ *Usage:* `Set [Coin] at [Price]`\nExample: `Set SOL at 150`";
 
     const asset = args[0].toUpperCase();
     
-    // Find price in arguments
     let targetPrice = null;
     let direction = null;
 
-    // Detect "below" or "above" manually if user typed it
     if(args.includes("below")) direction = "below";
     if(args.includes("above")) direction = "above";
 
-    // Extract number
     const priceArg = args.find(a => /^\d+(\.\d+)?$/.test(a.replace(/,/g, '')));
     if(priceArg) targetPrice = parseFloat(priceArg.replace(/,/g, ''));
 
     if(!targetPrice) return "⚠️ I need a target price! Example: `Set BTC at 65000`";
 
-    // 1. CHECK IF ASSET IS MULTI-CHAIN (Unless chain specified in args)
-    // We do a "Search" first to see options
+    const usage = await db.getAlertUsage(phoneNumber);
+    
+    if (!usage.isPro && usage.remaining <= 0) {
+        return `🚫 *Alert Limit Reached!*
+━━━━━━━━━━━━━━━━━
+📊 *Used:* ${this.getUsageBar(usage.used, usage.limit)}
+⏰ *Resets in:* ${usage.resetIn}
+
+You've used all *${usage.limit} free alerts* for this 12-hour period.
+
+🚀 *Want unlimited alerts?*
+━━━━━━━━━━━━━━━━━
+Type *Subscribe* to see Pro benefits
+or *Upgrade* to get started now!
+
+💡 _Your limit resets automatically in ${usage.resetIn}_`;
+    }
+
     const info = await priceService.getAssetInfo(asset);
 
-    // 🟢 IF MULTI-CHAIN & User didn't specify chain in arg
-    // We check if info.others exists and user input didn't look like "Price USDT TRON"
     if (info && info.others && info.others.length > 0 && args.length < 4) {
-        
-        // Fetch LIVE PRICES for top 5 options to help user decide
         const optionsToDisplay = [
-            { blockchain: info.blockchain, price: info.price }, // The default one
-            ...info.others.slice(0, 5) // Top 5 others
+            { blockchain: info.blockchain, price: info.price },
+            ...info.others.slice(0, 5)
         ];
 
-        // We need to fetch prices for 'others' to display them nicely
-        // (Assuming PriceService has a way to get price by exact chain, 
-        //  if not, we just list names. But let's assume we want to be fancy)
-        
-        // SAVE STATE
         userState.set(phoneNumber, {
             type: 'SELECT_CHAIN_ALERT',
             symbol: info.symbol,
@@ -290,10 +322,7 @@ Reply "Set ${info.symbol} at ${info.price.toFixed(2)}"`;
 You are setting an alert at *${targetPrice}*.
 Please select specific chain:
 `;
-        // List options
         optionsToDisplay.forEach((opt, i) => {
-            // Note: In a real scenario, we might need to fetch the price for 'opt' if it's not the main one.
-            // For now, we display the Chain Name.
             menu += `\n*${i+1}.* ${opt.blockchain}`;
         });
 
@@ -301,16 +330,13 @@ Please select specific chain:
         return menu;
     }
 
-    // 2. NORMAL ALERT SETTING (Single chain or chain resolved)
     const currentPrice = info ? info.price : null;
     if (currentPrice === null) return `❌ I couldn't find a price for ${asset}.`;
 
-    // Auto-detect direction if not specified
     if (!direction) {
         direction = targetPrice > currentPrice ? "above" : "below";
     }
 
-    // Check for existing alert for this asset
     const existingAlerts = await db.getUserAlerts(phoneNumber);
     const duplicateAlert = existingAlerts.find(alert => 
       alert.asset.toUpperCase() === asset && alert.status === 'active'
@@ -327,8 +353,20 @@ Please select specific chain:
 💡 *Delete first:* "Delete 1" then set new alert.`;
     }
 
-    // Save to DB
-    const newAlert = await db.createAlert(phoneNumber, asset, targetPrice, direction);
+    const slotResult = await db.useAlertSlot(phoneNumber);
+    
+    if (!slotResult.allowed) {
+        return `🚫 *Alert Limit Reached!*
+━━━━━━━━━━━━━━━━━
+📊 *Used:* ${this.getUsageBar(slotResult.usage.used, slotResult.usage.limit)}
+⏰ *Resets in:* ${slotResult.usage.resetIn}
+
+Type *Subscribe* for unlimited alerts!`;
+    }
+
+    await db.createAlert(phoneNumber, asset, targetPrice, direction);
+
+    const u = slotResult.usage;
 
     return `✅ *Alert Activated!*
 ━━━━━━━━━━━━━━━━━
@@ -337,15 +375,27 @@ Please select specific chain:
 📊 *Current:* ${priceService.formatPrice(currentPrice, asset)}
 🎯 *Condition:* When price goes *${direction.toUpperCase()}*
 ━━━━━━━━━━━━━━━━━
+📊 *Alerts:* ${this.getUsageBar(u.used, u.limit)}
+${u.isPro ? "👑 Pro Plan" : `⏰ Resets in: ${u.resetIn}`}
+━━━━━━━━━━━━━━━━━
 _I'll message you the moment it hits!_`;
   }
 
   // ==========================================
-  // 📋 MY ALERTS (Clean List)
+  // 📋 MY ALERTS
   // ==========================================
   async handleMyAlerts(args, phoneNumber, db, priceService) {
     const alerts = await db.getUserAlerts(phoneNumber);
-    if (alerts.length === 0) return "📂 *Your watchlist is empty.*\n\nTry: `Set BTC at 70000`";
+    const usage = await db.getAlertUsage(phoneNumber);
+    
+    if (alerts.length === 0) {
+        return `📂 *Your watchlist is empty.*
+
+📊 *Alert Quota:* ${this.getUsageBar(usage.used, usage.limit)}
+${usage.isPro ? "👑 Pro Plan" : `⏰ Resets in: ${usage.resetIn}`}
+
+Try: \`Set BTC at 70000\``;
+    }
 
     let msg = `${this.getHeader("Your Watchlist")}\n`;
     
@@ -354,28 +404,48 @@ _I'll message you the moment it hits!_`;
         msg += `\n*${i+1}.* ${a.asset} ${icon} ${priceService.formatPrice(a.targetPrice, a.asset)}`;
     });
 
-    msg += `\n\n━━━━━━━━━━━━━━━━━\n🗑️ *To Delete:* Reply \`Delete 1\``;
+    msg += `\n\n━━━━━━━━━━━━━━━━━`;
+    msg += `\n📊 *Quota:* ${this.getUsageBar(usage.used, usage.limit)}`;
+    msg += usage.isPro ? "\n👑 Pro Plan" : `\n⏰ Resets in: ${usage.resetIn}`;
+    msg += `\n\n🗑️ *To Delete:* Reply \`Delete 1\``;
     return msg;
   }
 
-  async handleHelp() {
-      return `❓ *Need Help?*
+  // ==========================================
+  // ❓ HELP
+  // ==========================================
+  async handleHelp(args, phoneNumber, db) {
+      const usage = await db.getAlertUsage(phoneNumber);
+      
+      return `❓ *PricePing Help*
 ━━━━━━━━━━━━━━━━━
+
 1️⃣ *Check Prices*
    "Price XRP"
    "Price Gold"
 
-2️⃣ *Set Alerts*
+2️⃣ *Set Alerts* (${usage.remaining} left)
    "Set SOL at 200"
    "Set EURUSD at 1.05"
 
-3️⃣ *Manage*
+3️⃣ *Manage Alerts*
    "My alerts" - View list
    "Delete 1" - Remove alert
 
-_Simply reply with any command!_`;
+4️⃣ *Account*
+   "Name Tony Stark" - Set name
+   "Status" - Bot info
+   "Subscribe" - View plan
+   "Upgrade" - Go Pro
+
+━━━━━━━━━━━━━━━━━
+📊 *Your Quota:* ${this.getUsageBar(usage.used, usage.limit)}
+${usage.isPro ? "👑 Unlimited" : `⏰ Resets every 12 hours (${usage.resetIn} left)`}`;
   }
   
+  // ==========================================
+  // 🗑️ DELETE ALERT
+  // ==========================================
   async handleDeleteAlert(args, phoneNumber, db) {
       if(!args[0]) return "⚠️ Which one? Usage: `Delete 1`";
       const index = parseInt(args[0]) - 1;
@@ -383,31 +453,38 @@ _Simply reply with any command!_`;
       if(!alerts[index]) return "❌ Alert number not found.";
       
       await db.deleteAlert(alerts[index].id);
-      return `🗑️ *Deleted:* Alert for ${alerts[index].asset}`;
+      return `🗑️ *Deleted:* Alert for ${alerts[index].asset}\n\n💡 _Note: Deleting an alert does not refund your quota._`;
   }
   
+  // ==========================================
+  // ✏️ SET NAME
+  // ==========================================
   async handleSetName(args, phoneNumber, db) {
       const name = args.join(" ");
       if(!name) return "⚠️ Usage: `Name Tony Stark`";
       await db.updateUserName(phoneNumber, name);
-      return `✅ Nice to meet you, *${name}*!`;
+      return `✅ Nice to meet you, *${name}*!\n\n💡 _This name will be used everywhere including admin messages._`;
   }
 
   // ==========================================
-  // 📊 SYSTEM STATUS
+  // 📊 STATUS
   // ==========================================
-  async handleStatus(args, phoneNumber, db, priceService) {
+  async handleStatus(args, phoneNumber, db, priceService, pushName) {
       try {
+          const user = await db.getUserByPhoneNumber(phoneNumber);
           const alerts = await db.getUserAlerts(phoneNumber);
+          const usage = await db.getAlertUsage(phoneNumber);
           const activeAlerts = alerts.filter(a => a.status === 'active');
+          const name = this.getDisplayName(user, pushName);
           
-          // Get system uptime (simplified)
           const uptime = process.uptime();
           const hours = Math.floor(uptime / 3600);
           const minutes = Math.floor((uptime % 3600) / 60);
           
           return `${this.getHeader("System Status")}
-          
+
+👤 *User:* ${name}
+📱 *Phone:* ${this.formatPhone(phoneNumber)}
 🤖 *Bot Status:* Online ✅
 ⏰ *Uptime:* ${hours}h ${minutes}m
 📊 *Your Alerts:* ${activeAlerts.length} active
@@ -415,14 +492,12 @@ _Simply reply with any command!_`;
 🌐 *Markets:* Crypto, Forex, Commodities
 
 ━━━━━━━━━━━━━━━━━
-🔧 *Commands Available:*
-• Price [asset] - Check prices
-• Set [asset] at [price] - Create alerts
-• My alerts - View your watchlist
-• Status - Show this status
-• Help - Show all commands
+📊 *Alert Quota:*
+${this.getUsageBar(usage.used, usage.limit)}
+${usage.isPro ? "👑 Pro Plan - Unlimited!" : `🆓 Free Plan - ${usage.remaining} remaining\n⏰ Resets in: ${usage.resetIn}`}
 
-💡 *Pro Tip:* Try "Price BTC" or "Set ETH at 3500"`;
+━━━━━━━━━━━━━━━━━
+${usage.isPro ? "" : "🚀 Type *Subscribe* for unlimited alerts!"}`;
       } catch (error) {
           console.error("Status command error:", error);
           return "⚠️ *System Error*: Couldn't fetch status right now.";
@@ -430,94 +505,102 @@ _Simply reply with any command!_`;
   }
 
   // ==========================================
-  // 📧 SUBSCRIBE/PREMIUM INFO
+  // 📧 SUBSCRIBE
   // ==========================================
-  async handleSubscribe(args, phoneNumber, db) {
+  async handleSubscribe(args, phoneNumber, db, priceService, pushName) {
       const user = await db.getUserByPhoneNumber(phoneNumber);
+      const usage = await db.getAlertUsage(phoneNumber);
       const alerts = await db.getUserAlerts(phoneNumber);
-      const activeAlerts = alerts.filter(a => a.status === 'active');
+      const name = this.getDisplayName(user, pushName);
       
-      return `${this.getHeader("Premium Features")}
+      if (usage.isPro) {
+          return `${this.getHeader("Your Subscription")}
 
-👋 *Hi ${user.name || 'Trader'}!*
+👑 *You're on the Pro Plan!*
 
 📊 *Current Usage:*
-• Active Alerts: ${activeAlerts.length}
-• Plan: Free Tier
+• Active Alerts: ${alerts.length}
+• Alerts Used: ${usage.used} (Unlimited)
+• Plan: ⭐ Pro
 
-🌟 *Premium Benefits:*
+_Thank you for being a Pro member, ${name}!_
+📱 Need help? Message admin:
+wa.me/${this.adminNumber}`;
+      }
+      
+      return `${this.getHeader("Your Plan")}
+
+👋 *Hi ${name}!*
+
+📊 *Current Usage:*
 ━━━━━━━━━━━━━━━━━
-✅ Unlimited alerts (vs 5 free)
-✅ Real-time price notifications  
-✅ Advanced market analytics
-✅ Portfolio tracking
-✅ Priority support
-✅ Custom price thresholds
+• Active Alerts: ${alerts.length}
+• Alerts Used: ${this.getUsageBar(usage.used, usage.limit)}
+• Plan: 🆓 Free Tier
+• Resets in: ${usage.resetIn}
 
-💰 *Pricing:*
+🆓 *Free Plan Includes:*
 ━━━━━━━━━━━━━━━━━
-🥉 *Monthly:* $9.99/month
-🥈 *Quarterly:* $24.99 (save 17%)
-🥇 *Yearly:* $79.99 (save 33%)
+✅ 3 alerts every 12 hours
+✅ Price checking (unlimited)
+✅ Crypto, Forex, Commodities
+❌ No priority notifications
+❌ Limited alert slots
 
-🚀 *Ready to upgrade?*
+👑 *Want MORE?*
 ━━━━━━━━━━━━━━━━━
-Reply "Upgrade Pro" to get started
-
-
-💡 *Free Forever:*
-Basic price checking & 5 alerts
-always free - no credit card required!
-
-Need help? Reply "Support"`;
+Type *Upgrade* to see Pro benefits
+and unlock unlimited alerts! 🚀`;
   }
 
   // ==========================================
-  // 🚀 UPGRADE PRO HANDLER
+  // 🚀 UPGRADE PRO
   // ==========================================
-  async handleUpgradePro(args, phoneNumber, db) {
+  async handleUpgradePro(args, phoneNumber, db, priceService, pushName) {
       const user = await db.getUserByPhoneNumber(phoneNumber);
-      const alerts = await db.getUserAlerts(phoneNumber);
-      const activeAlerts = alerts.filter(a => a.status === 'active');
+      const usage = await db.getAlertUsage(phoneNumber);
       
+      if (usage.isPro) {
+          return `👑 *You're already on Pro!*\nEnjoy your unlimited alerts! 🎉`;
+      }
+
+      const name = this.getDisplayName(user, pushName);
+      const link = this.getAdminLink(phoneNumber, name);
+
       return `${this.getHeader("🚀 Upgrade to Pro")}
 
-👋 *Hi ${user.name || 'Trader'}!*
+👋 *Hi ${name}!*
+Here's what you unlock with Pro:
 
-📊 *Current Usage:*
-• Active Alerts: ${activeAlerts.length}
-• Plan: Free Tier
-
-🌟 *Premium Benefits:*
+🆓 *Free (Current):*
 ━━━━━━━━━━━━━━━━━
-✅ Unlimited alerts (vs 5 free)
-✅ Real-time price notifications  
+• 3 alerts per 12 hours
+• Basic price checking
+• Standard notifications
+
+👑 *Pro Plan:*
+━━━━━━━━━━━━━━━━━
+✅ *Unlimited* alert slots
+✅ *Unlimited* alert creation
+✅ Priority notifications (faster!)
 ✅ Advanced market analytics
 ✅ Portfolio tracking
+✅ Multi-asset alerts
 ✅ Priority support
-✅ Custom price thresholds
+✅ No cooldown period
 
 💰 *Pricing:*
 ━━━━━━━━━━━━━━━━━
-🥉 *Monthly:* $9.99/month
-🥈 *Quarterly:* $24.99 (save 17%)
-🥇 *Yearly:* $79.99 (save 33%)
+🥉 *Monthly:* ₦2,500/month
+🥈 *Quarterly:* ₦6,000 (save 20%)
+🥇 *Yearly:* ₦20,000 (save 33%)
 
-🚀 *Ready to Upgrade?*
+🚀 *Ready? Tap to message Admin:*
 ━━━━━━━━━━━━━━━━━
-📞 *Contact Admin Directly:*
-• WhatsApp: +2349160766236
-• Message: "Upgrade Pro"
-
-💡 *What to say:*
-"Hi, I want to upgrade to Pro plan. My number is ${phoneNumber}"
-
+📱 ${link}
 ━━━━━━━━━━━━━━━━━
-🎁 *Special Offer:* 
-Mention this message for 10% discount!
-
-📧 *Need help?*
-Reply "Support" for assistance`;
+🎁 Mention *PRICEPING50* for 10% off
+your first month! 🔥`;
   }
 }
 
