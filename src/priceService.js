@@ -111,6 +111,7 @@ class PriceService {
                 symbol: symbol,
                 name: selected.name,
                 blockchain: selected.blockchain,
+                address: selected.address,
                 price: price,
                 others: options.filter(o => o.blockchain !== selected.blockchain)
             };
@@ -197,6 +198,20 @@ class PriceService {
   }
 
   async getForexCurrencies() { return []; } // Placeholder
+
+  // ==========================================
+  // 📦 SPECIFIC CHAIN PRICE FETCHING
+  // ==========================================
+  async getPriceByChainAddress(blockchain, address) {
+      try {
+          const url = `${this.diaAssetApi}/${blockchain}/${address}`;
+          const res = await axios.get(url, { headers: this.headers, timeout: 5000 });
+          return res.data.Price;
+      } catch(e) { 
+          console.error(`❌ Failed to fetch price for ${blockchain}: ${e.message}`);
+          return null; 
+      }
+  }
 
   // ==========================================
   // 📦 BATCH PRICE FETCHING (For AlertMonitor)

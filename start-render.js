@@ -162,15 +162,48 @@ async function initializeBot() {
                   userState,
                 );
               } else if (state.type === "SELECT_CHAIN_ALERT") {
-                const cmd = `Set ${state.symbol} ${selectedOption.blockchain} at ${state.targetPrice} ${state.direction || "at"}`;
-                return await commandParser.handleCommand(
-                  cmd,
-                  phoneNumber,
-                  database,
-                  priceService,
-                  pushName,
-                  userState,
-                );
+                // User selected a chain to SET ALERT - fetch specific chain price!
+                const selectedOption = state.options[selection - 1];
+                
+                // Fetch the REAL price for this specific chain if not already stored
+                let currentPrice = selectedOption.price;
+                
+                if (!currentPrice && selectedOption.blockchain && selectedOption.address) {
+                    console.log(`🔄 Fetching specific price for ${state.symbol} on ${selectedOption.blockchain}...`);
+                    currentPrice = await priceService.getPriceByChainAddress(selectedOption.blockchain, selectedOption.address);
+                }
+                
+                // Fallback to default price if fetch failed
+                if (!currentPrice) {
+                    console.log(`⚠️ Using default price for ${state.symbol} on ${selectedOption.blockchain}`);
+                    // Get default price from original asset info
+                    const defaultInfo = await priceService.getAssetInfo(state.symbol);
+                    currentPrice = defaultInfo ? defaultInfo.price : null;
+                }
+                
+                if (!currentPrice) {
+                    return `❌ Couldn't fetch price for ${state.symbol} on ${selectedOption.blockchain}. Please try again.`;
+                }
+
+                // Create unique asset name with chain
+                const assetName = `${state.symbol} (${selectedOption.blockchain})`;
+                
+                // Calculate direction based on the SPECIFIC chain price
+                const direction = state.targetPrice > currentPrice ? "above" : "below";
+                
+                // Create the alert with specific chain price
+                await database.createAlert(phoneNumber, assetName, state.targetPrice, direction);
+                
+                const response = `✅ *Alert Activated!*
+━━━━━━━━━━━━━━━━━
+🔔 *Asset:* ${assetName}
+📉 *Target:* ${priceService.formatPrice(state.targetPrice, state.symbol)}
+📊 *Current:* ${priceService.formatPrice(currentPrice, state.symbol)}
+🎯 *Condition:* When price goes *${direction.toUpperCase()}*
+━━━━━━━━━━━━━━━━━
+_I'll message you the moment it hits!_`;
+
+                return response;
               }
             } else {
               userState.delete(cleanPhone);

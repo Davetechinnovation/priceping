@@ -305,8 +305,12 @@ or *Upgrade* to get started now!
 
     if (info && info.others && info.others.length > 0 && args.length < 4) {
         const optionsToDisplay = [
-            { blockchain: info.blockchain, price: info.price },
-            ...info.others.slice(0, 5)
+            { blockchain: info.blockchain, price: info.price, address: info.address || null },
+            ...info.others.slice(0, 5).map(other => ({
+                blockchain: other.blockchain,
+                price: other.price || null,
+                address: other.address || null
+            }))
         ];
 
         userState.set(phoneNumber, {
