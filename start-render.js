@@ -33,13 +33,11 @@ app.use(express.urlencoded({ extended: true }));
 
 app.get("/health", (req, res) => {
   const memory = memoryMonitor.getStats();
-  res
-    .status(200)
-    .json({
-      status: "healthy",
-      uptime: process.uptime(),
-      memory: memory.current,
-    });
+  res.status(200).json({
+    status: "healthy",
+    uptime: process.uptime(),
+    memory: memory.current,
+  });
 });
 
 app.get("/", (req, res) => {
@@ -135,7 +133,6 @@ async function initializeBot() {
       "commandParser",
       async (messageText, phoneNumber, pushName) => {
         try {
-          // 🛠️ FIX: Properly extract phone from JID
           const cleanPhone = phoneNumber.split("@")[0].split(":")[0];
 
           // 1️⃣ CHECK MENU STATE
@@ -162,44 +159,81 @@ async function initializeBot() {
                   userState,
                 );
               } else if (state.type === "SELECT_CHAIN_ALERT") {
-                // User selected a chain to SET ALERT - fetch specific chain price!
-                const selectedOption = state.options[selection - 1];
-                
-                // Fetch the REAL price for this specific chain if not already stored
+                // ============================================
+                // 🛠️ FIX 1: Use cleanPhone for ALL database calls
+                // Previously used raw `phoneNumber` (JID with @s.whatsapp.net)
+                // which didn't match queries using cleanPhone
+                // ============================================
+
                 let currentPrice = selectedOption.price;
-                
-                if (!currentPrice && selectedOption.blockchain && selectedOption.address) {
-                    console.log(`🔄 Fetching specific price for ${state.symbol} on ${selectedOption.blockchain}...`);
-                    currentPrice = await priceService.getPriceByChainAddress(selectedOption.blockchain, selectedOption.address);
-                }
-                
-                // Fallback to default price if fetch failed
-                if (!currentPrice) {
-                    console.log(`⚠️ Using default price for ${state.symbol} on ${selectedOption.blockchain}`);
-                    // Get default price from original asset info
-                    const defaultInfo = await priceService.getAssetInfo(state.symbol);
-                    currentPrice = defaultInfo ? defaultInfo.price : null;
-                }
-                
-                if (!currentPrice) {
-                    return `❌ Couldn't fetch price for ${state.symbol} on ${selectedOption.blockchain}. Please try again.`;
+
+                if (
+                  !currentPrice &&
+                  selectedOption.blockchain &&
+                  selectedOption.address
+                ) {
+                  console.log(
+                    `🔄 Fetching specific price for ${state.symbol} on ${selectedOption.blockchain}...`,
+                  );
+                  currentPrice = await priceService.getPriceByChainAddress(
+                    selectedOption.blockchain,
+                    selectedOption.address,
+                  );
                 }
 
-                // Create unique asset name with chain
+                if (!currentPrice) {
+                  console.log(
+                    `⚠️ Using default price for ${state.symbol} on ${selectedOption.blockchain}`,
+                  );
+                  const defaultInfo = await priceService.getAssetInfo(
+                    state.symbol,
+                  );
+                  currentPrice = defaultInfo ? defaultInfo.price : null;
+                }
+
+                if (!currentPrice) {
+                  return `❌ Couldn't fetch price for ${state.symbol} on ${selectedOption.blockchain}. Please try again.`;
+                }
+
+                // ============================================
+                // 🛠️ FIX 2: Check alert quota (was completely bypassed!)
+                // Multi-chain alerts were never calling useAlertSlot
+                // ============================================
+                const slotResult = await database.useAlertSlot(cleanPhone);
+
+                if (!slotResult.allowed) {
+                  const u = slotResult.usage;
+                  return `🚫 *Alert Limit Reached!*
+━━━━━━━━━━━━━━━━━
+📊 *Used:* ${u.used}/${u.limit}
+⏰ *Resets in:* ${u.resetIn}
+
+Type *Subscribe* for unlimited alerts!`;
+                }
+
                 const assetName = `${state.symbol} (${selectedOption.blockchain})`;
-                
-                // Calculate direction based on the SPECIFIC chain price
-                const direction = state.targetPrice > currentPrice ? "above" : "below";
-                
-                // Create the alert with specific chain price
-                await database.createAlert(phoneNumber, assetName, state.targetPrice, direction);
-                
+                const direction =
+                  state.targetPrice > currentPrice ? "above" : "below";
+
+                // 🛠️ FIX 1: cleanPhone instead of phoneNumber
+                await database.createAlert(
+                  cleanPhone,
+                  assetName,
+                  state.targetPrice,
+                  direction,
+                );
+
+                const u = slotResult.usage;
+
                 const response = `✅ *Alert Activated!*
 ━━━━━━━━━━━━━━━━━
 🔔 *Asset:* ${assetName}
 📉 *Target:* ${priceService.formatPrice(state.targetPrice, state.symbol)}
 📊 *Current:* ${priceService.formatPrice(currentPrice, state.symbol)}
 🎯 *Condition:* When price goes *${direction.toUpperCase()}*
+━━━━━━━━━━━━━━━━━
+📊 *Alerts:* ${u.used}/${u.limit}
+${u.isPro ? "👑 Pro Plan" : `⏰ Resets in: ${u.resetIn}`}
 ━━━━━━━━━━━━━━━━━
 _I'll message you the moment it hits!_`;
 
