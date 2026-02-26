@@ -6,243 +6,536 @@ class PriceService {
     this.diaAssetApi = "https://api.diadata.org/v1/assetQuotation";
     this.diaCommodityApi = "https://api.diadata.org/v1/commodityQuotation";
     this.forexApi = "https://api.fxratesapi.com/latest";
-    
+
     this.headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     };
-    
-    this.assetsBySymbol = {}; 
-    this.nameToSymbol = {}; 
+
+    // ============================================
+    // 🛠️ FIX 1: Reuse TCP connections (keep-alive)
+    // Without this, every request opens a new socket.
+    // At 100+ requests/30s you exhaust OS connections.
+    // ============================================
+    this.httpClient = axios.create({
+      headers: this.headers,
+      timeout: 8000,
+      httpAgent: new (require("http").Agent)({ keepAlive: true, maxSockets: 15 }),
+      httpsAgent: new (require("https").Agent)({ keepAlive: true, maxSockets: 15 }),
+    });
+
+    this.assetsBySymbol = {};
+    this.nameToSymbol = {};
     this.lastCacheUpdate = 0;
+
+    // ============================================
+    // 🛠️ FIX 2: Two-tier cache
+    // - Interactive (user asks "price sol"): 30s TTL (fresh)
+    // - Alert monitoring (background checks): 60s TTL (efficient)
+    // - Stale fallback: if API fails, serve last known price up to 5min old
+    // ============================================
+    this.priceCache = {};
+    this.interactiveTTL = 30000;   // 30s for user queries
+    this.alertTTL = 60000;         // 60s for alert monitoring
+    this.staleTTL = 300000;        // 5min stale fallback
+
+    // ============================================
+    // 🛠️ FIX 3: In-flight request deduplication
+    // If 10 users check SOL at the same time,
+    // only 1 HTTP request fires. All 10 await the same promise.
+    // ============================================
+    this.inflightRequests = new Map();
+
+    // ============================================
+    // 🛠️ FIX 4: Concurrency limiter
+    // Max N simultaneous API calls to avoid rate limits
+    // ============================================
+    this.maxConcurrent = 8;
+    this.activeRequests = 0;
+    this.requestQueue = [];
+  }
+
+  // ============================================
+  // Concurrency limiter — queues excess requests
+  // instead of firing 100 at once
+  // ============================================
+  async _throttled(fn) {
+    return new Promise((resolve, reject) => {
+      const execute = async () => {
+        this.activeRequests++;
+        try {
+          const result = await fn();
+          resolve(result);
+        } catch (e) {
+          reject(e);
+        } finally {
+          this.activeRequests--;
+          if (this.requestQueue.length > 0) {
+            const next = this.requestQueue.shift();
+            next();
+          }
+        }
+      };
+
+      if (this.activeRequests < this.maxConcurrent) {
+        execute();
+      } else {
+        this.requestQueue.push(execute);
+      }
+    });
   }
 
   async loadAssetList() {
-    if (Date.now() - this.lastCacheUpdate < 3600000 && Object.keys(this.assetsBySymbol).length > 0) return;
+    if (
+      Date.now() - this.lastCacheUpdate < 3600000 &&
+      Object.keys(this.assetsBySymbol).length > 0
+    )
+      return;
     try {
       console.log("📥 Updating Crypto List...");
-      const res = await axios.get(this.quotedAssetsApi, { headers: this.headers, timeout: 15000 });
+      const res = await this.httpClient.get(this.quotedAssetsApi, {
+        timeout: 15000,
+      });
       const temp = {};
       const nameMap = {};
-      
-      if(res.data) {
-          res.data.forEach(item => {
-            const s = item.Asset.Symbol.toUpperCase();
-            const n = item.Asset.Name.toUpperCase();
-            if (!temp[s]) temp[s] = [];
-            
-            // ============================================
-            // 🛠️ FIX: Deduplicate by (symbol + blockchain)
-            // Only keep ONE token per symbol per chain.
-            // This prevents fake/duplicate tokens on the 
-            // same chain from showing up as separate options.
-            // ============================================
-            const alreadyHasChain = temp[s].some(
-              existing => existing.blockchain === item.Asset.Blockchain
-            );
-            if (!alreadyHasChain) {
-              temp[s].push({
-                blockchain: item.Asset.Blockchain,
-                address: item.Asset.Address,
-                name: item.Asset.Name,
-                symbol: s
-              });
-            }
 
-            // Map full name → symbol (only if not already mapped)
-            if (!nameMap[n]) nameMap[n] = s;
-          });
-          this.assetsBySymbol = temp;
-          this.nameToSymbol = nameMap;
-          this.lastCacheUpdate = Date.now();
-          console.log(`✅ Crypto List Updated (${Object.keys(temp).length} assets)`);
+      if (res.data) {
+        res.data.forEach((item) => {
+          const s = item.Asset.Symbol.toUpperCase();
+          const n = item.Asset.Name.toUpperCase();
+          if (!temp[s]) temp[s] = [];
+
+          const alreadyHasChain = temp[s].some(
+            (existing) => existing.blockchain === item.Asset.Blockchain,
+          );
+          if (!alreadyHasChain) {
+            temp[s].push({
+              blockchain: item.Asset.Blockchain,
+              address: item.Asset.Address,
+              name: item.Asset.Name,
+              symbol: s,
+            });
+          }
+
+          if (!nameMap[n]) nameMap[n] = s;
+        });
+        this.assetsBySymbol = temp;
+        this.nameToSymbol = nameMap;
+        this.lastCacheUpdate = Date.now();
+        console.log(
+          `✅ Crypto List Updated (${Object.keys(temp).length} assets)`,
+        );
       }
-    } catch (e) { console.error("⚠️ API Error loadAssetList:", e.message); }
+    } catch (e) {
+      console.error("⚠️ API Error loadAssetList:", e.message);
+    }
   }
 
   async getAssetInfo(input) {
     let rawInput = input.toUpperCase().trim();
-    
     let symbol = rawInput;
     let specificChain = null;
 
-    // Detect "ETH (Base)" format
     const parenMatch = rawInput.match(/^([A-Z0-9]+)\s*\((.+)\)$/);
     if (parenMatch) {
-        symbol = parenMatch[1];       
-        specificChain = parenMatch[2]; 
+      symbol = parenMatch[1];
+      specificChain = parenMatch[2];
     } else {
-        const parts = rawInput.split(" ");
-        symbol = parts[0];
-        if (parts.length > 1) specificChain = parts.slice(1).join(" ");
+      const parts = rawInput.split(" ");
+      symbol = parts[0];
+      if (parts.length > 1) specificChain = parts.slice(1).join(" ");
     }
 
     // 🏆 COMMODITIES
-    if (['GOLD','XAU','SILVER','XAG','OIL','WTI','BRENT'].includes(symbol)) {
-        if(symbol === 'GOLD') symbol = 'XAU';
-        if(symbol === 'SILVER') symbol = 'XAG';
-        const price = await this.getCommodityPrice(symbol);
-        if (price) return { symbol, name: symbol, blockchain: 'Commodities', price, others: [] };
+    if (
+      ["GOLD", "XAU", "SILVER", "XAG", "OIL", "WTI", "BRENT"].includes(symbol)
+    ) {
+      if (symbol === "GOLD") symbol = "XAU";
+      if (symbol === "SILVER") symbol = "XAG";
+      const price = await this.getCommodityPrice(symbol);
+      if (price)
+        return {
+          symbol,
+          name: symbol,
+          blockchain: "Commodities",
+          price,
+          others: [],
+        };
     }
 
     // 💎 CRYPTO
     await this.loadAssetList();
-    
-    // Resolve full name to symbol dynamically
+
     if (this.nameToSymbol && this.nameToSymbol[symbol]) {
-        symbol = this.nameToSymbol[symbol];
+      symbol = this.nameToSymbol[symbol];
     }
-    
-    if(symbol === 'DOGS') symbol = 'CAW'; 
-    if(symbol === 'BITCOIN') symbol = 'BTC';
+
+    if (symbol === "DOGS") symbol = "CAW";
+    if (symbol === "BITCOIN") symbol = "BTC";
 
     let options = this.assetsBySymbol[symbol];
 
     if (options) {
-        let selected = null;
+      let selected = null;
 
-        // 🔍 1. SPECIFIC CHAIN SEARCH
-        if (specificChain) {
-            selected = options.find(o => o.blockchain.toUpperCase() === specificChain);
-            if (!selected) {
-                selected = options.find(o => o.blockchain.toUpperCase().includes(specificChain));
-            }
-            if (!selected) {
-                console.log(`⚠️ Chain '${specificChain}' not found for ${symbol}. Skipping fallback.`);
-                return null; 
-            }
+      if (specificChain) {
+        selected = options.find(
+          (o) => o.blockchain.toUpperCase() === specificChain,
+        );
+        if (!selected) {
+          selected = options.find((o) =>
+            o.blockchain.toUpperCase().includes(specificChain),
+          );
         }
-
-        // 🔍 2. DEFAULT PRIORITY SEARCH
-        if (!selected && !specificChain) {
-            const priority = ['Bitcoin', 'Ethereum', 'Solana', 'Binance Smart Chain', 'Polygon', 'The Open Network'];
-            options.sort((a, b) => {
-                let pA = priority.indexOf(a.blockchain);
-                let pB = priority.indexOf(b.blockchain);
-                if (pA === -1) pA = 99;
-                if (pB === -1) pB = 99;
-                return pA - pB;
-            });
-            selected = options[0];
-
-            if (symbol === 'BTC') {
-                const realBTC = options.find(o => o.blockchain === 'Bitcoin');
-                if (realBTC) selected = realBTC;
-            }
-            if (symbol === 'ETH') {
-                const realETH = options.find(o => o.blockchain === 'Ethereum');
-                if (realETH) selected = realETH;
-            }
+        if (!selected) {
+          console.log(
+            `⚠️ Chain '${specificChain}' not found for ${symbol}. Skipping fallback.`,
+          );
+          return null;
         }
+      }
 
-        if (selected) {
-            const price = await this.fetchDiaPrice(selected);
-            if (price !== null) {
-                // ============================================
-                // 🛠️ FIX: Deduplicate "others" by blockchain
-                // Safety net — even if loadAssetList missed it,
-                // never show two options for the same chain.
-                // ============================================
-                const rawOthers = options.filter(o => 
-                  o.blockchain !== selected.blockchain
-                );
-                const uniqueOthers = [];
-                const seenChains = new Set();
-                for (const o of rawOthers) {
-                  if (!seenChains.has(o.blockchain)) {
-                    seenChains.add(o.blockchain);
-                    uniqueOthers.push(o);
-                  }
-                }
+      if (!selected && !specificChain) {
+        const priority = [
+          "Bitcoin",
+          "Ethereum",
+          "Solana",
+          "Binance Smart Chain",
+          "Polygon",
+          "The Open Network",
+        ];
+        options.sort((a, b) => {
+          let pA = priority.indexOf(a.blockchain);
+          let pB = priority.indexOf(b.blockchain);
+          if (pA === -1) pA = 99;
+          if (pB === -1) pB = 99;
+          return pA - pB;
+        });
+        selected = options[0];
 
-                return {
-                    symbol: symbol,
-                    name: selected.name,
-                    blockchain: selected.blockchain,
-                    address: selected.address,
-                    price: price,
-                    others: uniqueOthers
-                };
-            }
+        if (symbol === "BTC") {
+          const realBTC = options.find((o) => o.blockchain === "Bitcoin");
+          if (realBTC) selected = realBTC;
         }
+        if (symbol === "ETH") {
+          const realETH = options.find((o) => o.blockchain === "Ethereum");
+          if (realETH) selected = realETH;
+        }
+      }
+
+      if (selected) {
+        const price = await this.fetchDiaPrice(selected);
+        if (price !== null) {
+          const rawOthers = options.filter(
+            (o) => o.blockchain !== selected.blockchain,
+          );
+          const uniqueOthers = [];
+          const seenChains = new Set();
+          for (const o of rawOthers) {
+            if (!seenChains.has(o.blockchain)) {
+              seenChains.add(o.blockchain);
+              uniqueOthers.push(o);
+            }
+          }
+
+          return {
+            symbol: symbol,
+            name: selected.name,
+            blockchain: selected.blockchain,
+            address: selected.address,
+            price: price,
+            others: uniqueOthers,
+          };
+        }
+      }
     }
 
     // 💱 FOREX
     if (symbol.length === 3 || symbol.length === 6) {
-        const forexPrice = await this.getForexPrice(symbol);
-        if (forexPrice !== null) {
-            return {
-                symbol: symbol,
-                name: symbol.length === 6 ? `${symbol.substring(0,3)}/${symbol.substring(3,6)}` : `${symbol}/USD`,
-                blockchain: 'Forex Market',
-                price: forexPrice,
-                others: []
-            };
-        }
+      const forexPrice = await this.getForexPrice(symbol);
+      if (forexPrice !== null) {
+        return {
+          symbol: symbol,
+          name:
+            symbol.length === 6
+              ? `${symbol.substring(0, 3)}/${symbol.substring(3, 6)}`
+              : `${symbol}/USD`,
+          blockchain: "Forex Market",
+          price: forexPrice,
+          others: [],
+        };
+      }
     }
 
     return null;
   }
 
-  async fetchDiaPrice(asset) {
-    try {
+  // ============================================
+  // 🛠️ CORE FIX: Deduplicated + throttled + stale-fallback
+  // ============================================
+  async fetchDiaPrice(asset, mode = "interactive") {
+    const cacheKey = `${asset.blockchain}:${asset.address}`;
+    const cached = this.priceCache[cacheKey];
+    const now = Date.now();
+    const ttl = mode === "alert" ? this.alertTTL : this.interactiveTTL;
+
+    // 1. Fresh cache hit
+    if (cached && now - cached.ts < ttl) {
+      return cached.price;
+    }
+
+    // 2. Deduplicate: if same request is already in-flight, await it
+    if (this.inflightRequests.has(cacheKey)) {
+      try {
+        return await this.inflightRequests.get(cacheKey);
+      } catch {
+        // If the in-flight request failed, fall through to stale
+        return cached && now - cached.ts < this.staleTTL ? cached.price : null;
+      }
+    }
+
+    // 3. Fire new request (throttled)
+    const requestPromise = this._throttled(async () => {
+      try {
         const url = `${this.diaAssetApi}/${asset.blockchain}/${asset.address}`;
-        const res = await axios.get(url, { headers: this.headers, timeout: 5000 });
-        return res.data.Price;
-    } catch(e) { return null; }
+        const res = await this.httpClient.get(url);
+        const price = res.data.Price;
+        this.priceCache[cacheKey] = { price, ts: Date.now() };
+        return price;
+      } catch (e) {
+        // ============================================
+        // 🛠️ FIX 5: Stale fallback
+        // If API is down or rate-limited, serve last known
+        // price instead of returning null (which breaks alerts)
+        // ============================================
+        if (cached && Date.now() - cached.ts < this.staleTTL) {
+          console.log(`⚠️ API failed for ${asset.blockchain}/${asset.symbol || '?'}, using stale price (${Math.round((Date.now() - cached.ts) / 1000)}s old)`);
+          return cached.price;
+        }
+        return null;
+      } finally {
+        this.inflightRequests.delete(cacheKey);
+      }
+    });
+
+    this.inflightRequests.set(cacheKey, requestPromise);
+    return requestPromise;
+  }
+
+  async getPriceByChainAddress(blockchain, address) {
+    return await this.fetchDiaPrice({ blockchain, address });
   }
 
   async getCommodityPrice(sym) {
-      try {
-          const res = await axios.get(`${this.diaCommodityApi}/${sym}-USD`, { headers: this.headers, timeout: 5000 });
-          return res.data.Price;
-      } catch(e) { return null; }
+    try {
+      const cacheKey = `commodity:${sym}`;
+      const cached = this.priceCache[cacheKey];
+      if (cached && Date.now() - cached.ts < this.interactiveTTL) {
+        return cached.price;
+      }
+      const res = await this.httpClient.get(
+        `${this.diaCommodityApi}/${sym}-USD`,
+      );
+      const price = res.data.Price;
+      this.priceCache[cacheKey] = { price, ts: Date.now() };
+      return price;
+    } catch (e) {
+      const cacheKey = `commodity:${sym}`;
+      const cached = this.priceCache[cacheKey];
+      if (cached && Date.now() - cached.ts < this.staleTTL) return cached.price;
+      return null;
+    }
   }
 
   formatPrice(price, symbol) {
-      if(!price) return "N/A";
-      if (['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD'].some(s => symbol.includes(s))) {
-          return `${price.toFixed(5)}`;
-      }
-      if (price < 1.0) return `$${price.toFixed(6)}`;
-      if (price > 1000) return `$${price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
-      return `$${price.toFixed(4)}`;
+    if (!price) return "N/A";
+    if (
+      ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"].some((s) => symbol.includes(s))
+    ) {
+      return `${price.toFixed(5)}`;
+    }
+    if (price < 1.0) return `$${price.toFixed(6)}`;
+    if (price > 1000)
+      return `$${price.toLocaleString(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })}`;
+    return `$${price.toFixed(4)}`;
   }
 
   async getPrice(asset) {
-      const info = await this.getAssetInfo(asset);
-      return info ? info.price : null;
+    const info = await this.getAssetInfo(asset);
+    return info ? info.price : null;
   }
 
   async getForexPrice(pair) {
-    if (['USDT','USDC','DOGE','BTC','ETH','SOL','XRP'].includes(pair)) return null;
+    if (["USDT", "USDC", "DOGE", "BTC", "ETH", "SOL", "XRP"].includes(pair))
+      return null;
+
+    const cacheKey = `forex:${pair}`;
+    const cached = this.priceCache[cacheKey];
+
+    if (cached && Date.now() - cached.ts < this.interactiveTTL) {
+      return cached.price;
+    }
+
     try {
-        let base, target;
-        if (pair.length === 6) {
-            base = pair.substring(0, 3);
-            target = pair.substring(3, 6);
-        } else {
-            base = pair;
-            target = 'USD';
-        }
-        const url = `${this.forexApi}?base=${base}&currencies=${target}&resolution=1m&amount=1&places=6&format=json`;
-        const res = await axios.get(url, { headers: this.headers, timeout: 5000 });
-        if (res.data && res.data.rates && res.data.rates[target]) {
-            return parseFloat(res.data.rates[target]);
-        }
-    } catch (e) { }
+      let base, target;
+      if (pair.length === 6) {
+        base = pair.substring(0, 3);
+        target = pair.substring(3, 6);
+      } else {
+        base = pair;
+        target = "USD";
+      }
+      const url = `${this.forexApi}?base=${base}&currencies=${target}&resolution=1m&amount=1&places=6&format=json`;
+      const res = await this.httpClient.get(url);
+      if (res.data && res.data.rates && res.data.rates[target]) {
+        const price = parseFloat(res.data.rates[target]);
+        this.priceCache[cacheKey] = { price, ts: Date.now() };
+        return price;
+      }
+    } catch (e) {
+      const cached2 = this.priceCache[cacheKey];
+      if (cached2 && Date.now() - cached2.ts < this.staleTTL) return cached2.price;
+    }
     return null;
   }
 
-  async getForexCurrencies() { return []; }
+  async getForexCurrencies() {
+    return [];
+  }
 
+  // ============================================
+  // 🛠️ FIX 6: Alert-optimized batch fetching
+  // Uses longer cache TTL + concurrency control
+  // ============================================
   async getMultiplePrices(symbols) {
+    const uniqueSymbols = [...new Set(symbols)];
     const prices = {};
-    const promises = symbols.map(async (symbol) => {
-      const info = await this.getAssetInfo(symbol);
-      prices[symbol] = info ? info.price : null;
+
+    // ============================================
+    // Process in batches of maxConcurrent to avoid
+    // overwhelming the API. Previous version fired ALL
+    // at once with Promise.all — kills you at 50+ assets
+    // ============================================
+    const batchSize = this.maxConcurrent;
+
+    for (let i = 0; i < uniqueSymbols.length; i += batchSize) {
+      const batch = uniqueSymbols.slice(i, i + batchSize);
+      const batchPromises = batch.map(async (symbol) => {
+        try {
+          // Resolve to blockchain/address first
+          await this.loadAssetList();
+          let sym = symbol.toUpperCase().trim();
+
+          // Handle "SOL (Solana)" format from alert names
+          const parenMatch = sym.match(/^([A-Z0-9]+)\s*\((.+)\)$/);
+          let resolvedSymbol = sym;
+          let chain = null;
+
+          if (parenMatch) {
+            resolvedSymbol = parenMatch[1];
+            chain = parenMatch[2];
+          }
+
+          if (this.nameToSymbol && this.nameToSymbol[resolvedSymbol]) {
+            resolvedSymbol = this.nameToSymbol[resolvedSymbol];
+          }
+          if (resolvedSymbol === "BITCOIN") resolvedSymbol = "BTC";
+          if (resolvedSymbol === "DOGS") resolvedSymbol = "CAW";
+
+          const options = this.assetsBySymbol[resolvedSymbol];
+          if (!options || options.length === 0) {
+            // Try forex
+            const forexPrice = await this.getForexPrice(resolvedSymbol);
+            prices[symbol] = forexPrice;
+            return;
+          }
+
+          let selected = null;
+          if (chain) {
+            selected = options.find(
+              (o) => o.blockchain.toUpperCase() === chain.toUpperCase(),
+            );
+            if (!selected) {
+              selected = options.find((o) =>
+                o.blockchain.toUpperCase().includes(chain.toUpperCase()),
+              );
+            }
+          }
+
+          if (!selected) {
+            const priority = [
+              "Bitcoin", "Ethereum", "Solana",
+              "Binance Smart Chain", "Polygon", "The Open Network",
+            ];
+            const sorted = [...options].sort((a, b) => {
+              let pA = priority.indexOf(a.blockchain);
+              let pB = priority.indexOf(b.blockchain);
+              if (pA === -1) pA = 99;
+              if (pB === -1) pB = 99;
+              return pA - pB;
+            });
+            selected = sorted[0];
+          }
+
+          if (selected) {
+            // 🔑 Use "alert" mode for longer cache TTL
+            prices[symbol] = await this.fetchDiaPrice(selected, "alert");
+          } else {
+            prices[symbol] = null;
+          }
+        } catch (e) {
+          console.error(`⚠️ Price fetch error for ${symbol}:`, e.message);
+          prices[symbol] = null;
+        }
+      });
+
+      await Promise.all(batchPromises);
+    }
+
+    // Map back to original symbols
+    const result = {};
+    symbols.forEach((symbol) => {
+      result[symbol] = prices[symbol] ?? null;
     });
-    await Promise.all(promises);
-    return prices;
+    return result;
+  }
+
+  cleanupExpiredCache() {
+    const now = Date.now();
+    let cleaned = 0;
+
+    for (const key of Object.keys(this.priceCache)) {
+      if (now - this.priceCache[key].ts > this.staleTTL) {
+        delete this.priceCache[key];
+        cleaned++;
+      }
+    }
+
+    if (cleaned > 0) {
+      console.log(`🧹 Cleaned ${cleaned} expired price cache entries`);
+    }
+  }
+
+  clearPriceCache() {
+    this.priceCache = {};
+    this.inflightRequests.clear();
+    console.log("🗑️ Price cache cleared manually");
+  }
+
+  // ============================================
+  // Stats method — useful for monitoring
+  // ============================================
+  getStats() {
+    return {
+      cachedPrices: Object.keys(this.priceCache).length,
+      inflightRequests: this.inflightRequests.size,
+      activeRequests: this.activeRequests,
+      queuedRequests: this.requestQueue.length,
+      knownAssets: Object.keys(this.assetsBySymbol).length,
+    };
   }
 }
 
