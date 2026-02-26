@@ -40,7 +40,7 @@ class PriceService {
     } catch (e) { console.error("⚠️ API Error loadAssetList:", e.message); }
   }
 
-  // NEW: Fetch price by specific chain/address (Used for multi-chain selection)
+  // Fetch price by specific chain/address
   async getPriceByChainAddress(blockchain, address) {
       try {
           const url = `${this.diaAssetApi}/${blockchain}/${address}`;
@@ -52,26 +52,23 @@ class PriceService {
   }
 
   async getAssetInfo(input) {
-    // 1. CLEAN INPUT
     let rawInput = input.toUpperCase().trim();
     
-    // 🛑 LOGIC FIX: Check for "SYMBOL (CHAIN)" format
-    // Example: "ETH (MOONBEAM)" -> symbol="ETH", chain="MOONBEAM"
     let symbol = rawInput;
     let specificChain = null;
 
+    // Detect "ETH (Base)" format
     const parenMatch = rawInput.match(/^([A-Z0-9]+)\s*\((.+)\)$/);
     if (parenMatch) {
-        symbol = parenMatch[1];       // "ETH"
-        specificChain = parenMatch[2]; // "MOONBEAM"
+        symbol = parenMatch[1];       
+        specificChain = parenMatch[2]; 
     } else {
-        // Handle "ETH MOONBEAM" (Space separated)
         const parts = rawInput.split(" ");
         symbol = parts[0];
         if (parts.length > 1) specificChain = parts.slice(1).join(" ");
     }
 
-    // 🏆 2. CHECK COMMODITIES
+    // 🏆 COMMODITIES
     if (['GOLD','XAU','SILVER','XAG','OIL','WTI','BRENT'].includes(symbol)) {
         if(symbol === 'GOLD') symbol = 'XAU';
         if(symbol === 'SILVER') symbol = 'XAG';
@@ -79,7 +76,7 @@ class PriceService {
         if (price) return { symbol, name: symbol, blockchain: 'Commodities', price, others: [] };
     }
 
-    // 💎 3. CHECK CRYPTO
+    // 💎 CRYPTO
     await this.loadAssetList();
     
     if(symbol === 'DOGS') symbol = 'CAW'; 
@@ -90,19 +87,27 @@ class PriceService {
     if (options) {
         let selected = null;
 
-        // 🔍 SPECIFIC CHAIN SEARCH (THE FIX)
+        // 🔍 1. SPECIFIC CHAIN SEARCH
         if (specificChain) {
-            // 1. Try exact match
+            // Try exact match
             selected = options.find(o => o.blockchain.toUpperCase() === specificChain);
             
-            // 2. Try partial match (e.g. "BSC" for "Binance Smart Chain")
+            // Try partial match
             if (!selected) {
                 selected = options.find(o => o.blockchain.toUpperCase().includes(specificChain));
             }
+
+            // 🛑 STRICT MODE FIX:
+            // If user asked for "ETH (Base)" and we couldn't find Base, 
+            // RETURN NULL. Do not fallback to Mainnet ETH.
+            if (!selected) {
+                console.log(`⚠️ Chain '${specificChain}' not found for ${symbol}. Skipping fallback.`);
+                return null; 
+            }
         }
 
-        // If no chain specified OR chain not found, use priority logic
-        if (!selected) {
+        // 🔍 2. DEFAULT PRIORITY SEARCH (Only if NO chain specified)
+        if (!selected && !specificChain) {
             const priority = ['Bitcoin', 'Ethereum', 'Solana', 'Binance Smart Chain', 'Polygon', 'The Open Network'];
             options.sort((a, b) => {
                 let pA = priority.indexOf(a.blockchain);
@@ -113,7 +118,6 @@ class PriceService {
             });
             selected = options[0];
 
-            // Anti-spam filters for defaults
             if (symbol === 'BTC') {
                 const realBTC = options.find(o => o.blockchain === 'Bitcoin');
                 if (realBTC) selected = realBTC;
@@ -124,20 +128,22 @@ class PriceService {
             }
         }
 
-        const price = await this.fetchDiaPrice(selected);
-        if (price !== null) {
-            return {
-                symbol: symbol,
-                name: selected.name,
-                blockchain: selected.blockchain,
-                address: selected.address, // Added for reference
-                price: price,
-                others: options.filter(o => o.blockchain !== selected.blockchain)
-            };
+        if (selected) {
+            const price = await this.fetchDiaPrice(selected);
+            if (price !== null) {
+                return {
+                    symbol: symbol,
+                    name: selected.name,
+                    blockchain: selected.blockchain,
+                    address: selected.address,
+                    price: price,
+                    others: options.filter(o => o.blockchain !== selected.blockchain)
+                };
+            }
         }
     }
 
-    // 💱 4. CHECK FOREX
+    // 💱 FOREX
     if (symbol.length === 3 || symbol.length === 6) {
         const forexPrice = await this.getForexPrice(symbol);
         if (forexPrice !== null) {
@@ -171,11 +177,9 @@ class PriceService {
 
   formatPrice(price, symbol) {
       if(!price) return "N/A";
-      
       if (['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD'].some(s => symbol.includes(s))) {
           return `${price.toFixed(5)}`;
       }
-
       if (price < 1.0) return `$${price.toFixed(6)}`;
       if (price > 1000) return `$${price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
       return `$${price.toFixed(4)}`;
@@ -188,7 +192,6 @@ class PriceService {
 
   async getForexPrice(pair) {
     if (['USDT','USDC','DOGE','BTC','ETH','SOL','XRP'].includes(pair)) return null;
-
     try {
         let base, target;
         if (pair.length === 6) {
