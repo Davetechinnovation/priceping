@@ -26,12 +26,24 @@ class PriceService {
           res.data.forEach(item => {
             const s = item.Asset.Symbol.toUpperCase();
             if (!temp[s]) temp[s] = [];
-            temp[s].push({
-              blockchain: item.Asset.Blockchain,
-              address: item.Asset.Address,
-              name: item.Asset.Name,
-              symbol: s
-            });
+            
+            // ============================================
+            // 🛠️ FIX: Deduplicate by (symbol + blockchain)
+            // Only keep ONE token per symbol per chain.
+            // This prevents fake/duplicate tokens on the 
+            // same chain from showing up as separate options.
+            // ============================================
+            const alreadyHasChain = temp[s].some(
+              existing => existing.blockchain === item.Asset.Blockchain
+            );
+            if (!alreadyHasChain) {
+              temp[s].push({
+                blockchain: item.Asset.Blockchain,
+                address: item.Asset.Address,
+                name: item.Asset.Name,
+                symbol: s
+              });
+            }
           });
           this.assetsBySymbol = temp;
           this.lastCacheUpdate = Date.now();
@@ -89,24 +101,17 @@ class PriceService {
 
         // 🔍 1. SPECIFIC CHAIN SEARCH
         if (specificChain) {
-            // Try exact match
             selected = options.find(o => o.blockchain.toUpperCase() === specificChain);
-            
-            // Try partial match
             if (!selected) {
                 selected = options.find(o => o.blockchain.toUpperCase().includes(specificChain));
             }
-
-            // 🛑 STRICT MODE FIX:
-            // If user asked for "ETH (Base)" and we couldn't find Base, 
-            // RETURN NULL. Do not fallback to Mainnet ETH.
             if (!selected) {
                 console.log(`⚠️ Chain '${specificChain}' not found for ${symbol}. Skipping fallback.`);
                 return null; 
             }
         }
 
-        // 🔍 2. DEFAULT PRIORITY SEARCH (Only if NO chain specified)
+        // 🔍 2. DEFAULT PRIORITY SEARCH
         if (!selected && !specificChain) {
             const priority = ['Bitcoin', 'Ethereum', 'Solana', 'Binance Smart Chain', 'Polygon', 'The Open Network'];
             options.sort((a, b) => {
@@ -131,13 +136,30 @@ class PriceService {
         if (selected) {
             const price = await this.fetchDiaPrice(selected);
             if (price !== null) {
+                // ============================================
+                // 🛠️ FIX: Deduplicate "others" by blockchain
+                // Safety net — even if loadAssetList missed it,
+                // never show two options for the same chain.
+                // ============================================
+                const rawOthers = options.filter(o => 
+                  o.blockchain !== selected.blockchain
+                );
+                const uniqueOthers = [];
+                const seenChains = new Set();
+                for (const o of rawOthers) {
+                  if (!seenChains.has(o.blockchain)) {
+                    seenChains.add(o.blockchain);
+                    uniqueOthers.push(o);
+                  }
+                }
+
                 return {
                     symbol: symbol,
                     name: selected.name,
                     blockchain: selected.blockchain,
                     address: selected.address,
                     price: price,
-                    others: options.filter(o => o.blockchain !== selected.blockchain)
+                    others: uniqueOthers
                 };
             }
         }
