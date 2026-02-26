@@ -12,6 +12,7 @@ class PriceService {
     };
     
     this.assetsBySymbol = {}; 
+    this.nameToSymbol = {}; 
     this.lastCacheUpdate = 0;
   }
 
@@ -21,10 +22,12 @@ class PriceService {
       console.log("📥 Updating Crypto List...");
       const res = await axios.get(this.quotedAssetsApi, { headers: this.headers, timeout: 15000 });
       const temp = {};
+      const nameMap = {};
       
       if(res.data) {
           res.data.forEach(item => {
             const s = item.Asset.Symbol.toUpperCase();
+            const n = item.Asset.Name.toUpperCase();
             if (!temp[s]) temp[s] = [];
             
             // ============================================
@@ -44,23 +47,16 @@ class PriceService {
                 symbol: s
               });
             }
+
+            // Map full name → symbol (only if not already mapped)
+            if (!nameMap[n]) nameMap[n] = s;
           });
           this.assetsBySymbol = temp;
+          this.nameToSymbol = nameMap;
           this.lastCacheUpdate = Date.now();
           console.log(`✅ Crypto List Updated (${Object.keys(temp).length} assets)`);
       }
     } catch (e) { console.error("⚠️ API Error loadAssetList:", e.message); }
-  }
-
-  // Fetch price by specific chain/address
-  async getPriceByChainAddress(blockchain, address) {
-      try {
-          const url = `${this.diaAssetApi}/${blockchain}/${address}`;
-          const res = await axios.get(url, { headers: this.headers, timeout: 5000 });
-          return res.data.Price;
-      } catch(e) { 
-          return null; 
-      }
   }
 
   async getAssetInfo(input) {
@@ -90,6 +86,11 @@ class PriceService {
 
     // 💎 CRYPTO
     await this.loadAssetList();
+    
+    // Resolve full name to symbol dynamically
+    if (this.nameToSymbol && this.nameToSymbol[symbol]) {
+        symbol = this.nameToSymbol[symbol];
+    }
     
     if(symbol === 'DOGS') symbol = 'CAW'; 
     if(symbol === 'BITCOIN') symbol = 'BTC';
