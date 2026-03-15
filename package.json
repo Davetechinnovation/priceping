@@ -25,7 +25,6 @@
     "@hapi/boom": "^10.0.1",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "axios": "^1.13.4",
-    "baileys": "^7.0.0-rc.9",
     "better-sqlite3": "^12.6.2",
     "body-parser": "^2.2.2",
     "cors": "^2.8.6",
@@ -37,6 +36,8 @@
     "node-cron": "^4.2.1",
     "pino": "^10.3.0",
     "qrcode": "^1.5.4",
+    "swagger-jsdoc": "^6.2.8",
+    "swagger-ui-express": "^5.0.0",
     "twilio": "^4.19.0"
   },
   "devDependencies": {

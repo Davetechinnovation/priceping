@@ -18,17 +18,16 @@ class CommandParser {
       my: this.handleMyAlerts.bind(this),
       del: this.handleDeleteAlert.bind(this),
       delete: this.handleDeleteAlert.bind(this),
-      
+
       // Account
       name: this.handleSetName.bind(this),
-      
+
       // System
       status: this.handleStatus.bind(this),
       subscribe: this.handleSubscribe.bind(this),
       upgrade: this.handleUpgradePro.bind(this),
     };
-    
-    
+
     this.adminNumber = "2349160766236";
   }
 
@@ -38,14 +37,14 @@ class CommandParser {
 
   extractPhone(jid) {
     if (!jid) return "";
-    let number = jid.split('@')[0];
-    number = number.split(':')[0];
+    let number = jid.split("@")[0];
+    number = number.split(":")[0];
     return number;
   }
 
   formatPhone(number) {
     if (!number) return "Unknown";
-    if (number.startsWith('+')) return number;
+    if (number.startsWith("+")) return number;
     return `+${number}`;
   }
 
@@ -74,28 +73,21 @@ class CommandParser {
   // 🛡️ SMART ADMIN LINK GENERATOR
   // ==========================================
   getAdminLink(phoneNumber, displayName) {
-    let displayPhone = this.formatPhone(phoneNumber);
-
-    // 🛑 DETECT LID (Internal ID)
-    // If the number is too long (15+ digits), it's not a real phone number.
-    // It is a WhatsApp Device ID. We shouldn't show it.
-    if (phoneNumber.length > 14) {
-        displayPhone = "[Enter Your Number]";
-    }
+    const displayPhone = this.formatPhone(phoneNumber);
 
     const msg = encodeURIComponent(
-      `Hi, my name is ${displayName}. I would like to upgrade to PricePing Pro.\n\nMy number: ${displayPhone}`
+      `Hi, my name is ${displayName}. I would like to upgrade to PricePing Pro.\n\n🆔 My account ID is: ${displayPhone}`,
     );
     return `wa.me/${this.adminNumber}?text=${msg}`;
   }
 
   parseMessage(message) {
     const text = message.toLowerCase().trim();
-    
+
     if (text.startsWith("upgrade")) {
       return { command: "upgrade", args: text.split(/\s+/).slice(1) };
     }
-    
+
     const words = text.split(/\s+/);
     return { command: words[0], args: words.slice(1) };
   }
@@ -109,17 +101,74 @@ class CommandParser {
 
     let user = await db.getUserByPhoneNumber(cleanPhone);
     if (!user) {
-      user = await db.createUser(cleanPhone, cleanPhone, null);
+      user = await db.createUser(cleanPhone, cleanPhone, pushName || null);
+    }
+
+    // ✅ Backfill name for existing users who were created with null
+    if (user && !user.name && pushName && pushName !== "User") {
+      try {
+        await db.updateUserName(cleanPhone, pushName);
+        user.name = pushName;
+      } catch (e) {}
+    }
+
+    // 🚫 CHECK IF USER IS BLOCKED
+    if (user?.is_blocked === true) {
+      const name = this.getDisplayName(user, pushName);
+      const displayPhone = this.formatPhone(cleanPhone);
+
+      const appealMsg = encodeURIComponent(
+        `Hi Admin, I am ${name}. My PricePing account was restricted. Please review. Thank you.\n\n🆔 My account ID is: ${displayPhone}`,
+      );
+      const appealLink = `wa.me/${this.adminNumber}?text=${appealMsg}`;
+
+      return `╔══════════════════════════╗
+║ 🚫 *Account Restricted*
+╚══════════════════════════╝
+
+Hi *${name}*, your account has been
+suspended by the administrator.
+
+While restricted, you cannot:
+━━━━━━━━━━━━━━━━━
+❌ Check prices
+❌ Set or manage alerts
+❌ Use any bot features
+
+💬 *Think this is a mistake?*
+━━━━━━━━━━━━━━━━━
+Tap below to contact the admin
+and request a review:
+
+📱 ${appealLink}
+
+_We'll review your account as_
+_soon as possible._`;
+    }
+
+    // ✅ NEW: Track every command
+    try {
+      await db.incrementCommandCount(cleanPhone);
+    } catch (e) {
+      console.error("Command tracking error:", e.message);
     }
 
     const handler = this.commands[command];
     if (!handler) {
-        if(["hey", "bot", "test"].includes(command)) return this.handleGreeting([], cleanPhone, db, priceService, pushName);
-        return this.handleUnknownCommand(command, args);
+      if (["hey", "bot", "test"].includes(command))
+        return this.handleGreeting([], cleanPhone, db, priceService, pushName);
+      return this.handleUnknownCommand(command, args);
     }
 
     try {
-      return await handler(args, cleanPhone, db, priceService, pushName, userState);
+      return await handler(
+        args,
+        cleanPhone,
+        db,
+        priceService,
+        pushName,
+        userState,
+      );
     } catch (error) {
       console.error(error);
       return "⚠️ *System Error*: Something went wrong. Try again!";
@@ -129,14 +178,15 @@ class CommandParser {
   // ==========================================
   // ❌ UNKNOWN COMMAND
   // ==========================================
+
   handleUnknownCommand(command, args) {
-      const suggestions = this.getSuggestions(command);
-      
-      if (suggestions.length > 0) {
-          return `🤔 *Unknown Command: "${command}"*
+    const suggestions = this.getSuggestions(command);
+
+    if (suggestions.length > 0) {
+      return `🤔 *Unknown Command: "${command}"*
 
 💡 *Did you mean:*
-${suggestions.map(s => `• ${s}`).join('\n')}
+${suggestions.map((s) => `• ${s}`).join("\n")}
 
 ━━━━━━━━━━━━━━━━━
 🎯 *Popular Commands:*
@@ -145,8 +195,8 @@ ${suggestions.map(s => `• ${s}`).join('\n')}
 • My alerts
 • Subscribe
 • Help`;
-      } else {
-          return `🤔 *Unknown Command: "${command}"*
+    } else {
+      return `🤔 *Unknown Command: "${command}"*
 
 🎯 *Try these commands:*
 ━━━━━━━━━━━━━━━━━
@@ -155,30 +205,34 @@ ${suggestions.map(s => `• ${s}`).join('\n')}
 📋 *My alerts* - View watchlist
 📧 *Subscribe* - View plan & limits
 ❓ *Help* - All commands`;
-      }
+    }
   }
 
   getSuggestions(command) {
-      const availableCommands = Object.keys(this.commands);
-      const suggestions = [];
-      
-      availableCommands.forEach(cmd => {
-          if (cmd.includes(command) || command.includes(cmd)) {
-              suggestions.push(cmd);
-          }
-      });
-      
-      const commonTypos = {
-          'pric': 'price', 'prices': 'price',
-          'alert': 'alerts', 'alret': 'alerts',
-          'remove': 'del', 'stat': 'status',
-          'subscription': 'subscribe', 'sub': 'subscribe',
-          'pro': 'upgrade'
-      };
-      
-      if (commonTypos[command]) suggestions.push(commonTypos[command]);
-      
-      return [...new Set(suggestions)].slice(0, 3);
+    const availableCommands = Object.keys(this.commands);
+    const suggestions = [];
+
+    availableCommands.forEach((cmd) => {
+      if (cmd.includes(command) || command.includes(cmd)) {
+        suggestions.push(cmd);
+      }
+    });
+
+    const commonTypos = {
+      pric: "price",
+      prices: "price",
+      alert: "alerts",
+      alret: "alerts",
+      remove: "del",
+      stat: "status",
+      subscription: "subscribe",
+      sub: "subscribe",
+      pro: "upgrade",
+    };
+
+    if (commonTypos[command]) suggestions.push(commonTypos[command]);
+
+    return [...new Set(suggestions)].slice(0, 3);
   }
 
   // ==========================================
@@ -216,24 +270,40 @@ ${usage.isPro ? "" : "🚀 Want unlimited alerts? Type *Subscribe*\n"}
   // ==========================================
   // 🔎 PRICE CHECKER
   // ==========================================
-  async handleGenericPrice(args, phoneNumber, db, priceService, pushName, userState) {
-    if (args.length === 0) return "⚠️ *Usage:* `Price [CoinName]` (e.g., Price SOL)";
+  async handleGenericPrice(
+    args,
+    phoneNumber,
+    db,
+    priceService,
+    pushName,
+    userState,
+  ) {
+    if (args.length === 0)
+      return "⚠️ *Usage:* `Price [CoinName]` (e.g., Price SOL)";
 
     const input = args.join(" ");
     const info = await priceService.getAssetInfo(input);
 
     if (!info) {
-        return `❌ *Not Found*\n\nI searched high and low for *"${input.toUpperCase()}"* but couldn't find it.\n\n💡 *Try:* \`Price BTC\` or \`Price Gold\``;
+      return `❌ *Not Found*\n\nI searched high and low for *"${input.toUpperCase()}"* but couldn't find it.\n\n💡 *Try:* \`Price BTC\` or \`Price Gold\``;
     }
 
     let icon = "💎";
     let label = "Crypto Asset";
-    
-    if (info.blockchain === 'Commodities') { icon = "🏆"; label = "Commodity"; }
-    else if (info.blockchain === 'Forex Market') { icon = "💱"; label = "Foreign Exchange"; }
+
+    if (info.blockchain === "Commodities") {
+      icon = "🏆";
+      label = "Commodity";
+    } else if (info.blockchain === "Forex Market") {
+      icon = "💱";
+      label = "Foreign Exchange";
+    }
 
     const fPrice = priceService.formatPrice(info.price, info.symbol);
-    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const time = new Date().toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
 
     let response = `${icon} *${info.name}*
 ━━━━━━━━━━━━━━━━━
@@ -246,19 +316,19 @@ ${usage.isPro ? "" : "🚀 Want unlimited alerts? Type *Subscribe*\n"}
 Reply "Set ${info.symbol} at ${info.price.toFixed(2)}"`;
 
     if (info.others && info.others.length > 0) {
-        userState.set(phoneNumber, {
-            type: 'SELECT_CHAIN_PRICE',
-            symbol: info.symbol,
-            options: info.others
-        });
+      userState.set(phoneNumber, {
+        type: "SELECT_CHAIN_PRICE",
+        symbol: info.symbol,
+        options: info.others,
+      });
 
-        response += this.getReadMore();
-        response += `\n\n📋 *Wait! I found other versions:*`;
-        response += `\n_Reply with a number to check specific price:_\n`;
+      response += this.getReadMore();
+      response += `\n\n📋 *Wait! I found other versions:*`;
+      response += `\n_Reply with a number to check specific price:_\n`;
 
-        info.others.slice(0, 10).forEach((opt, i) => {
-            response += `\n*${i + 1}.* ${opt.blockchain} Chain`;
-        });
+      info.others.slice(0, 10).forEach((opt, i) => {
+        response += `\n*${i + 1}.* ${opt.blockchain} Chain`;
+      });
     }
 
     return response;
@@ -267,26 +337,37 @@ Reply "Set ${info.symbol} at ${info.price.toFixed(2)}"`;
   // ==========================================
   // 🔔 SET ALERT
   // ==========================================
-  async handleSetAlert(args, phoneNumber, db, priceService, pushName, userState) {
-    if (args.length < 2) return "⚠️ *Usage:* `Set [Coin] at [Price]`\nExample: `Set SOL at 150`";
+  async handleSetAlert(
+    args,
+    phoneNumber,
+    db,
+    priceService,
+    pushName,
+    userState,
+  ) {
+    if (args.length < 2)
+      return "⚠️ *Usage:* `Set [Coin] at [Price]`\nExample: `Set SOL at 150`";
 
     const asset = args[0].toUpperCase();
-    
+
     let targetPrice = null;
     let direction = null;
 
-    if(args.includes("below")) direction = "below";
-    if(args.includes("above")) direction = "above";
+    if (args.includes("below")) direction = "below";
+    if (args.includes("above")) direction = "above";
 
-    const priceArg = args.find(a => /^\d+(\.\d+)?$/.test(a.replace(/,/g, '')));
-    if(priceArg) targetPrice = parseFloat(priceArg.replace(/,/g, ''));
+    const priceArg = args.find((a) =>
+      /^\d+(\.\d+)?$/.test(a.replace(/,/g, "")),
+    );
+    if (priceArg) targetPrice = parseFloat(priceArg.replace(/,/g, ""));
 
-    if(!targetPrice) return "⚠️ I need a target price! Example: `Set BTC at 65000`";
+    if (!targetPrice)
+      return "⚠️ I need a target price! Example: `Set BTC at 65000`";
 
     const usage = await db.getAlertUsage(phoneNumber);
-    
+
     if (!usage.isPro && usage.remaining <= 0) {
-        return `🚫 *Alert Limit Reached!*
+      return `🚫 *Alert Limit Reached!*
 ━━━━━━━━━━━━━━━━━
 📊 *Used:* ${this.getUsageBar(usage.used, usage.limit)}
 ⏰ *Resets in:* ${usage.resetIn}
@@ -304,50 +385,59 @@ or *Upgrade* to get started now!
     const info = await priceService.getAssetInfo(asset);
 
     if (info && info.others && info.others.length > 0 && args.length < 4) {
-        const optionsToDisplay = [
-            { blockchain: info.blockchain, price: info.price, address: info.address || null },
-            ...info.others.slice(0, 5).map(other => ({
-                blockchain: other.blockchain,
-                price: other.price || null,
-                address: other.address || null
-            }))
-        ];
+      const optionsToDisplay = [
+        {
+          blockchain: info.blockchain,
+          price: info.price,
+          address: info.address || null,
+        },
+        ...info.others.slice(0, 5).map((other) => ({
+          blockchain: other.blockchain,
+          price: other.price || null,
+          address: other.address || null,
+        })),
+      ];
 
-        userState.set(phoneNumber, {
-            type: 'SELECT_CHAIN_ALERT',
-            symbol: info.symbol,
-            targetPrice: targetPrice,
-            direction: direction,
-            options: optionsToDisplay
-        });
+      userState.set(phoneNumber, {
+        type: "SELECT_CHAIN_ALERT",
+        symbol: info.symbol,
+        targetPrice: targetPrice,
+        direction: direction,
+        options: optionsToDisplay,
+      });
 
-        let menu = `⚖️ *Which ${info.symbol} chain?*
+      let menu = `⚖️ *Which ${info.symbol} chain?*
 ━━━━━━━━━━━━━━━━━
 You are setting an alert at *${targetPrice}*.
 Please select specific chain:
 `;
-        optionsToDisplay.forEach((opt, i) => {
-            menu += `\n*${i+1}.* ${opt.blockchain}`;
-        });
+      optionsToDisplay.forEach((opt, i) => {
+        menu += `\n*${i + 1}.* ${opt.blockchain}`;
+      });
 
-        menu += `\n\n👇 *Reply with number (e.g., 1 or 2)*`;
-        return menu;
+      menu += `\n\n👇 *Reply with number (e.g., 1 or 2)*`;
+      return menu;
     }
 
     const currentPrice = info ? info.price : null;
-    if (currentPrice === null) return `❌ I couldn't find a price for ${asset}.`;
+    if (currentPrice === null)
+      return `❌ I couldn't find a price for ${asset}.`;
 
     if (!direction) {
-        direction = targetPrice > currentPrice ? "above" : "below";
+      direction = targetPrice > currentPrice ? "above" : "below";
     }
 
     const existingAlerts = await db.getUserAlerts(phoneNumber);
-    const duplicateAlert = existingAlerts.find(alert => 
-      alert.asset.toUpperCase() === asset && alert.status === 'active'
+    const duplicateAlert = existingAlerts.find(
+      (alert) =>
+        alert.asset.toUpperCase() === asset && alert.status === "active",
     );
 
     if (duplicateAlert) {
-      const formattedTarget = priceService.formatPrice(duplicateAlert.targetPrice, asset);
+      const formattedTarget = priceService.formatPrice(
+        duplicateAlert.targetPrice,
+        asset,
+      );
       return `⚠️ *Alert Already Exists*
 ━━━━━━━━━━━━━━━━━━━━━━
 📦 *Asset:* ${asset}
@@ -358,9 +448,9 @@ Please select specific chain:
     }
 
     const slotResult = await db.useAlertSlot(phoneNumber);
-    
+
     if (!slotResult.allowed) {
-        return `🚫 *Alert Limit Reached!*
+      return `🚫 *Alert Limit Reached!*
 ━━━━━━━━━━━━━━━━━
 📊 *Used:* ${this.getUsageBar(slotResult.usage.used, slotResult.usage.limit)}
 ⏰ *Resets in:* ${slotResult.usage.resetIn}
@@ -391,9 +481,9 @@ _I'll message you the moment it hits!_`;
   async handleMyAlerts(args, phoneNumber, db, priceService) {
     const alerts = await db.getUserAlerts(phoneNumber);
     const usage = await db.getAlertUsage(phoneNumber);
-    
+
     if (alerts.length === 0) {
-        return `📂 *Your watchlist is empty.*
+      return `📂 *Your watchlist is empty.*
 
 📊 *Alert Quota:* ${this.getUsageBar(usage.used, usage.limit)}
 ${usage.isPro ? "👑 Pro Plan" : `⏰ Resets in: ${usage.resetIn}`}
@@ -402,10 +492,10 @@ Try: \`Set BTC at 70000\``;
     }
 
     let msg = `${this.getHeader("Your Watchlist")}\n`;
-    
+
     alerts.forEach((a, i) => {
-        const icon = a.direction === 'above' ? '📈' : '📉';
-        msg += `\n*${i+1}.* ${a.asset} ${icon} ${priceService.formatPrice(a.targetPrice, a.asset)}`;
+      const icon = a.direction === "above" ? "📈" : "📉";
+      msg += `\n*${i + 1}.* ${a.asset} ${icon} ${priceService.formatPrice(a.targetPrice, a.asset)}`;
     });
 
     msg += `\n\n━━━━━━━━━━━━━━━━━`;
@@ -419,9 +509,9 @@ Try: \`Set BTC at 70000\``;
   // ❓ HELP
   // ==========================================
   async handleHelp(args, phoneNumber, db) {
-      const usage = await db.getAlertUsage(phoneNumber);
-      
-      return `❓ *PricePing Help*
+    const usage = await db.getAlertUsage(phoneNumber);
+
+    return `❓ *PricePing Help*
 ━━━━━━━━━━━━━━━━━
 
 1️⃣ *Check Prices*
@@ -446,46 +536,46 @@ Try: \`Set BTC at 70000\``;
 📊 *Your Quota:* ${this.getUsageBar(usage.used, usage.limit)}
 ${usage.isPro ? "👑 Unlimited" : `⏰ Resets every 12 hours (${usage.resetIn} left)`}`;
   }
-  
+
   // ==========================================
   // 🗑️ DELETE ALERT
   // ==========================================
   async handleDeleteAlert(args, phoneNumber, db) {
-      if(!args[0]) return "⚠️ Which one? Usage: `Delete 1`";
-      const index = parseInt(args[0]) - 1;
-      const alerts = await db.getUserAlerts(phoneNumber);
-      if(!alerts[index]) return "❌ Alert number not found.";
-      
-      await db.deleteAlert(alerts[index].id);
-      return `🗑️ *Deleted:* Alert for ${alerts[index].asset}\n\n💡 _Note: Deleting an alert does not refund your quota._`;
+    if (!args[0]) return "⚠️ Which one? Usage: `Delete 1`";
+    const index = parseInt(args[0]) - 1;
+    const alerts = await db.getUserAlerts(phoneNumber);
+    if (!alerts[index]) return "❌ Alert number not found.";
+
+    await db.deleteAlert(alerts[index].id);
+    return `🗑️ *Deleted:* Alert for ${alerts[index].asset}\n\n💡 _Note: Deleting an alert does not refund your quota._`;
   }
-  
+
   // ==========================================
   // ✏️ SET NAME
   // ==========================================
   async handleSetName(args, phoneNumber, db) {
-      const name = args.join(" ");
-      if(!name) return "⚠️ Usage: `Name Tony Stark`";
-      await db.updateUserName(phoneNumber, name);
-      return `✅ Nice to meet you, *${name}*!\n\n💡 _This name will be used everywhere including admin messages._`;
+    const name = args.join(" ");
+    if (!name) return "⚠️ Usage: `Name Tony Stark`";
+    await db.updateUserName(phoneNumber, name);
+    return `✅ Nice to meet you, *${name}*!\n\n💡 _This name will be used everywhere including admin messages._`;
   }
 
   // ==========================================
   // 📊 STATUS
   // ==========================================
   async handleStatus(args, phoneNumber, db, priceService, pushName) {
-      try {
-          const user = await db.getUserByPhoneNumber(phoneNumber);
-          const alerts = await db.getUserAlerts(phoneNumber);
-          const usage = await db.getAlertUsage(phoneNumber);
-          const activeAlerts = alerts.filter(a => a.status === 'active');
-          const name = this.getDisplayName(user, pushName);
-          
-          const uptime = process.uptime();
-          const hours = Math.floor(uptime / 3600);
-          const minutes = Math.floor((uptime % 3600) / 60);
-          
-          return `${this.getHeader("System Status")}
+    try {
+      const user = await db.getUserByPhoneNumber(phoneNumber);
+      const alerts = await db.getUserAlerts(phoneNumber);
+      const usage = await db.getAlertUsage(phoneNumber);
+      const activeAlerts = alerts.filter((a) => a.status === "active");
+      const name = this.getDisplayName(user, pushName);
+
+      const uptime = process.uptime();
+      const hours = Math.floor(uptime / 3600);
+      const minutes = Math.floor((uptime % 3600) / 60);
+
+      return `${this.getHeader("System Status")}
 
 👤 *User:* ${name}
 📱 *Phone:* ${this.formatPhone(phoneNumber)}
@@ -502,23 +592,23 @@ ${usage.isPro ? "👑 Pro Plan - Unlimited!" : `🆓 Free Plan - ${usage.remaini
 
 ━━━━━━━━━━━━━━━━━
 ${usage.isPro ? "" : "🚀 Type *Subscribe* for unlimited alerts!"}`;
-      } catch (error) {
-          console.error("Status command error:", error);
-          return "⚠️ *System Error*: Couldn't fetch status right now.";
-      }
+    } catch (error) {
+      console.error("Status command error:", error);
+      return "⚠️ *System Error*: Couldn't fetch status right now.";
+    }
   }
 
   // ==========================================
   // 📧 SUBSCRIBE
   // ==========================================
   async handleSubscribe(args, phoneNumber, db, priceService, pushName) {
-      const user = await db.getUserByPhoneNumber(phoneNumber);
-      const usage = await db.getAlertUsage(phoneNumber);
-      const alerts = await db.getUserAlerts(phoneNumber);
-      const name = this.getDisplayName(user, pushName);
-      
-      if (usage.isPro) {
-          return `${this.getHeader("Your Subscription")}
+    const user = await db.getUserByPhoneNumber(phoneNumber);
+    const usage = await db.getAlertUsage(phoneNumber);
+    const alerts = await db.getUserAlerts(phoneNumber);
+    const name = this.getDisplayName(user, pushName);
+
+    if (usage.isPro) {
+      return `${this.getHeader("Your Subscription")}
 
 👑 *You're on the Pro Plan!*
 
@@ -530,9 +620,9 @@ ${usage.isPro ? "" : "🚀 Type *Subscribe* for unlimited alerts!"}`;
 _Thank you for being a Pro member, ${name}!_
 📱 Need help? Message admin:
 wa.me/${this.adminNumber}`;
-      }
-      
-      return `${this.getHeader("Your Plan")}
+    }
+
+    return `${this.getHeader("Your Plan")}
 
 👋 *Hi ${name}!*
 
@@ -561,17 +651,17 @@ and unlock unlimited alerts! 🚀`;
   // 🚀 UPGRADE PRO
   // ==========================================
   async handleUpgradePro(args, phoneNumber, db, priceService, pushName) {
-      const user = await db.getUserByPhoneNumber(phoneNumber);
-      const usage = await db.getAlertUsage(phoneNumber);
-      
-      if (usage.isPro) {
-          return `👑 *You're already on Pro!*\nEnjoy your unlimited alerts! 🎉`;
-      }
+    const user = await db.getUserByPhoneNumber(phoneNumber);
+    const usage = await db.getAlertUsage(phoneNumber);
 
-      const name = this.getDisplayName(user, pushName);
-      const link = this.getAdminLink(phoneNumber, name);
+    if (usage.isPro) {
+      return `👑 *You're already on Pro!*\nEnjoy your unlimited alerts! 🎉`;
+    }
 
-      return `${this.getHeader("🚀 Upgrade to Pro")}
+    const name = this.getDisplayName(user, pushName);
+    const link = this.getAdminLink(phoneNumber, name);
+
+    return `${this.getHeader("🚀 Upgrade to Pro")}
 
 👋 *Hi ${name}!*
 Here's what you unlock with Pro:

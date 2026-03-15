@@ -6,6 +6,8 @@ const helmet = require("helmet");
 const morgan = require("morgan");
 const fs = require("fs");
 const path = require("path");
+const swaggerUi = require('swagger-ui-express');
+const swaggerSpecs = require('./src/swaggerConfig');
 require("dotenv").config();
 
 const BaileysWhatsAppService = require("./src/baileysWhatsAppService");
@@ -14,9 +16,13 @@ const CommandParser = require("./src/commandParser");
 const AlertMonitor = require("./src/alertMonitor");
 const PriceService = require("./src/priceService");
 const MemoryMonitor = require("./src/memoryMonitor");
+const { createAdminAPI } = require("./src/adminAPI");
 
 const app = express();
 const PORT = process.env.PORT || 10000;
+
+// ✅ FIX 1: Initialize global variable explicitly at top
+global.botInitialized = false;
 
 const memoryMonitor = new MemoryMonitor({
   interval: 30000,
@@ -42,6 +48,19 @@ app.get("/health", (req, res) => {
 
 app.get("/", (req, res) => {
   res.json({ message: "🤖 PricePing WhatsApp Bot", status: "operational" });
+});
+
+// Swagger UI Documentation
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpecs, {
+  explorer: true,
+  customCss: '.swagger-ui .topbar { display: none }',
+  customSiteTitle: "PricePing Admin API Documentation"
+}));
+
+// Swagger JSON endpoint
+app.get('/api-docs.json', (req, res) => {
+  res.setHeader('Content-Type', 'application/json');
+  res.send(swaggerSpecs);
 });
 
 let botInitialized = false;
@@ -75,7 +94,7 @@ async function connectMongoDB(maxRetries = 5) {
 }
 
 async function initializeBot() {
-  if (botInitialized) {
+  if (global.botInitialized) { // ✅ Check global
     console.log("🔄 Bot already initialized, skipping...");
     return;
   }
@@ -270,7 +289,12 @@ _I'll message you the moment it hits!_`;
     );
     alertMonitor.start();
 
-    botInitialized = true;
+    // ✅ FIX 2: Set global to true immediately on success
+    global.database = database;
+    global.whatsappService = whatsappService;
+    global.alertMonitor = alertMonitor;
+    global.priceService = priceService;
+    global.botInitialized = true;
     console.log("🎉 PricePing Bot is fully operational!");
   } catch (error) {
     console.error("❌ Failed to initialize bot:", error);
@@ -296,6 +320,9 @@ process.on("uncaughtException", (error) => {
 process.on("unhandledRejection", (reason) => {
   console.error("❌ Unhandled Rejection:", reason);
 });
+
+// Register admin API routes IMMEDIATELY (before bot init)
+createAdminAPI(app, memoryMonitor);
 
 app.listen(PORT, () => {
   console.log(`🌐 Server on port ${PORT}`);

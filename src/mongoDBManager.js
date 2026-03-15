@@ -302,6 +302,16 @@ class MongoDBManager {
     }
   }
 
+  async incrementCommandCount(phoneNumber) {
+    await this.db.collection("users").updateOne(
+      { phone_number: phoneNumber },
+      {
+        $inc: { total_commands: 1 },
+        $set: { last_active: new Date(), updated_at: new Date() },
+      },
+    );
+  }
+
   // ==========================================
   // 🔔 ALERT OPERATIONS
   // ==========================================

@@ -7,6 +7,13 @@ class AlertMonitor {
         this.whatsappService = whatsappService;
         this.isChecking = false;
         this.isRunning = false;
+        
+        // Metrics for Admin Dashboard
+        this.lastCheckDuration = 0; // Total time (Slow: includes API fetch)
+        this.dbLatency = 0;         // ✅ NEW: Just DB time (Fast: System Health)
+        this.lastCheckTime = null;
+        this.lastCheckAlertCount = 0;
+        this.lastCheckTriggered = 0;
     }
 
     start() {
@@ -15,7 +22,7 @@ class AlertMonitor {
             return;
         }
 
-        console.log('Starting PricePing Alert Monitor...');
+        console.log('🚀 Starting PricePing Alert Monitor...');
         this.isRunning = true;
 
         // Check alerts every 30 seconds
@@ -29,165 +36,109 @@ class AlertMonitor {
         });
 
         console.log('✅ Alert monitor started successfully');
-        console.log('📊 Checking alerts every 30 seconds');
-        console.log('📈 Updating price history every 5 minutes');
     }
 
     async checkAlerts() {
         if (this.isChecking) return;
         this.isChecking = true;
         
+        const checkStart = Date.now();
+        
         try {
+            // ⏱️ STEP 1: Measure Database Speed ONLY (This is your "Latency")
+            const dbStart = Date.now();
             const activeAlerts = await this.database.getActiveAlerts();
+            this.dbLatency = Date.now() - dbStart; // Should be < 50ms
+
             if (activeAlerts.length === 0) return;
 
-            console.log(`🔍 Checking ${activeAlerts.length} active alerts...`);
-
+            // ⏱️ STEP 2: The rest involves external APIs (This is "Duration")
             const uniqueAssets = [...new Set(activeAlerts.map(a => a.asset.toUpperCase()))];
-            console.log(`📊 Fetching prices for ${uniqueAssets.length} unique assets: ${uniqueAssets.join(', ')}`);
             
+            // This line takes 500ms - 2000ms (Internet speed)
             const allPrices = await this.priceService.getMultiplePrices(uniqueAssets);
             
             let alertsTriggered = 0;
-            let alertsFailed = 0;
 
             for (const alert of activeAlerts) {
                 const currentPrice = allPrices[alert.asset.toUpperCase()];
                 
-                if (currentPrice === null || currentPrice === undefined) {
-                    continue;
-                }
+                if (currentPrice === null || currentPrice === undefined) continue;
 
                 let shouldTrigger = false;
-                if (alert.direction === 'above' && currentPrice >= alert.target_price) {
-                    shouldTrigger = true;
-                } else if (alert.direction === 'below' && currentPrice <= alert.target_price) {
-                    shouldTrigger = true;
-                }
+                if (alert.direction === 'above' && currentPrice >= alert.target_price) shouldTrigger = true;
+                else if (alert.direction === 'below' && currentPrice <= alert.target_price) shouldTrigger = true;
 
                 if (shouldTrigger) {
                     const recipient = alert.phone_number || alert.whatsapp_number;
+                    if (!recipient) continue;
+
+                    console.log(`🚨 Trigger: ${alert.asset} ${alert.direction} ${alert.target_price}`);
                     
-                    if (!recipient) {
-                        console.error(`❌ Alert ${alert.id} has no contact info, skipping`);
-                        continue;
-                    }
-
-                    console.log(`🚨 Alert triggered: ${alert.asset} ${alert.direction} ${alert.target_price} (Current: ${currentPrice})`);
-                    console.log(`📤 Sending notification to: ${recipient}`);
-
-                    // ============================================
-                    // 🛠️ FIX: Use sendAlertNotification with retry
-                    // ============================================
+                    // Send message (Async to not block the loop too much)
                     const sent = await this.sendWithRetry(recipient, alert, currentPrice, 3);
                     
                     if (sent) {
                         await this.database.markAlertTriggered(alert.id);
                         alertsTriggered++;
-                        console.log(`✅ Alert sent to ${recipient} successfully`);
-                    } else {
-                        alertsFailed++;
-                        console.error(`❌ FAILED to send alert to ${recipient} after 3 retries. Will try next cycle.`);
-                        // Do NOT mark as triggered - it will retry next cycle
                     }
                 }
             }
             
-            if (alertsTriggered > 0) {
-                console.log(`✅ ${alertsTriggered} alerts sent successfully`);
-            }
-            if (alertsFailed > 0) {
-                console.log(`⚠️ ${alertsFailed} alerts failed to send (will retry)`);
-            }
+            this.lastCheckAlertCount = activeAlerts.length;
+            this.lastCheckTriggered = alertsTriggered;
             
         } catch (error) {
-            console.error('❌ Error checking alerts:', error);
+            console.error('❌ Error checking alerts:', error.message);
         } finally {
             this.isChecking = false;
+            // Total time including external APIs (for debug, not health)
+            this.lastCheckDuration = Date.now() - checkStart;
+            this.lastCheckTime = new Date();
         }
     }
 
     // ============================================
-    // 🔄 RETRY LOGIC: Try sending up to maxRetries
+    // 📨 SENDING LOGIC
     // ============================================
     async sendWithRetry(recipient, alert, currentPrice, maxRetries) {
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
-                // Check if WhatsApp is connected
                 if (!this.whatsappService.isConnected) {
-                    console.log(`⏳ WhatsApp not connected, waiting... (attempt ${attempt}/${maxRetries})`);
-                    await this.sleep(3000);
+                    await this.sleep(2000);
                     continue;
                 }
 
-                // Build beautiful alert message
                 const message = this.buildAlertMessage(alert, currentPrice);
-                
-                // Send directly using sock (bypass the silent error catch)
                 const jid = recipient.includes("@") ? recipient : `${recipient}@s.whatsapp.net`;
-                await this.whatsappService.sock.sendMessage(jid, { text: message });
                 
-                console.log(`📨 Alert delivered to ${recipient} (attempt ${attempt})`);
-                return true; // SUCCESS
+                // Using the raw socket for speed
+                await this.whatsappService.sock.sendMessage(jid, { text: message });
+                return true; 
                 
             } catch (error) {
-                console.error(`❌ Send attempt ${attempt}/${maxRetries} failed:`, error.message);
-                
-                if (attempt < maxRetries) {
-                    console.log(`⏳ Retrying in ${attempt * 2} seconds...`);
-                    await this.sleep(attempt * 2000); // Wait longer each retry
-                }
+                console.error(`⚠️ Send failed (attempt ${attempt}):`, error.message);
+                if (attempt < maxRetries) await this.sleep(attempt * 1000);
             }
         }
-        
-        return false; // All retries failed
+        return false;
     }
 
-    // ============================================
-    // 🎨 BEAUTIFUL ALERT MESSAGE
-    // ============================================
     buildAlertMessage(alert, currentPrice) {
         const asset = alert.asset.toUpperCase();
         const direction = alert.direction;
         const target = alert.target_price;
-        
-        // Choose icon based on direction
-        const dirIcon = direction === 'above' ? '📈' : '📉';
-        const alertIcon = direction === 'above' ? '🟢' : '🔴';
-        
-        // Format prices
-        const formattedTarget = this.formatAlertPrice(target);
-        const formattedCurrent = this.formatAlertPrice(currentPrice);
-        
-        // Calculate percentage difference
+        const icon = direction === 'above' ? '📈' : '📉';
+        const color = direction === 'above' ? '🟢' : '🔴';
         const pctDiff = ((currentPrice - target) / target * 100).toFixed(2);
-        const pctSign = pctDiff >= 0 ? '+' : '';
+        
+        return `${color} *PRICE ALERT: ${asset}*
+        
+${icon} Target Hit: *${direction.toUpperCase()} $${target}*
+💰 Current Price: *$${currentPrice}*
+📊 Move: ${pctDiff}%
 
-        return `╔══════════════════════════╗
-║  🚨 *PRICE ALERT TRIGGERED!* 🚨
-╚══════════════════════════╝
-
-${alertIcon} *${asset}* hit your target!
-
-━━━━━━━━━━━━━━━━━
-🎯 *Your Target:* ${formattedTarget}
-💰 *Current Price:* ${formattedCurrent}
-${dirIcon} *Direction:* Price went *${direction.toUpperCase()}*
-📊 *Difference:* ${pctSign}${pctDiff}%
-⏰ *Time:* ${new Date().toLocaleString()}
-━━━━━━━━━━━━━━━━━
-
-✅ _This alert has been completed._
-💡 _Set a new one: "Set ${asset} at ${formattedTarget}"_`;
-    }
-
-    // Simple price formatter for alerts
-    formatAlertPrice(price) {
-        if (!price) return "N/A";
-        if (price < 0.01) return `$${price.toFixed(8)}`;
-        if (price < 1) return `$${price.toFixed(6)}`;
-        if (price > 1000) return `$${price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-        return `$${price.toFixed(4)}`;
+_Alert disabled. Reply to set new one._`;
     }
 
     sleep(ms) {
@@ -197,29 +148,19 @@ ${dirIcon} *Direction:* Price went *${direction.toUpperCase()}*
     async updatePriceHistory() {
         try {
             const activeAlerts = await this.database.getActiveAlerts();
-            const assetsWithAlerts = [...new Set(activeAlerts.map(a => a.asset.toUpperCase()))];
+            const assets = [...new Set(activeAlerts.map(a => a.asset.toUpperCase()))];
+            if (assets.length === 0) return;
             
-            if (assetsWithAlerts.length === 0) return;
-            
-            console.log(`📊 Updating price history for ${assetsWithAlerts.length} assets`);
-            
-            const prices = await this.priceService.getMultiplePrices(assetsWithAlerts);
-            
+            const prices = await this.priceService.getMultiplePrices(assets);
             for (const [asset, price] of Object.entries(prices)) {
-                if (price !== null && price !== undefined) {
-                    await this.database.recordPrice(asset, price);
-                }
+                if (price) await this.database.recordPrice(asset, price);
             }
-            
-            console.log(`📊 Price history updated for ${assetsWithAlerts.length} assets`);
         } catch (error) {
-            console.error('❌ Error updating price history:', error);
+            console.error('Price history update failed:', error.message);
         }
     }
 
     stop() {
-        if (!this.isRunning) return;
-        console.log('⏹️ Alert monitor stopped');
         this.isRunning = false;
     }
 }
