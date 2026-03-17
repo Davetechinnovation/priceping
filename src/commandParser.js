@@ -146,7 +146,13 @@ _We'll review your account as_
 _soon as possible._`;
     }
 
+    // 🔒 CHECK IF BOT IS IN EMERGENCY LOCKDOWN
+    if (global.isLockedDown === true) {
+      return `🔒 *Service Temporarily Paused*\n━━━━━━━━━━━━━━━━━\nPricePing is currently undergoing maintenance.\n\nAll features are temporarily disabled:\n❌ Price checking\n❌ Alert management\n❌ All commands\n\n⏳ _We'll be back shortly. Thank you for your patience!_`;
+    }
+
     // ✅ NEW: Track every command
+
     try {
       await db.incrementCommandCount(cleanPhone);
     } catch (e) {

@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 
+// 🔧 FIX: Override system DNS with Google's reliable DNS to fix
+// querySrv ECONNREFUSED errors on Windows when connecting to MongoDB Atlas
+const dns = require('dns');
+dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1']);
+
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");

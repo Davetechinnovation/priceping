@@ -317,6 +317,28 @@ function createAdminAPI(app, memoryMonitor) {
   });
 
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  //  GET /api/admin/price-check?coin=BTC
+  //  Price-only lookup — does NOT send any WhatsApp message
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  app.get("/api/admin/price-check", async (req, res) => {
+    try {
+      const { coin } = req.query;
+      if (!coin) return res.status(400).json({ error: "coin query param required" });
+
+      const priceService = global.priceService;
+      const priceInfo = await priceService.getAssetInfo(coin.toUpperCase());
+      if (!priceInfo) {
+        return res.status(404).json({ error: "Coin not found" });
+      }
+
+      res.json({ price: priceInfo.price, symbol: priceInfo.symbol, name: priceInfo.name });
+    } catch (error) {
+      console.error("Price check error:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   //  POST /api/admin/trigger-manual
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   /**
@@ -338,10 +360,10 @@ function createAdminAPI(app, memoryMonitor) {
    *                 example: "BTC"
    *               recipientType:
    *                 type: string
-   *                 enum: [self, other]
+   *                 enum: [self, other, custom]
    *               phoneNumber:
    *                 type: string
-   *                 description: Required if recipientType is 'other'
+   *                 description: Required if recipientType is 'other' or 'custom'
    *     responses:
    *       200:
    *         description: Manual alert triggered successfully
@@ -362,11 +384,35 @@ function createAdminAPI(app, memoryMonitor) {
       }
 
       let targetPhone = "";
-     if (recipientType === "self") {
-    const myJid = whatsappService?.myJid;
-    targetPhone = myJid ? myJid.split(":")[0].split("@")[0] : null;
-} else {
-        targetPhone = phoneNumber.replace(/[^0-9]/g, "");
+      if (recipientType === "self") {
+        const myJid = whatsappService?.myJid;
+        targetPhone = myJid ? myJid.split(":")[0].split("@")[0] : null;
+      } else {
+        // recipientType === "other" or "custom" — both mean a specific number
+        if (!phoneNumber) {
+          return res.status(400).json({ error: "phoneNumber is required when recipientType is 'other' or 'custom'" });
+        }
+        
+        const { countryCode } = req.body;
+        const cc = (countryCode || "234").replace(/[^0-9]/g, "");
+        
+        // ── ROBUST NORMALIZATION ──
+        // 1. Strip all non-digits except '+'
+        let cleaned = phoneNumber.replace(/[^0-9+]/g, "");
+        
+        if (cleaned.startsWith("+")) {
+          // Case 1: Already fully international (e.g. +234...)
+          targetPhone = cleaned.substring(1);
+        } else if (cleaned.startsWith("0")) {
+          // Case 2: Local format with leading zero (e.g. 081...)
+          targetPhone = cc + cleaned.substring(1);
+        } else if (cleaned.startsWith(cc) && (cleaned.length === cc.length + 10 || cleaned.length === cc.length + 9)) {
+          // Case 3: Already starts with CC and looks like a full number
+          targetPhone = cleaned;
+        } else {
+          // Case 4: Prepend CC (e.g. user typed 812... or 916...)
+          targetPhone = cc + cleaned;
+        }
       }
 
       if (!targetPhone) {
@@ -386,13 +432,58 @@ _This is a manual trigger for testing purposes._`;
 
       res.json({ 
         success: true, 
-        message: `Alert sent to ${targetPhone}`,
+        message: `Alert sent to +${targetPhone}`,
         price: priceInfo.price 
       });
     } catch (error) {
       console.error("Manual trigger error:", error);
       res.status(500).json({ error: error.message });
     }
+  });
+
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  //  POST /api/admin/lockdown
+  //  Body: { active: true | false }
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  app.post("/api/admin/lockdown", (req, res) => {
+    try {
+      const { active } = req.body;
+      if (typeof active !== "boolean") {
+        return res.status(400).json({ error: "Body must include { active: true | false }" });
+      }
+
+      global.isLockedDown = active;
+
+      // Pause / resume the alert monitor so no alerts fire during lockdown
+      const alertMonitor = global.alertMonitor;
+      if (alertMonitor) {
+        if (active) {
+          alertMonitor.isLockedDown = true;
+          console.log("[LOCKDOWN] 🔒 Emergency lockdown ACTIVATED — alerts paused");
+        } else {
+          alertMonitor.isLockedDown = false;
+          console.log("[LOCKDOWN] 🔓 Emergency lockdown LIFTED — alerts resumed");
+        }
+      }
+
+      res.json({
+        success: true,
+        isLockedDown: active,
+        message: active ? "🔒 Bot is now in emergency lockdown." : "🔓 Lockdown lifted. Bot resumed.",
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error("Lockdown error:", error);
+      res.status(500).json({ error: "Failed to toggle lockdown" });
+    }
+  });
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  //  GET /api/admin/lockdown/status
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  app.get("/api/admin/lockdown/status", (req, res) => {
+    res.json({ isLockedDown: !!global.isLockedDown });
   });
 
   app.get("/api/admin/status", async (req, res) => {

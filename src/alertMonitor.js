@@ -7,7 +7,7 @@ class AlertMonitor {
         this.whatsappService = whatsappService;
         this.isChecking = false;
         this.isRunning = false;
-        
+
         // Metrics for Admin Dashboard
         this.lastCheckDuration = 0; // Total time (Slow: includes API fetch)
         this.dbLatency = 0;         // ✅ NEW: Just DB time (Fast: System Health)
@@ -41,9 +41,9 @@ class AlertMonitor {
     async checkAlerts() {
         if (this.isChecking) return;
         this.isChecking = true;
-        
+
         const checkStart = Date.now();
-        
+
         try {
             // ⏱️ STEP 1: Measure Database Speed ONLY (This is your "Latency")
             const dbStart = Date.now();
@@ -54,15 +54,15 @@ class AlertMonitor {
 
             // ⏱️ STEP 2: The rest involves external APIs (This is "Duration")
             const uniqueAssets = [...new Set(activeAlerts.map(a => a.asset.toUpperCase()))];
-            
+
             // This line takes 500ms - 2000ms (Internet speed)
             const allPrices = await this.priceService.getMultiplePrices(uniqueAssets);
-            
+
             let alertsTriggered = 0;
 
             for (const alert of activeAlerts) {
                 const currentPrice = allPrices[alert.asset.toUpperCase()];
-                
+
                 if (currentPrice === null || currentPrice === undefined) continue;
 
                 let shouldTrigger = false;
@@ -74,20 +74,20 @@ class AlertMonitor {
                     if (!recipient) continue;
 
                     console.log(`🚨 Trigger: ${alert.asset} ${alert.direction} ${alert.target_price}`);
-                    
+
                     // Send message (Async to not block the loop too much)
                     const sent = await this.sendWithRetry(recipient, alert, currentPrice, 3);
-                    
+
                     if (sent) {
                         await this.database.markAlertTriggered(alert.id);
                         alertsTriggered++;
                     }
                 }
             }
-            
+
             this.lastCheckAlertCount = activeAlerts.length;
             this.lastCheckTriggered = alertsTriggered;
-            
+
         } catch (error) {
             console.error('❌ Error checking alerts:', error.message);
         } finally {
@@ -111,11 +111,11 @@ class AlertMonitor {
 
                 const message = this.buildAlertMessage(alert, currentPrice);
                 const jid = recipient.includes("@") ? recipient : `${recipient}@s.whatsapp.net`;
-                
+
                 // Using the raw socket for speed
                 await this.whatsappService.sock.sendMessage(jid, { text: message });
-                return true; 
-                
+                return true;
+
             } catch (error) {
                 console.error(`⚠️ Send failed (attempt ${attempt}):`, error.message);
                 if (attempt < maxRetries) await this.sleep(attempt * 1000);
@@ -131,7 +131,7 @@ class AlertMonitor {
         const icon = direction === 'above' ? '📈' : '📉';
         const color = direction === 'above' ? '🟢' : '🔴';
         const pctDiff = ((currentPrice - target) / target * 100).toFixed(2);
-        
+
         return `${color} *PRICE ALERT: ${asset}*
         
 ${icon} Target Hit: *${direction.toUpperCase()} $${target}*
@@ -150,7 +150,7 @@ _Alert disabled. Reply to set new one._`;
             const activeAlerts = await this.database.getActiveAlerts();
             const assets = [...new Set(activeAlerts.map(a => a.asset.toUpperCase()))];
             if (assets.length === 0) return;
-            
+
             const prices = await this.priceService.getMultiplePrices(assets);
             for (const [asset, price] of Object.entries(prices)) {
                 if (price) await this.database.recordPrice(asset, price);
