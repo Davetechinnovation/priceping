@@ -71,9 +71,12 @@ class AlertMonitor {
 
                 if (shouldTrigger) {
                     const recipient = alert.phone_number || alert.whatsapp_number;
-                    if (!recipient) continue;
+                    if (!recipient) {
+                        console.warn(`⚠️ Skipping alert ${alert.id}: No valid phone number found for user ${alert.user_id}`);
+                        continue;
+                    }
 
-                    console.log(`🚨 Trigger: ${alert.asset} ${alert.direction} ${alert.target_price}`);
+                    console.log(`🚨 Trigger: ${alert.asset} ${alert.direction} ${alert.target_price} for ${recipient}`);
 
                     // Send message (Async to not block the loop too much)
                     const sent = await this.sendWithRetry(recipient, alert, currentPrice, 3);
@@ -110,10 +113,15 @@ class AlertMonitor {
                 }
 
                 const message = this.buildAlertMessage(alert, currentPrice);
-                const jid = recipient.includes("@") ? recipient : `${recipient}@s.whatsapp.net`;
+                
+                // CRITICAL FIX: Baileys fails silently if JID contains a '+' or spaces
+                const cleanRecipient = recipient.includes("@") ? recipient : recipient.replace(/[^0-9]/g, "");
+                const jid = cleanRecipient.includes("@") ? cleanRecipient : `${cleanRecipient}@s.whatsapp.net`;
 
                 // Using the raw socket for speed
                 await this.whatsappService.sock.sendMessage(jid, { text: message });
+                
+                console.log(`✅ Message sent successfully to ${jid}`);
                 return true;
 
             } catch (error) {
