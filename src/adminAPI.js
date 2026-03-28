@@ -374,9 +374,10 @@ function createAdminAPI(app, memoryMonitor) {
    */
   app.post("/api/admin/trigger-manual", async (req, res) => {
     try {
-      const { coin, recipientType, phoneNumber } = req.body;
+      const { coin, recipientType, phoneNumber, channel = "whatsapp" } = req.body;
       const priceService = global.priceService;
       const whatsappService = global.whatsappService;
+      const termiiService = global.termiiService;
 
       const priceInfo = await priceService.getAssetInfo(coin);
       if (!priceInfo) {
@@ -388,29 +389,20 @@ function createAdminAPI(app, memoryMonitor) {
         const myJid = whatsappService?.myJid;
         targetPhone = myJid ? myJid.split(":")[0].split("@")[0] : null;
       } else {
-        // recipientType === "other" or "custom" — both mean a specific number
         if (!phoneNumber) {
           return res.status(400).json({ error: "phoneNumber is required when recipientType is 'other' or 'custom'" });
         }
-        
         const { countryCode } = req.body;
         const cc = (countryCode || "234").replace(/[^0-9]/g, "");
-        
-        // ── ROBUST NORMALIZATION ──
-        // 1. Strip all non-digits except '+'
         let cleaned = phoneNumber.replace(/[^0-9+]/g, "");
-        
+
         if (cleaned.startsWith("+")) {
-          // Case 1: Already fully international (e.g. +234...)
           targetPhone = cleaned.substring(1);
         } else if (cleaned.startsWith("0")) {
-          // Case 2: Local format with leading zero (e.g. 081...)
           targetPhone = cc + cleaned.substring(1);
         } else if (cleaned.startsWith(cc) && (cleaned.length === cc.length + 10 || cleaned.length === cc.length + 9)) {
-          // Case 3: Already starts with CC and looks like a full number
           targetPhone = cleaned;
         } else {
-          // Case 4: Prepend CC (e.g. user typed 812... or 916...)
           targetPhone = cc + cleaned;
         }
       }
@@ -419,21 +411,58 @@ function createAdminAPI(app, memoryMonitor) {
         return res.status(400).json({ error: "Recipient phone number not found" });
       }
 
-      const message = `🛠️ *MANUAL TEST ALERT*
+      const results = { whatsapp: null, sms: null };
+
+      // ── WhatsApp via Baileys ──
+      if (channel === "whatsapp" || channel === "both") {
+        try {
+          const waMessage = `🛠️ *MANUAL TEST ALERT*
       
 💰 Asset: *${priceInfo.name} (${priceInfo.symbol})*
 💵 Current Price: *${priceService.formatPrice(priceInfo.price, priceInfo.symbol)}*
 🏦 Exchange: ${priceInfo.blockchain}
 
 _This is a manual trigger for testing purposes._`;
+          const jid = `${targetPhone}@s.whatsapp.net`;
+          await whatsappService.sock.sendMessage(jid, { text: waMessage });
+          results.whatsapp = "sent";
+        } catch (e) {
+          console.error("Manual trigger WhatsApp error:", e.message);
+          results.whatsapp = "failed";
+        }
+      }
 
-      const jid = `${targetPhone}@s.whatsapp.net`;
-      await whatsappService.sock.sendMessage(jid, { text: message });
+      // ── SMS via Termii ──
+      if (channel === "sms" || channel === "both") {
+        if (!termiiService?.isAvailable) {
+          results.sms = "unavailable (no Termii API key)";
+        } else {
+          try {
+            const smsMessage = `[PricePing Test Alert]
+Asset: ${priceInfo.name} (${priceInfo.symbol})
+Price: ${priceService.formatPrice(priceInfo.price, priceInfo.symbol)}
+Exchange: ${priceInfo.blockchain}
+(Manual test trigger)`;
+            await termiiService.sendSMS(targetPhone, smsMessage, "generic");
+            results.sms = "sent";
+          } catch (e) {
+            console.error("Manual trigger SMS error:", e.message);
+            results.sms = `failed: ${e.message}`;
+          }
+        }
+      }
 
-      res.json({ 
-        success: true, 
-        message: `Alert sent to +${targetPhone}`,
-        price: priceInfo.price 
+      const anySuccess = Object.values(results).some(v => v === "sent");
+      const summary = Object.entries(results)
+        .filter(([, v]) => v !== null)
+        .map(([k, v]) => `${k}: ${v}`)
+        .join(", ");
+
+      res.json({
+        success: anySuccess,
+        message: `Alert sent to +${targetPhone} (${summary})`,
+        price: priceInfo.price,
+        results,
       });
     } catch (error) {
       console.error("Manual trigger error:", error);

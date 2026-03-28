@@ -1,10 +1,11 @@
 const cron = require('node-cron');
 
 class AlertMonitor {
-    constructor(database, priceService, whatsappService) {
+    constructor(database, priceService, whatsappService, termiiService = null) {
         this.database = database;
         this.priceService = priceService;
         this.whatsappService = whatsappService;
+        this.termiiService = termiiService;
         this.isChecking = false;
         this.isRunning = false;
 
@@ -14,6 +15,12 @@ class AlertMonitor {
         this.lastCheckTime = null;
         this.lastCheckAlertCount = 0;
         this.lastCheckTriggered = 0;
+
+        if (termiiService?.isAvailable) {
+            console.log('📲 Termii multi-channel alerts: ENABLED (SMS + WhatsApp)');
+        } else {
+            console.log('📲 Termii multi-channel alerts: DISABLED (no API key)');
+        }
     }
 
     start() {
@@ -104,7 +111,28 @@ class AlertMonitor {
     // ============================================
     // 📨 SENDING LOGIC
     // ============================================
+
+    /**
+     * Send alert across all available channels:
+     *  1. Baileys WhatsApp (existing, with retry)
+     *  2. Termii SMS
+     *  3. Termii WhatsApp
+     * Returns true if at least one channel succeeds.
+     */
     async sendWithRetry(recipient, alert, currentPrice, maxRetries) {
+        const results = await Promise.allSettled([
+            this._sendViaBaileys(recipient, alert, currentPrice, maxRetries),
+            this._sendViaTermii(recipient, alert, currentPrice),
+        ]);
+
+        const anySuccess = results.some(
+            (r) => r.status === 'fulfilled' && r.value === true
+        );
+        return anySuccess;
+    }
+
+    // ── Private: Baileys WhatsApp ──────────────────
+    async _sendViaBaileys(recipient, alert, currentPrice, maxRetries) {
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
                 if (!this.whatsappService.isConnected) {
@@ -113,25 +141,47 @@ class AlertMonitor {
                 }
 
                 const message = this.buildAlertMessage(alert, currentPrice);
-                
+
                 // CRITICAL FIX: Baileys fails silently if JID contains a '+' or spaces
-                const cleanRecipient = recipient.includes("@") ? recipient : recipient.replace(/[^0-9]/g, "");
-                const jid = cleanRecipient.includes("@") ? cleanRecipient : `${cleanRecipient}@s.whatsapp.net`;
+                const cleanRecipient = recipient.includes('@')
+                    ? recipient
+                    : recipient.replace(/[^0-9]/g, '');
+                const jid = cleanRecipient.includes('@')
+                    ? cleanRecipient
+                    : `${cleanRecipient}@s.whatsapp.net`;
 
-                // Using the raw socket for speed
                 await this.whatsappService.sock.sendMessage(jid, { text: message });
-                
-                console.log(`✅ Message sent successfully to ${jid}`);
+                console.log(`✅ [Baileys] Message sent to ${jid}`);
                 return true;
-
             } catch (error) {
-                console.error(`⚠️ Send failed (attempt ${attempt}):`, error.message);
+                console.error(`⚠️ [Baileys] Send failed (attempt ${attempt}):`, error.message);
                 if (attempt < maxRetries) await this.sleep(attempt * 1000);
             }
         }
         return false;
     }
 
+    // ── Private: Termii SMS only ──────────────────
+    async _sendViaTermii(recipient, alert, currentPrice) {
+        if (!this.termiiService?.isAvailable) return false;
+
+        const plainText = this.buildPlainAlertMessage(alert, currentPrice);
+        // Clean number for Termii: strip +, spaces, dashes
+        const cleanNumber = String(recipient).replace(/[^0-9]/g, '');
+
+        try {
+            await this.termiiService.sendSMS(cleanNumber, plainText, 'generic');
+            console.log(`✅ [Termii SMS] Sent to ${cleanNumber}`);
+            return true;
+        } catch (err) {
+            console.error(`⚠️ [Termii SMS] Failed for ${cleanNumber}:`, err.message);
+            return false;
+        }
+    }
+
+    // ── Message builders ──────────────────────────
+
+    // Rich markdown version (for Baileys WhatsApp)
     buildAlertMessage(alert, currentPrice) {
         const asset = alert.asset.toUpperCase();
         const direction = alert.direction;
@@ -147,6 +197,21 @@ ${icon} Target Hit: *${direction.toUpperCase()} $${target}*
 📊 Move: ${pctDiff}%
 
 _Alert disabled. Reply to set new one._`;
+    }
+
+    // Plain-text version (for Termii SMS / Termii WhatsApp)
+    buildPlainAlertMessage(alert, currentPrice) {
+        const asset = alert.asset.toUpperCase();
+        const direction = alert.direction;
+        const target = alert.target_price;
+        const icon = direction === 'above' ? '📈' : '📉';
+        const pctDiff = ((currentPrice - target) / target * 100).toFixed(2);
+
+        return `${icon} PricePing Alert: ${asset}
+Target hit: ${direction.toUpperCase()} $${target}
+Current price: $${currentPrice}
+Move: ${pctDiff}%
+Alert disabled. Reply START to set a new one.`;
     }
 
     sleep(ms) {

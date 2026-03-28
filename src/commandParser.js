@@ -1,8 +1,15 @@
+const GeminiService = require('./geminiService');
+
 class CommandParser {
   constructor() {
+    this.geminiService = new GeminiService();
     this.commands = {
       hi: this.handleGreeting.bind(this),
       hello: this.handleGreeting.bind(this),
+      halo: this.handleGreeting.bind(this),
+      hallo: this.handleGreeting.bind(this),
+      hey: this.handleGreeting.bind(this),
+      sup: this.handleGreeting.bind(this),
       start: this.handleGreeting.bind(this),
       menu: this.handleGreeting.bind(this),
       help: this.handleHelp.bind(this),
@@ -15,7 +22,6 @@ class CommandParser {
       set: this.handleSetAlert.bind(this),
       alert: this.handleSetAlert.bind(this),
       alerts: this.handleMyAlerts.bind(this),
-      my: this.handleMyAlerts.bind(this),
       del: this.handleDeleteAlert.bind(this),
       delete: this.handleDeleteAlert.bind(this),
 
@@ -92,6 +98,28 @@ class CommandParser {
     return { command: words[0], args: words.slice(1) };
   }
 
+  isStrictCommand(command, args) {
+    if (["hi", "hello", "halo", "hallo", "hey", "sup", "start", "menu", "status", "subscribe", "upgrade", "help"].includes(command)) {
+      return args.length === 0;
+    }
+    if (["price", "p"].includes(command)) {
+      return args.length >= 1 && args.length <= 3; 
+    }
+    if (["del", "delete"].includes(command)) {
+      return args.length === 1 && !isNaN(args[0]);
+    }
+    if (["alerts"].includes(command)) {
+      return args.length === 0;
+    }
+    if (["set", "alert"].includes(command)) {
+      return args.length >= 2 && (args.includes("at") || args.some((a) => !isNaN(parseFloat(a.replace(/,/g, "")))));
+    }
+    if (["name"].includes(command)) {
+      return args.length >= 1 && args.length <= 3;
+    }
+    return false;
+  }
+
   // ==========================================
   // 🎯 MAIN HANDLER
   // ==========================================
@@ -159,10 +187,54 @@ _soon as possible._`;
       console.error("Command tracking error:", e.message);
     }
 
-    const handler = this.commands[command];
+    let handler = this.commands[command];
+    
+    // FIX: Only use the zero-cost fast-path if the message strictly structurally matches a command.
+    // If it's a natural English sentence starting with a command word (e.g. "Price is moving fast"),
+    // pass it safely to Gemini for context processing.
+    if (handler && !this.isStrictCommand(command, args)) {
+      handler = null;
+    }
+
     if (!handler) {
-      if (["hey", "bot", "test"].includes(command))
+      const greetings = ["bot", "test", "morning", "gm", "evening", "afternoon"];
+      if (greetings.includes(command) && args.length === 0) {
         return this.handleGreeting([], cleanPhone, db, priceService, pushName);
+      }
+        
+      if (this.geminiService && this.geminiService.isConfigured()) {
+        try {
+          const usage = await db.getAlertUsage(cleanPhone);
+          const isPro = usage ? usage.isPro : false;
+          let refinedArray = await this.geminiService.refinePrompt(message, isPro, cleanPhone);
+          
+          if (refinedArray && !Array.isArray(refinedArray)) {
+             refinedArray = [refinedArray];
+          }
+
+          if (refinedArray && refinedArray.length > 0) {
+            let responses = [];
+            for (const refined of refinedArray) {
+              if (refined.command === "chat" && refined.args && refined.args[0]) {
+                console.log(`🤖 Gemini chat: "${message}" ->`, refined.args[0]);
+                responses.push(refined.args[0]);
+              } else if (this.commands[refined.command]) {
+                console.log(`🤖 Gemini command: "${message}" ->`, refined);
+                const res = await this.commands[refined.command](
+                  refined.args, cleanPhone, db, priceService, pushName, userState
+                );
+                if (res) responses.push(res);
+              }
+            }
+            if (responses.length > 0) {
+              return responses.join('\n\n━━━━━━━━━━━━━━━━━\n\n');
+            }
+          }
+        } catch (e) {
+          console.error("Gemini routing error:", e.message);
+        }
+      }
+
       return this.handleUnknownCommand(command, args);
     }
 
@@ -436,7 +508,9 @@ Please select specific chain:
     const existingAlerts = await db.getUserAlerts(phoneNumber);
     const duplicateAlert = existingAlerts.find(
       (alert) =>
-        alert.asset.toUpperCase() === asset && alert.status === "active",
+        alert.asset.toUpperCase() === asset && 
+        alert.status === "active" &&
+        alert.targetPrice === targetPrice
     );
 
     if (duplicateAlert) {
@@ -450,7 +524,7 @@ Please select specific chain:
 🎯 *Existing Target:* ${formattedTarget}
 📊 *Current:* ${priceService.formatPrice(currentPrice, asset)}
 ━━━━━━━━━━━━━━━━━━━━━━
-💡 *Delete first:* "Delete 1" then set new alert.`;
+💡 You already have an active alert for ${asset} at this exact same price. Try tracking a different level!`;
     }
 
     const slotResult = await db.useAlertSlot(phoneNumber);

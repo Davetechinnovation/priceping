@@ -21,6 +21,7 @@ const CommandParser = require("./src/commandParser");
 const AlertMonitor = require("./src/alertMonitor");
 const PriceService = require("./src/priceService");
 const MemoryMonitor = require("./src/memoryMonitor");
+const TermiiService = require("./src/termiiService");
 const { createAdminAPI } = require("./src/adminAPI");
 
 const app = express();
@@ -138,6 +139,7 @@ async function initializeBot() {
 
     // 3. START SERVICES
     const priceService = new PriceService();
+    const termiiService = new TermiiService();
     console.log("🔥 Warming up caches...");
     try {
       await Promise.all([
@@ -291,6 +293,7 @@ _I'll message you the moment it hits!_`;
       database,
       priceService,
       whatsappService,
+      termiiService,
     );
     alertMonitor.start();
 
@@ -299,6 +302,7 @@ _I'll message you the moment it hits!_`;
     global.whatsappService = whatsappService;
     global.alertMonitor = alertMonitor;
     global.priceService = priceService;
+    global.termiiService = termiiService;
     global.botInitialized = true;
     console.log("🎉 PricePing Bot is fully operational!");
   } catch (error) {
