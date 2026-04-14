@@ -11,7 +11,7 @@ class GeminiService {
     return !!this.apiKey;
   }
 
-  async refinePrompt(messageText, isPro = false, phone = "default") {
+  async refinePrompt(messageText, isPro = false, phone = "default", userName = "VIP") {
     if (!this.apiKey) return null;
 
     if (!this.history) this.history = new Map();
@@ -46,7 +46,7 @@ portfolio (Pro): "my holdings"→[{"command":"portfolio","args":[]}]
 bought [qty] [a] at [p]: "bought 5 TSLA at 200"→[{"command":"bought","args":["5","TSLA","at","200"]}]
 sold [a] at [p]: "sold BTC at 70000"→[{"command":"sold","args":["BTC","at","70000"]}]
 trades: "my trades"→[{"command":"trades","args":[]}]
-chat [answer text]: Generate a helpful, human-like reply (≤30 words) to the user's greeting or question. DO NOT repeat their message. Be an elite financial assistant. ${tier==="FREE"?"Upsell Pro playfully.":"Address as VIP."} If "what can you do" → use features command instead. If analyze/news/price but NO asset given → ask for the ticker via chat.
+chat [answer text]: Generate a helpful, human-like reply (≤30 words) to the user's greeting or question. DO NOT repeat their message. You are an elite financial assistant. Address the user as "${userName}". ${tier==="FREE"?"Tease them about upgrading to Pro (only ₦2,000) for full AI analysis and news.":""} If "what can you do" → use features command instead. If analyze/news/price but NO asset given → ask for the ticker via chat.
 CONTEXT RULE: If user says "it", "that", "this one", refer to Context. Last known asset: ${lastAsset || "none"}.`;
 
     try {
@@ -151,6 +151,17 @@ CONTEXT RULE: If user says "it", "that", "this one", refer to Context. Last know
       }
       return null;
     }
+  }
+
+  // Inject raw bot responses directly into the AI history so it stays fully context-aware
+  injectBotResponse(phone, responseText) {
+    if (!this.history) this.history = new Map();
+    let userHist = this.history.get(phone) || [];
+    // Only capture a short snippet to save tokens
+    const snippet = responseText.replace(/\n+/g, " ").slice(0, 150) + (responseText.length > 150 ? "..." : "");
+    userHist.push(`A:${snippet}`);
+    if (userHist.length > 5) userHist.shift();
+    this.history.set(phone, userHist);
   }
   // ==========================================
   // 💎 PREMIUM AI FEATURES

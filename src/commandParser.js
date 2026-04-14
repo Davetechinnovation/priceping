@@ -242,7 +242,7 @@ _soon as possible._`;
         try {
           const usage = await db.getAlertUsage(cleanPhone);
           const isPro = usage ? usage.isPro : false;
-          let refinedArray = await this.geminiService.refinePrompt(message, isPro, cleanPhone);
+          let refinedArray = await this.geminiService.refinePrompt(message, isPro, cleanPhone, pushName);
           
           if (refinedArray && !Array.isArray(refinedArray)) {
              refinedArray = [refinedArray];
@@ -263,7 +263,9 @@ _soon as possible._`;
               }
             }
             if (responses.length > 0) {
-              return responses.join('\n\n━━━━━━━━━━━━━━━━━\n\n');
+              const finalResp = responses.join('\n\n━━━━━━━━━━━━━━━━━\n\n');
+              this.geminiService.injectBotResponse(cleanPhone, finalResp);
+              return finalResp;
             }
           }
         } catch (e) {
@@ -271,11 +273,13 @@ _soon as possible._`;
         }
       }
 
-      return this.handleUnknownCommand(command, args);
+      const unknownRes = this.handleUnknownCommand(command, args);
+      if (this.geminiService) this.geminiService.injectBotResponse(cleanPhone, unknownRes);
+      return unknownRes;
     }
 
     try {
-      return await handler(
+      const resp = await handler(
         args,
         cleanPhone,
         db,
@@ -283,6 +287,8 @@ _soon as possible._`;
         pushName,
         userState,
       );
+      if (this.geminiService) this.geminiService.injectBotResponse(cleanPhone, resp);
+      return resp;
     } catch (error) {
       console.error(error);
       return "⚠️ *System Error*: Something went wrong. Try again!";
