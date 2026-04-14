@@ -69,9 +69,12 @@ class MongoDBManager {
         subscription_end_date: null,
         // 🟢 ALERT LIMIT FIELDS
         alerts_used_this_period: 0,
-        last_alert_reset: new Date(), // Timestamp of last reset
+        last_alert_reset: new Date(),
+        total_commands: 0,
+        last_active: new Date(),
+        streak: { current: 1, last_active_date: new Date().toISOString().split('T')[0] },
+        sms_number: null, // Premium SMS Notification
         created_at: new Date(),
-        updated_at: new Date(),
       };
 
       const result = await this.db.collection("users").insertOne(user);
@@ -116,6 +119,20 @@ class MongoDBManager {
         .updateOne(
           { phone_number: phoneNumber },
           { $set: { name, updated_at: new Date() } },
+        );
+      return result.modifiedCount > 0;
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async updateUserSmsNumber(phoneNumber, smsNumber) {
+    try {
+      const result = await this.db
+        .collection("users")
+        .updateOne(
+          { phone_number: phoneNumber },
+          { $set: { sms_number: smsNumber, updated_at: new Date() } },
         );
       return result.modifiedCount > 0;
     } catch (error) {
@@ -303,13 +320,43 @@ class MongoDBManager {
   }
 
   async incrementCommandCount(phoneNumber) {
-    await this.db.collection("users").updateOne(
-      { phone_number: phoneNumber },
-      {
-        $inc: { total_commands: 1 },
-        $set: { last_active: new Date(), updated_at: new Date() },
-      },
-    );
+    try {
+      const user = await this.getUserByPhoneNumber(phoneNumber);
+      if (!user) return;
+
+      const now = new Date();
+      const todayStr = now.toISOString().split('T')[0];
+      
+      let streakData = user.streak || { current: 1, last_active_date: todayStr };
+      
+      if (streakData.last_active_date !== todayStr) {
+        // Did they miss a day?
+        const yesterday = new Date(now);
+        yesterday.setDate(yesterday.getDate() - 1);
+        const yesterdayStr = yesterday.toISOString().split('T')[0];
+        
+        if (streakData.last_active_date === yesterdayStr) {
+          streakData.current += 1; // Continuous streak
+        } else {
+          streakData.current = 1; // Streak broken
+        }
+        streakData.last_active_date = todayStr;
+      }
+
+      await this.db.collection("users").updateOne(
+        { phone_number: phoneNumber },
+        {
+          $inc: { total_commands: 1 },
+          $set: { 
+            last_active: now, 
+            updated_at: now,
+            streak: streakData 
+          },
+        },
+      );
+    } catch (e) {
+      console.error("Streak tracking error:", e.message);
+    }
   }
 
   // ==========================================
@@ -405,6 +452,8 @@ class MongoDBManager {
           target_price: alert.target_price,
           phone_number: user.phone_number || null,
           whatsapp_number: user.whatsapp_number || null,
+          sms_number: user.sms_number || null,
+          subscription_type: user.subscription_type || 'free',
         };
       });
     } catch (error) {
@@ -655,7 +704,96 @@ class MongoDBManager {
     }
   }
 
+  // ==========================================
+  // 💼 PORTFOLIO TRACKER (Pro)
+  // ==========================================
+
+  async savePortfolio(phoneNumber, holdings) {
+    await this.db.collection('users').updateOne(
+      { phone_number: phoneNumber },
+      { $set: { portfolio: holdings, updated_at: new Date() } }
+    );
+  }
+
+  async getPortfolio(phoneNumber) {
+    const user = await this.getUserByPhoneNumber(phoneNumber);
+    return user?.portfolio || [];
+  }
+
+  async clearPortfolio(phoneNumber) {
+    await this.db.collection('users').updateOne(
+      { phone_number: phoneNumber },
+      { $set: { portfolio: [], updated_at: new Date() } }
+    );
+  }
+
+  // ==========================================
+  // 📓 TRADE JOURNAL (Pro)
+  // ==========================================
+
+  async logTrade(phoneNumber, asset, quantity, buyPrice) {
+    await this.db.collection('trades').insertOne({
+      phone_number: phoneNumber,
+      asset: asset.toUpperCase(),
+      quantity: parseFloat(quantity),
+      buy_price: parseFloat(buyPrice),
+      sell_price: null,
+      status: 'open',
+      opened_at: new Date(),
+      closed_at: null,
+    });
+  }
+
+  async getOpenTrade(phoneNumber, asset) {
+    return this.db.collection('trades').findOne({
+      phone_number: phoneNumber,
+      asset: asset.toUpperCase(),
+      status: 'open',
+    });
+  }
+
+  async getOpenTrades(phoneNumber) {
+    return this.db.collection('trades')
+      .find({ phone_number: phoneNumber, status: 'open' })
+      .toArray();
+  }
+
+  async closeTrade(phoneNumber, asset, sellPrice) {
+    const trade = await this.getOpenTrade(phoneNumber, asset);
+    if (!trade) return null;
+    await this.db.collection('trades').updateOne(
+      { _id: trade._id },
+      { $set: { sell_price: parseFloat(sellPrice), status: 'closed', closed_at: new Date() } }
+    );
+    return trade;
+  }
+
+  async getClosedTrades(phoneNumber, limit = 10) {
+    return this.db.collection('trades')
+      .find({ phone_number: phoneNumber, status: 'closed' })
+      .sort({ closed_at: -1 })
+      .limit(limit)
+      .toArray();
+  }
+
+  // ==========================================
+  // 👑 PRO USERS QUERY (for Daily Brief)
+  // ==========================================
+
+  async getProUsers() {
+    try {
+      return this.db.collection('users').find({
+        subscription_type: 'pro',
+        whatsapp_number: { $exists: true, $ne: null }
+      }).toArray();
+    } catch (e) {
+      console.error('Error fetching Pro users:', e.message);
+      return [];
+    }
+  }
+
   async close() {
+
     if (this.client) {
       await this.client.close();
       this.isConnected = false;

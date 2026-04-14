@@ -6,7 +6,7 @@ const TERMII_BASE_URL = process.env.TERMII_BASE_URL || 'termii.com';
 class TermiiService {
     constructor() {
         this.apiKey = process.env.Termii_api_key;
-        this.senderId = process.env.TERMII_SENDER_ID || 'N-Alert';
+        this.senderId = process.env.TERMII_SENDER_ID || 'fastbeep';
 
         if (!this.apiKey) {
             console.warn('⚠️  Termii: No API key found. SMS alerts will be disabled.');

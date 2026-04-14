@@ -326,6 +326,9 @@ function createAdminAPI(app, memoryMonitor) {
       if (!coin) return res.status(400).json({ error: "coin query param required" });
 
       const priceService = global.priceService;
+      if (!priceService) {
+        return res.status(503).json({ error: "Price service is initializing" });
+      }
       const priceInfo = await priceService.getAssetInfo(coin.toUpperCase());
       if (!priceInfo) {
         return res.status(404).json({ error: "Coin not found" });

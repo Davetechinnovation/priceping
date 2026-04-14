@@ -36,9 +36,11 @@
     "node-cron": "^4.2.1",
     "pino": "^10.3.0",
     "qrcode": "^1.5.4",
+    "rss-parser": "^3.13.0",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.0",
-    "twilio": "^4.19.0"
+    "twilio": "^4.19.0",
+    "yahoo-finance2": "^3.14.0"
   },
   "devDependencies": {
     "jest": "^30.2.0",

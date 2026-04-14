@@ -142,13 +142,17 @@ class AlertMonitor {
 
                 const message = this.buildAlertMessage(alert, currentPrice);
 
-                // CRITICAL FIX: Baileys fails silently if JID contains a '+' or spaces
-                const cleanRecipient = recipient.includes('@')
-                    ? recipient
-                    : recipient.replace(/[^0-9]/g, '');
-                const jid = cleanRecipient.includes('@')
-                    ? cleanRecipient
-                    : `${cleanRecipient}@s.whatsapp.net`;
+                let jid;
+                // If we have a fully qualified whatsapp_number from the database (e.g. 231...@lid or 234...@s.whatsapp.net), use it EXACTLY.
+                if (alert.whatsapp_number && alert.whatsapp_number.includes('@')) {
+                    jid = alert.whatsapp_number;
+                } else {
+                    // Fallback to legacy parsing if only phone number is available
+                    let cleanRecipient = String(recipient).replace(/[^0-9+]/g, '');
+                    if (cleanRecipient.startsWith('+')) cleanRecipient = cleanRecipient.substring(1);
+                    if (cleanRecipient.startsWith('0')) cleanRecipient = '234' + cleanRecipient.substring(1);
+                    jid = `${cleanRecipient}@s.whatsapp.net`;
+                }
 
                 await this.whatsappService.sock.sendMessage(jid, { text: message });
                 console.log(`✅ [Baileys] Message sent to ${jid}`);
@@ -163,11 +167,13 @@ class AlertMonitor {
 
     // ── Private: Termii SMS only ──────────────────
     async _sendViaTermii(recipient, alert, currentPrice) {
+        // 👑 SMS is a Pro-only perk. Only send if the user has registered their sms_number.
+        if (!alert.sms_number) return false;
         if (!this.termiiService?.isAvailable) return false;
 
         const plainText = this.buildPlainAlertMessage(alert, currentPrice);
-        // Clean number for Termii: strip +, spaces, dashes
-        const cleanNumber = String(recipient).replace(/[^0-9]/g, '');
+        // Use the stored sms_number directly — already normalised to 234... when saved
+        const cleanNumber = String(alert.sms_number).replace(/[^0-9]/g, '');
 
         try {
             await this.termiiService.sendSMS(cleanNumber, plainText, 'generic');
@@ -178,6 +184,7 @@ class AlertMonitor {
             return false;
         }
     }
+
 
     // ── Message builders ──────────────────────────
 

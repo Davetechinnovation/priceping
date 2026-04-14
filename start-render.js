@@ -22,6 +22,8 @@ const AlertMonitor = require("./src/alertMonitor");
 const PriceService = require("./src/priceService");
 const MemoryMonitor = require("./src/memoryMonitor");
 const TermiiService = require("./src/termiiService");
+const GeminiService = require("./src/geminiService");
+const cron = require("node-cron");
 const { createAdminAPI } = require("./src/adminAPI");
 
 const app = express();
@@ -164,6 +166,61 @@ async function initializeBot() {
           // 1️⃣ CHECK MENU STATE
           if (userState.has(cleanPhone)) {
             const state = userState.get(cleanPhone);
+
+            // ── Pro SMS number collection ──────────────────
+            if (state.type === 'AWAITING_SMS_NUMBER') {
+              const input = messageText.trim();
+              const lower = input.toLowerCase();
+
+              if (lower === 'skip') {
+                commandParser.smsSkippedThisSession.add(cleanPhone);
+                userState.delete(cleanPhone);
+                return `👍 No problem! You'll still get alerts via WhatsApp.\n\n📱 _Tip: Send your number anytime to enable SMS alerts._`;
+              }
+
+              // Accept: 0801... or 234801... (strip spaces/dashes/+)
+              const digits = input.replace(/[\s\-+()]/g, '');
+              if (/^(0\d{10}|234\d{10})$/.test(digits)) {
+                let smsNum = digits;
+                if (smsNum.startsWith('0')) smsNum = '234' + smsNum.substring(1);
+                await database.updateUserSmsNumber(cleanPhone, smsNum);
+                userState.delete(cleanPhone);
+                return `✅ *SMS Alerts Enabled!*\n📱 Alerts will also be sent to *+${smsNum}*\n\n_Send a new number anytime to update it._`;
+              }
+
+              // Invalid input — re-prompt
+              return `📱 Please send your phone number (e.g. *08012345678*)\nor type *SKIP* for WhatsApp only.`;
+            }
+
+            // ── Pro SMS number confirmation (already has one) ──
+            if (state.type === 'CONFIRM_SMS_NUMBER') {
+              const input = messageText.trim();
+
+              if (input === '1') {
+                // Keep same number — nothing to update
+                userState.delete(cleanPhone);
+                return `✅ Got it! SMS alert will be sent to *+${state.smsNumber}* 📱`;
+              }
+
+              if (input === '2') {
+                // Switch state to collect a new number
+                userState.set(cleanPhone, { type: 'AWAITING_SMS_NUMBER' });
+                return `📱 Send your new number (e.g. *08012345678*)\nor type *SKIP* to cancel.`;
+              }
+
+              // They sent a raw phone number directly — accept it too
+              const digits = input.replace(/[\s\-+()]/g, '');
+              if (/^(0\d{10}|234\d{10})$/.test(digits)) {
+                let smsNum = digits;
+                if (smsNum.startsWith('0')) smsNum = '234' + smsNum.substring(1);
+                await database.updateUserSmsNumber(cleanPhone, smsNum);
+                userState.delete(cleanPhone);
+                return `✅ *SMS number updated!*\n📱 Alerts will now be sent to *+${smsNum}*`;
+              }
+
+              return `Reply *1* to keep *+${state.smsNumber}* or *2* to enter a new number.`;
+            }
+
             const selection = parseInt(messageText.trim());
 
             if (
@@ -251,7 +308,7 @@ Type *Subscribe* for unlimited alerts!`;
 
                 const u = slotResult.usage;
 
-                const response = `✅ *Alert Activated!*
+                let response = `✅ *Alert Activated!*
 ━━━━━━━━━━━━━━━━━
 🔔 *Asset:* ${assetName}
 📉 *Target:* ${priceService.formatPrice(state.targetPrice, state.symbol)}
@@ -263,12 +320,19 @@ ${u.isPro ? "👑 Pro Plan" : `⏰ Resets in: ${u.resetIn}`}
 ━━━━━━━━━━━━━━━━━
 _I'll message you the moment it hits!_`;
 
+                // 👑 Pro-only SMS footer for multi-chain alerts too
+                if (u.isPro) {
+                  const user = await database.getUserByPhoneNumber(cleanPhone);
+                  response += commandParser._buildSmsFooter(user, cleanPhone, userState);
+                }
+
                 return response;
               }
             } else {
               userState.delete(cleanPhone);
             }
           }
+
 
           // 2️⃣ NORMAL COMMAND
           return await commandParser.handleCommand(
@@ -297,6 +361,155 @@ _I'll message you the moment it hits!_`;
     );
     alertMonitor.start();
 
+    // ==========================================
+    // ☀️ DAILY MORNING BRIEF (8:00 AM WAT = 7:00 AM UTC)
+    // ==========================================
+    const geminiService = new GeminiService();
+    const TOP_COINS = ['BTC', 'ETH', 'SOL', 'AAPL', 'ZENITHBANK'];
+
+    cron.schedule('0 7 * * *', async () => {
+      console.log('☀️ [Daily Brief] Sending morning brief to Pro users...');
+      try {
+        // 1. Fetch top coin prices
+        const marketData = [];
+        for (const sym of TOP_COINS) {
+          try {
+            const info = await priceService.getAssetInfo(sym);
+            if (info) marketData.push({ symbol: sym, price: info.price, change24h: null });
+          } catch (_) {}
+        }
+
+        if (marketData.length === 0) return;
+
+        // 2. Get all Pro users
+        const proUsers = await database.getProUsers();
+        if (proUsers.length === 0) {
+          console.log('☀️ [Daily Brief] No Pro users found, skipping.');
+          return;
+        }
+
+        // 3. Generate ONE AI brief (cached — all users share it)
+        const baseBrief = await geminiService.generateDailyBrief(marketData, '{{NAME}}');
+
+        // 4. Send personalised message to each Pro user
+        for (const user of proUsers) {
+          try {
+            const name = user.name || 'Trader';
+            const jid = user.whatsapp_number;
+            const userAlerts = await database.getUserAlerts(user.phone_number);
+            const activeAlerts = userAlerts.filter(a => a.status === 'active');
+
+            const priceLines = marketData
+              .map(m => `${m.price > 0 ? '🟢' : '🔴'} *${m.symbol}:* $${m.price.toLocaleString()}`)
+              .join('\n');
+
+            let alertLine = '';
+            if (activeAlerts.length > 0) {
+              alertLine = `\n\n📋 *Your Alerts:* ${activeAlerts.length} active\n` +
+                activeAlerts.slice(0, 3).map(a =>
+                  `   └ ${a.asset} ${a.direction} $${a.target_price.toLocaleString()}`
+                ).join('\n');
+            }
+
+            const aiInsight = baseBrief ? baseBrief.replace('{{NAME}}', name) : '';
+            const today = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
+
+            const msg = `☀️ *Good Morning, ${name}!*
+
+📊 *Daily Market Brief — ${today}*
+━━━━━━━━━━━━━━━━━
+${priceLines}${alertLine}
+━━━━━━━━━━━━━━━━━
+🤖 *AI Insight:*
+${aiInsight || 'Markets are moving — check your alerts!'}
+
+_Reply with any coin name for full analysis._`;
+
+            await whatsappService.sendMessage(jid, msg);
+            // Small delay to avoid flooding
+            await new Promise(r => setTimeout(r, 1200));
+          } catch (e) {
+            console.error(`☀️ [Daily Brief] Failed for ${user.phone_number}:`, e.message);
+          }
+        }
+        console.log(`☀️ [Daily Brief] Sent to ${proUsers.length} Pro users.`);
+      } catch (e) {
+        console.error('☀️ [Daily Brief] Error:', e.message);
+      }
+    }, { timezone: 'Africa/Lagos' });
+
+    console.log('☀️ Daily brief scheduled at 8:00 AM WAT (Africa/Lagos)');
+
+    // ==========================================
+    // 🔥 SIGNIFICANT MOVE DETECTOR (every 15 min)
+    // ==========================================
+    const priceSnapshots = new Map(); // symbol -> { price, ts }
+    const userLastChecked = new Map(); // symbol -> Set of phone numbers
+
+    // Expose a function commandParser can call to track user interest
+    global.trackUserInterest = (symbol, phoneNumber) => {
+      if (!userLastChecked.has(symbol)) userLastChecked.set(symbol, new Map());
+      userLastChecked.get(symbol).set(phoneNumber, Date.now());
+    };
+
+    const MOVE_COINS = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE'];
+    const MOVE_THRESHOLD = 5; // 5% move in 60 mins
+
+    cron.schedule('*/15 * * * *', async () => {
+      try {
+        for (const sym of MOVE_COINS) {
+          const info = await priceService.getAssetInfo(sym);
+          if (!info) continue;
+          const currentPrice = info.price;
+          const now = Date.now();
+          const snapshot = priceSnapshots.get(sym);
+
+          if (snapshot && (now - snapshot.ts) >= 60 * 60 * 1000) {
+            const changePct = ((currentPrice - snapshot.price) / snapshot.price) * 100;
+            if (Math.abs(changePct) >= MOVE_THRESHOLD) {
+              const direction = changePct > 0 ? '📈 pumped' : '📉 dumped';
+              const arrow = changePct > 0 ? '🟢' : '🔴';
+
+              // AI commentary (cached by move event)
+              const aiText = await geminiService.analyzeMarket(sym, currentPrice);
+
+              // Find Pro users who checked this coin in last 24h
+              const interestedUsers = userLastChecked.get(sym);
+              if (interestedUsers && interestedUsers.size > 0) {
+                const alertMsg = `🔥 *Sudden Move Detected!*
+━━━━━━━━━━━━━━━━━
+${arrow} *${sym}* just ${direction} *${changePct > 0 ? '+' : ''}${changePct.toFixed(1)}%* in ~60 min!
+Current: $${currentPrice.toLocaleString()}
+${aiText ? `\n🤖 *AI:* ${aiText}` : ''}
+━━━━━━━━━━━━━━━━━
+_You checked ${sym} recently_`;
+
+                for (const [phone, lastTs] of interestedUsers.entries()) {
+                  if (now - lastTs > 86400000) { interestedUsers.delete(phone); continue; }
+                  try {
+                    const user = await database.getUserByPhoneNumber(phone);
+                    if (!user || user.subscription_type !== 'pro') continue;
+                    await whatsappService.sendMessage(user.whatsapp_number, alertMsg);
+                    await new Promise(r => setTimeout(r, 800));
+                  } catch (_) {}
+                }
+              }
+            }
+          }
+
+          // Always update snapshot to current price every 15 min
+          // But only use for comparison after 60 min has elapsed
+          if (!snapshot || (now - snapshot.ts) >= 60 * 60 * 1000) {
+            priceSnapshots.set(sym, { price: currentPrice, ts: now });
+          }
+        }
+      } catch (e) {
+        console.error('🔥 [MoveDetector] Error:', e.message);
+      }
+    });
+
+    console.log('🔥 Significant Move Detector running (every 15 min, threshold: 5%)');
+
     // ✅ FIX 2: Set global to true immediately on success
     global.database = database;
     global.whatsappService = whatsappService;
@@ -304,7 +517,7 @@ _I'll message you the moment it hits!_`;
     global.priceService = priceService;
     global.termiiService = termiiService;
     global.botInitialized = true;
-    console.log("🎉 PricePing Bot is fully operational!");
+    console.log('🎉 PricePing Bot is fully operational!');
   } catch (error) {
     console.error("❌ Failed to initialize bot:", error);
     console.log("🔄 Retrying full initialization in 30 seconds...");

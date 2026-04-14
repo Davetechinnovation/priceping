@@ -819,10 +819,6 @@ class BaileysWhatsAppService {
       for (const [_, handler] of this.messageHandlers) {
         const response = await handler(messageText, normalizedJid, pushName);
         if (response) {
-          // ✅ Stop typing before sending
-          try {
-            await this.sock.sendPresenceUpdate("paused", rawJid);
-          } catch (e) {}
           await this.sendMessage(rawJid, response);
           return;
         }
