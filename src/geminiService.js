@@ -46,7 +46,7 @@ portfolio (Pro): "my holdings"→[{"command":"portfolio","args":[]}]
 bought [qty] [a] at [p]: "bought 5 TSLA at 200"→[{"command":"bought","args":["5","TSLA","at","200"]}]
 sold [a] at [p]: "sold BTC at 70000"→[{"command":"sold","args":["BTC","at","70000"]}]
 trades: "my trades"→[{"command":"trades","args":[]}]
-chat [answer text]: Generate a helpful, human-like reply (≤30 words) to the user's greeting or question. DO NOT repeat their message. You are an elite financial assistant. Address the user as "${userName}". ${tier==="FREE"?"Tease them about upgrading to Pro (only ₦2,000) for full AI analysis and news.":""} If "what can you do" → use features command instead. If analyze/news/price but NO asset given → ask for the ticker via chat.
+chat [answer text]: Generate a short, human-like reply (≤30 words). Your name is PricePing, an elite AI financial assistant. The human you are talking to is named "${userName}". Do NOT use their name unless answering a question about it (e.g. "Who am I?") or a direct greeting. If the user asks to change THEIR name, output ONLY: [{"command":"name","args":["NewName"]}]. ${tier==="FREE"?"Tease them about upgrading to Pro (₦2,000/mo) for AI analysis.":""} If "what can you do" → use features command. If analyze/news/price but NO asset given → ask for ticker via chat.
 CONTEXT RULE: If user says "it", "that", "this one", refer to Context. Last known asset: ${lastAsset || "none"}.`;
 
     try {
@@ -170,6 +170,11 @@ CONTEXT RULE: If user says "it", "that", "this one", refer to Context. Last know
   // 💎 PREMIUM AI FEATURES
   // ==========================================
 
+  getCurrencySymbol(currencyCode) {
+    const symbolMap = { "NGN": "₦", "USD": "$", "GBP": "£", "EUR": "€" };
+    return symbolMap[currencyCode?.toUpperCase()] || (currencyCode ? `${currencyCode} ` : "$");
+  }
+
   async analyzeMarket(asset, price, percentChange24h = null, currency = "USD") {
     if (!this.apiKey) return null;
     if (!this._marketCache) this._marketCache = new Map();
@@ -180,7 +185,7 @@ CONTEXT RULE: If user says "it", "that", "this one", refer to Context. Last know
       return cached.text;
     }
 
-    const currPrefix = currency === "USD" ? "$" : `${currency} `;
+    const currPrefix = this.getCurrencySymbol(currency);
     let priceStr = `Current price: ${currPrefix}${price}.`;
     if (percentChange24h) priceStr += ` 24h change: ${percentChange24h}%.`;
 
@@ -222,7 +227,7 @@ Explain it in simple, easy-to-understand terms that a beginner would grasp, whil
       return cached.levels; // { support, resistance }
     }
 
-    const currPrefix = currency === "USD" ? "$" : `${currency} `;
+    const currPrefix = this.getCurrencySymbol(currency);
     const prompt = `Calculate a logical support level and resistance level for ${asset} currently priced at ${currPrefix}${currentPrice}. 
 Return exactly in this JSON format strictly, no explanation: {"support": number, "resistance": number}`;
 

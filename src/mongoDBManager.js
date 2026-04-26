@@ -669,7 +669,7 @@ class MongoDBManager {
       return null;
     } catch (error) {
       console.error("❌ Error getting WhatsApp session:", error);
-      return null;
+      throw error; // 🛠️ CRITICAL FIX: Throw the error so the connection retries instead of wiping the session!
     }
   }
 

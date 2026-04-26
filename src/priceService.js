@@ -1,4 +1,5 @@
 const axios = require("axios");
+const cheerio = require("cheerio");
 const YahooFinance = require('yahoo-finance2').default;
 const yf = new YahooFinance({ suppressNotices: ['yahooSurvey'] });
 
@@ -8,9 +9,8 @@ class PriceService {
     this.diaAssetApi = "https://api.diadata.org/v1/assetQuotation";
     this.diaCommodityApi = "https://api.diadata.org/v1/commodityQuotation";
     this.forexApi = "https://api.fxratesapi.com/latest";
-
-    this.forexApi = "https://api.fxratesapi.com/latest";
-    this.itickToken = process.env.ITICK_API_KEY || "4e6f333e9e3d4a8397a5bbe6c131203679c2528cb2cd46d5b7959c5465e4ddd1";
+    this.alphaVantageKey = process.env.ALPHA_VANTAGE_KEY || null;
+    this.itickKey = process.env.ITICK_API_KEY || null;
 
     this.headers = {
       "User-Agent":
@@ -21,21 +21,31 @@ class PriceService {
     this.ngxMapper = {
       "MTN": "MTNN",
       "MTNNG": "MTNN",
+      "MTN NIGERIA": "MTNN",
       "ZENITH": "ZENITHBANK",
+      "ZENITH BANK": "ZENITHBANK",
       "DANGOTE": "DANGCEM",
+      "DANGOTE CEMENT": "DANGCEM",
       "GTB": "GTCO",
       "GTBANK": "GTCO",
+      "GUARANTY TRUST": "GTCO",
       "UBA": "UBA",
       "ACCESS": "ACCESSCORP",
       "ACCESSBANK": "ACCESSCORP",
+      "ACCESS BANK": "ACCESSCORP",
       "FBN": "FBNH",
       "FIRSTBANK": "FBNH",
+      "FIRST BANK": "FBNH",
       "AIRTEL": "AIRTELAFRI",
+      "AIRTEL AFRICA": "AIRTELAFRI",
       "STANBIC": "STANBIC",
+      "STANBIC IBTC": "STANBIC",
       "SEPLAT": "SEPLAT",
       "OANDO": "OANDO",
       "FIDELITY": "FIDELITYBK",
-      "STERLING": "STERLINGBANK"
+      "FIDELITY BANK": "FIDELITYBK",
+      "STERLING": "STERLINGBANK",
+      "STERLING BANK": "STERLINGBANK"
     };
 
     // Human-readable names for NGX tickers
@@ -96,6 +106,10 @@ class PriceService {
     this.maxConcurrent = 8;
     this.activeRequests = 0;
     this.requestQueue = [];
+
+    // NGX Market Cache (Kwayisi)
+    this.ngxCache = { data: {}, lastUpdate: 0 };
+    this.ngxTTL = 300000; // 5 mins cache for all NGX
   }
 
   // ============================================
@@ -178,6 +192,67 @@ class PriceService {
     let rawInput = input.toUpperCase().trim();
     let symbol = rawInput;
     let specificChain = null;
+
+    // 🔀 FOREX ALIASES: normalise common user typos / short-forms
+    const FOREX_ALIASES = {
+      'GBUSD': 'GBPUSD', 'USDGB': 'USDGBP', 'EUUSD': 'EURUSD',
+      'USDEU': 'USDEUR', 'JPUSD': 'JPYUSD', 'USDJP': 'USDJPY',
+      'GBPUS': 'GBPUSD', 'EURUS': 'EURUSD'
+    };
+    if (FOREX_ALIASES[symbol]) {
+      symbol = FOREX_ALIASES[symbol];
+      rawInput = symbol;
+    }
+
+    // 🇳🇬 DYNAMIC NGX PRIORITY
+    // Check cached NGX market to dynamically match ANY ticker or company name.
+    const allNGX = await this.fetchNGXMarket();
+    if (allNGX && Object.keys(allNGX).length > 0) {
+      let matchedStock = null;
+      
+      if (this.ngxMapper[symbol] && allNGX[this.ngxMapper[symbol]]) {
+        matchedStock = allNGX[this.ngxMapper[symbol]];
+      } else if (allNGX[symbol]) {
+        matchedStock = allNGX[symbol];
+      } else {
+        // Safe fuzzy matching to prevent short cryptos (SOL, EOS) from matching randomly inside long NGX names
+        if (symbol.includes(" ")) {
+          // Phrases with spaces (e.g. "MEYER PLC") can safely use includes
+          matchedStock = Object.values(allNGX).find(s => s.name.toUpperCase().includes(symbol));
+        } else if (symbol.length >= 5) {
+          // Single words (e.g. "CADBURY") must strictly match the start of the company name
+          matchedStock = Object.values(allNGX).find(s => 
+            s.name.toUpperCase() === symbol ||
+            s.name.toUpperCase().startsWith(symbol + " ") ||
+            s.name.toUpperCase().startsWith(symbol + "PLC") ||
+            s.name.toUpperCase().startsWith(symbol + " PLC")
+          );
+        }
+      }
+
+      if (matchedStock) {
+        return {
+          symbol: matchedStock.ticker,
+          name: `${matchedStock.name} (NGX)`,
+          blockchain: "Stock Market",
+          price: matchedStock.price,
+          currency: "NGN",
+          change24h: matchedStock.change,
+          others: [],
+        };
+      }
+    } else if (this.ngxMapper[symbol]) {
+      // Fallback if Kwayisi is down but we know it's a valid NGX alias
+      return {
+        symbol: this.ngxMapper[symbol],
+        name: `${this.ngxNames[this.ngxMapper[symbol]] || symbol} (NGX)`,
+        blockchain: "Stock Market",
+        price: null,
+        currency: "NGN",
+        _unavailable: true,
+        others: [],
+      };
+    }
 
     const parenMatch = rawInput.match(/^([A-Z0-9]+)\s*\((.+)\)$/);
     if (parenMatch) {
@@ -396,20 +471,58 @@ class PriceService {
     }
   }
 
-  formatPrice(price, symbol) {
+  getCurrencySymbol(currencyCode) {
+    const symbolMap = {
+      "NGN": "₦",
+      "USD": "$",
+      "GBP": "£",
+      "EUR": "€",
+      "JPY": "¥"
+    };
+    return symbolMap[currencyCode?.toUpperCase()] || (currencyCode ? `${currencyCode} ` : "$");
+  }
+
+  getCurrencyForSymbol(symbol) {
+    const s = symbol.toUpperCase().trim();
+    // 🇳🇬 Nigerian Stocks (NGX)
+    const NGX_TICKERS = ['DANGCEM', 'ZENITHBANK', 'MTNN', 'GTCO', 'UBA', 'ACCESSCORP', 'FBNH', 'AIRTELAFRI', 'STANBIC', 'SEPLAT', 'OANDO', 'FIDELITYBK', 'STERLINGBANK'];
+    if (this.ngxMapper[s] || Object.values(this.ngxMapper).includes(s) || this.ngxNames[s] || NGX_TICKERS.includes(s)) {
+      return "NGN";
+    }
+
+    // 🏆 Commodities
+    if (["XAU", "GOLD", "XAG", "SILVER", "OIL", "WTI", "BRENT"].includes(s)) return "USD";
+
+    // 💱 Forex
+    if (s.length === 6) {
+      // For pairs like EURUSD, the target currency is the second 3 chars
+      return s.substring(3, 6).toUpperCase();
+    }
+
+    // Default to USD for US Stocks & Crypto
+    return "USD";
+  }
+
+  formatPrice(price, symbol, currency = null) {
     if (!price) return "N/A";
+    
+    // If currency not provided, try to infer it
+    const resolvedCurrency = currency || this.getCurrencyForSymbol(symbol);
+    const prefix = this.getCurrencySymbol(resolvedCurrency);
+
     if (
       ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"].some((s) => symbol.includes(s))
     ) {
       return `${price.toFixed(5)}`;
     }
-    if (price < 1.0) return `$${price.toFixed(6)}`;
-    if (price > 1000)
-      return `$${price.toLocaleString(undefined, {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      })}`;
-    return `$${price.toFixed(4)}`;
+
+    // High precision for small prices (Crypto)
+    if (price < 1.0 && resolvedCurrency === "USD") return `${prefix}${price.toFixed(6)}`;
+
+    return `${prefix}${price.toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`;
   }
 
   async getPrice(asset) {
@@ -418,8 +531,17 @@ class PriceService {
   }
 
   async getForexPrice(pair) {
-    if (["USDT", "USDC", "DOGE", "BTC", "ETH", "SOL", "XRP"].includes(pair))
-      return null;
+    // Exclude crypto tickers AND NGX stock aliases from forex lookup
+    const FOREX_SKIP = new Set([
+      "USDT","USDC","DOGE","BTC","ETH","SOL","XRP",
+      // NGX aliases (6-char ones would otherwise hit the forex path)
+      "ZENITH","ZENITHBANK","DANGOTE","DANGCEM","GTB","GTCO","GTBANK",
+      "UBA","ACCESS","ACCESSCORP","ACCESSBANK","FBN","FBNH","FIRSTBANK",
+      "AIRTEL","AIRTELAFRI","STANBIC","SEPLAT","OANDO",
+      "FIDELITY","FIDELITYBK","STERLING","STERLINGBANK",
+      "MTN","MTNN","MTNNG"
+    ]);
+    if (FOREX_SKIP.has(pair)) return null;
 
     const cacheKey = `forex:${pair}`;
     const cached = this.priceCache[cacheKey];
@@ -456,74 +578,97 @@ class PriceService {
   }
 
   // ============================================
-  // 📈 STOCK MARKET FETCHING (Foreign + NGX)
+  // 📈 NGX MARKET FETCHING (Kwayisi)
+  // ============================================
+  async fetchNGXMarket() {
+    const now = Date.now();
+    // Return cached if fresh
+    if (this.ngxCache.data && Object.keys(this.ngxCache.data).length > 0 && (now - this.ngxCache.lastUpdate < this.ngxTTL)) {
+      return this.ngxCache.data;
+    }
+
+    try {
+      console.log("📥 Fetching fresh NGX data from Kwayisi...");
+      const stocks = {};
+      
+      // Fetch both pages in parallel since Kwayisi paginates (100 per page)
+      const pagePromises = [1, 2].map(async (page) => {
+        try {
+          const url = page === 1 ? 'https://afx.kwayisi.org/ngx/' : `https://afx.kwayisi.org/ngx/?page=${page}`;
+          const { data } = await this.httpClient.get(url, { 
+            timeout: 15000,
+            headers: {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+          });
+          const $ = cheerio.load(data);
+          
+          $('table tbody tr').each((i, element) => {
+            const cells = $(element).find('td');
+            if (cells.length >= 4) {
+              const ticker = $(cells[0]).text().trim();
+              const name = $(cells[1]).text().trim();
+              const price = parseFloat($(cells[3]).text().trim());
+              const change = parseFloat($(cells[4]).text().trim()) || null;
+              
+              if (ticker && !isNaN(price)) {
+                stocks[ticker] = { ticker, name, price, change };
+              }
+            }
+          });
+        } catch (err) {
+          console.error(`⚠️ Failed to fetch Kwayisi page ${page}:`, err.message);
+        }
+      });
+
+      await Promise.all(pagePromises);
+
+      if (Object.keys(stocks).length > 0) {
+        this.ngxCache = { data: stocks, lastUpdate: now };
+        console.log(`✅ Loaded ${Object.keys(stocks).length} NGX stocks from Kwayisi.`);
+      }
+      return this.ngxCache.data;
+    } catch (error) {
+      console.error('⚠️ Error fetching NGX prices:', error.message);
+      // Return stale if available
+      return this.ngxCache.data || {};
+    }
+  }
+
+  // ============================================
+  // 📈 GLOBAL STOCKS PATH (Yahoo Finance)
   // ============================================
   async getStockPrice(symbol, rawInput) {
     const cacheKey = `stock:${symbol}`;
     const cached = this.priceCache[cacheKey];
+    // Fresh interactive cache hit
     if (cached && Date.now() - cached.ts < this.interactiveTTL) {
       return cached.data;
     }
 
-    let isNGX = false;
-    let mappedSymbol = symbol;
-
-    // Check if it's explicitly labeled or mapped to NGX
-    if (this.ngxMapper[symbol] || rawInput.includes("NIGERIA") || rawInput.includes("NGX")) {
-      isNGX = true;
-      mappedSymbol = this.ngxMapper[symbol] || symbol;
-    }
-
-    // Full NGX ticker list
-    const NGX_TICKERS = ['DANGCEM', 'ZENITHBANK', 'MTNN', 'GTCO', 'UBA', 'ACCESSCORP', 'FBNH', 'AIRTELAFRI', 'STANBIC', 'SEPLAT', 'OANDO', 'FIDELITYBK', 'STERLINGBANK'];
-
+    // ── GLOBAL STOCKS PATH (Yahoo Finance) ───────────────────────────────────
     try {
-      if (isNGX || NGX_TICKERS.includes(symbol)) {
-        // Fetch from iTick
-        mappedSymbol = this.ngxMapper[symbol] || symbol;
-        const res = await this.httpClient.get(`https://api.itick.org/stock/quote?region=NG&code=${mappedSymbol}`, {
-          headers: { 'accept': 'application/json', 'token': this.itickToken }
-        });
-        
-        if (res.data && res.data.data && res.data.data.ld) {
-          const friendlyName = this.ngxNames[mappedSymbol] || mappedSymbol;
-          const result = {
-            symbol: mappedSymbol,
-            name: `${friendlyName} (NGX)`,
-            blockchain: "Stock Market",
-            price: res.data.data.ld,
-            currency: "NGN",
-            change24h: res.data.data.chp,
-            others: [],
-          };
-          this.priceCache[cacheKey] = { data: result, ts: Date.now() };
-          return result;
-        }
-      } else {
-        // Fetch from Yahoo Finance (US/Global)
-        const quote = await yf.quote(symbol);
-        if (quote && quote.regularMarketPrice) {
-          const result = {
-            symbol: quote.symbol,
-            name: quote.shortName || quote.longName || quote.symbol,
-            blockchain: "Stock Market",
-            price: quote.regularMarketPrice,
-            currency: quote.currency || "USD",
-            change24h: quote.regularMarketChangePercent,
-            others: [],
-          };
-          this.priceCache[cacheKey] = { data: result, ts: Date.now() };
-          return result;
-        }
+      const quote = await yf.quote(symbol);
+      if (quote && quote.regularMarketPrice) {
+        const result = {
+          symbol: quote.symbol,
+          name: quote.shortName || quote.longName || quote.symbol,
+          blockchain: "Stock Market",
+          price: quote.regularMarketPrice,
+          currency: quote.currency || "USD",
+          change24h: quote.regularMarketChangePercent,
+          others: [],
+        };
+        this.priceCache[cacheKey] = { data: result, ts: Date.now() };
+        return result;
       }
     } catch (e) {
-      // If Yahoo throws, we try the stale cache fallback
-      const cachedStale = this.priceCache[cacheKey];
-      if (cachedStale && Date.now() - cachedStale.ts < this.staleTTL) {
-         return cachedStale.data;
+      // Stale fallback for US/global stocks
+      if (cached && Date.now() - cached.ts < this.staleTTL) {
+        return cached.data;
       }
     }
-    
+
     return null;
   }
 

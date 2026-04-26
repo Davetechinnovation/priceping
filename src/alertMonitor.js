@@ -197,10 +197,13 @@ class AlertMonitor {
         const color = direction === 'above' ? '🟢' : '🔴';
         const pctDiff = ((currentPrice - target) / target * 100).toFixed(2);
 
+        const fTarget = this.priceService.formatPrice(target, asset);
+        const fPrice = this.priceService.formatPrice(currentPrice, asset);
+
         return `${color} *PRICE ALERT: ${asset}*
         
-${icon} Target Hit: *${direction.toUpperCase()} $${target}*
-💰 Current Price: *$${currentPrice}*
+${icon} Target Hit: *${direction.toUpperCase()} ${fTarget}*
+💰 Current Price: *${fPrice}*
 📊 Move: ${pctDiff}%
 
 _Alert disabled. Reply to set new one._`;
@@ -214,9 +217,12 @@ _Alert disabled. Reply to set new one._`;
         const icon = direction === 'above' ? '📈' : '📉';
         const pctDiff = ((currentPrice - target) / target * 100).toFixed(2);
 
+        const fTarget = this.priceService.formatPrice(target, asset);
+        const fPrice = this.priceService.formatPrice(currentPrice, asset);
+
         return `${icon} PricePing Alert: ${asset}
-Target hit: ${direction.toUpperCase()} $${target}
-Current price: $${currentPrice}
+Target hit: ${direction.toUpperCase()} ${fTarget}
+Current price: ${fPrice}
 Move: ${pctDiff}%
 Alert disabled. Reply START to set a new one.`;
     }

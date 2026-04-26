@@ -365,7 +365,7 @@ _I'll message you the moment it hits!_`;
     // ☀️ DAILY MORNING BRIEF (8:00 AM WAT = 7:00 AM UTC)
     // ==========================================
     const geminiService = new GeminiService();
-    const TOP_COINS = ['BTC', 'ETH', 'SOL', 'AAPL', 'ZENITHBANK'];
+    const TOP_COINS = ['BTC', 'ETH', 'SOL', 'AAPL', 'ZENITHBANK', 'DANGCEM', 'MTNN', 'GTCO'];
 
     cron.schedule('0 7 * * *', async () => {
       console.log('☀️ [Daily Brief] Sending morning brief to Pro users...');
@@ -375,7 +375,7 @@ _I'll message you the moment it hits!_`;
         for (const sym of TOP_COINS) {
           try {
             const info = await priceService.getAssetInfo(sym);
-            if (info) marketData.push({ symbol: sym, price: info.price, change24h: null });
+            if (info) marketData.push({ symbol: sym, price: info.price, currency: info.currency, change24h: info.change24h });
           } catch (_) {}
         }
 
@@ -400,14 +400,17 @@ _I'll message you the moment it hits!_`;
             const activeAlerts = userAlerts.filter(a => a.status === 'active');
 
             const priceLines = marketData
-              .map(m => `${m.price > 0 ? '🟢' : '🔴'} *${m.symbol}:* $${m.price.toLocaleString()}`)
+              .map(m => {
+                const arrow = (m.change24h !== null && m.change24h >= 0) ? '🟢' : '🔴';
+                return `${arrow} *${m.symbol}:* ${priceService.formatPrice(m.price, m.symbol, m.currency)}`;
+              })
               .join('\n');
 
             let alertLine = '';
             if (activeAlerts.length > 0) {
               alertLine = `\n\n📋 *Your Alerts:* ${activeAlerts.length} active\n` +
                 activeAlerts.slice(0, 3).map(a =>
-                  `   └ ${a.asset} ${a.direction} $${a.target_price.toLocaleString()}`
+                  `   └ ${a.asset} ${a.direction} ${priceService.formatPrice(a.target_price, a.asset)}`
                 ).join('\n');
             }
 
@@ -457,6 +460,17 @@ _Reply with any coin name for full analysis._`;
 
     cron.schedule('*/15 * * * *', async () => {
       try {
+        const now = Date.now();
+        
+        // 🧹 Garbage Collection: Clean up old tracking data for ALL symbols
+        // Prevents memory leak since users check thousands of different non-crypto tickers
+        for (const [sym, users] of userLastChecked.entries()) {
+          for (const [phone, lastTs] of users.entries()) {
+            if (now - lastTs > 86400000) users.delete(phone);
+          }
+          if (users.size === 0) userLastChecked.delete(sym);
+        }
+
         for (const sym of MOVE_COINS) {
           const info = await priceService.getAssetInfo(sym);
           if (!info) continue;

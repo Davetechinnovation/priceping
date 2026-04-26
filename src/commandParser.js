@@ -242,7 +242,8 @@ _soon as possible._`;
         try {
           const usage = await db.getAlertUsage(cleanPhone);
           const isPro = usage ? usage.isPro : false;
-          let refinedArray = await this.geminiService.refinePrompt(message, isPro, cleanPhone, pushName);
+          const displayName = this.getDisplayName(user, pushName);
+          let refinedArray = await this.geminiService.refinePrompt(message, isPro, cleanPhone, displayName);
           
           if (refinedArray && !Array.isArray(refinedArray)) {
              refinedArray = [refinedArray];
@@ -413,7 +414,12 @@ ${usage.isPro ? "" : "🚀 Want unlimited alerts? Type *Subscribe*\n"}
     const info = await priceService.getAssetInfo(input);
 
     if (!info) {
-      return `❌ *Not Found*\n\nI searched high and low for *"${input.toUpperCase()}"* but couldn't find it.\n\n💡 *Try:* \`Price BTC\` or \`Price Gold\``;
+      return `❌ *Not Found*\n\nI searched high and low for *"${input.toUpperCase()}"* but couldn't find it.\n\n💡 *Try:*\n• \`Price BTC\` — Crypto\n• \`Price Gold\` — Commodity\n• \`Price AAPL\` — US Stock\n• \`Price GBPUSD\` — Forex`;
+    }
+
+    // NGX data temporarily unavailable (API down, no cache)
+    if (info._unavailable) {
+      return `📊 *${info.name}*\n━━━━━━━━━━━━━━━━━\n⏳ *NGX market data is temporarily unavailable.*\n\nThe Nigerian stock data feed is currently offline. This is a known issue — please check back later.\n\n🌐 *Check manually:*\n• ngxgroup.com\n• nairametrics.com\n\n💡 _Tip: US stocks, Crypto, Forex & Gold are all working fine!_`;
     }
 
     let icon = "💎";
@@ -435,10 +441,7 @@ ${usage.isPro ? "" : "🚀 Want unlimited alerts? Type *Subscribe*\n"}
       }
     }
 
-    const currency = info.currency || "USD";
-    const fPrice = info.blockchain === "Stock Market"
-      ? `${currency} ${info.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-      : priceService.formatPrice(info.price, info.symbol);
+    const fPrice = priceService.formatPrice(info.price, info.symbol, info.currency);
 
     const time = new Date().toLocaleTimeString([], {
       hour: "2-digit",
@@ -469,9 +472,7 @@ ${usage.isPro ? "" : "🚀 Want unlimited alerts? Type *Subscribe*\n"}
         if (aiSuggestion) {
           hasAiSuggestions = true;
           
-          const formatSuggestion = (val) => info.blockchain === "Stock Market"
-            ? `${currency} ${val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-            : priceService.formatPrice(val, info.symbol);
+          const formatSuggestion = (val) => priceService.formatPrice(val, info.symbol, info.currency);
 
           response += `
 ━━━━━━━━━━━━━━━━━
@@ -554,9 +555,7 @@ Type *Subscribe* to view plans!`;
     }
 
     // 4. Build response
-    const fPrice = info.blockchain === "Stock Market" 
-      ? `${info.currency || "USD"} ${info.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-      : priceService.formatPrice(info.price, info.symbol);
+    const fPrice = priceService.formatPrice(info.price, info.symbol, info.currency);
 
     return `🧠 *AI Market Intel: ${info.symbol}*
 ━━━━━━━━━━━━━━━━━
