@@ -602,19 +602,18 @@ class PriceService {
         for (const page of [1, 2]) {
           try {
             const url = page === 1 ? 'https://afx.kwayisi.org/ngx/' : `https://afx.kwayisi.org/ngx/?page=${page}`;
-            console.log(`🌐 [Kwayisi] Fetching ${url} (IPv4: ${this.httpClient.defaults.httpsAgent.options.family})`);
+            console.log(`🌐 [Kwayisi] Fetching ${url} (Simple IPv4)`);
             const start = Date.now();
-            const { data } = await this.httpClient.get(url, { 
+            
+            // Use a fresh axios call without the instance's complex agents/headers
+            const { data } = await axios.get(url, { 
+              family: 4,
               timeout: 20000,
-              httpAgent: this.httpClient.defaults.httpAgent,
-              httpsAgent: this.httpClient.defaults.httpsAgent,
               headers: {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.5",
-                "Referer": "https://afx.kwayisi.org/"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
               }
             });
+            
             console.log(`✅ [Kwayisi] Page ${page} received in ${Date.now() - start}ms`);
             const $ = cheerio.load(data);
             

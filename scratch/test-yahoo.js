@@ -1,16 +1,28 @@
-const YahooFinance = require('yahoo-finance2').default;
+const yahooFinance = require('yahoo-finance2').default;
 
-async function testYahoo() {
-  const symbols = ['DANGCEM.LG', 'ZENITHBANK.LG', 'MTNN.LG', 'GTCO.LG', 'UBA.LG', 'FBNH.LG', 'AIRTELAFRI.LG', 'NB.LG', 'SEPLAT.LG'];
-  
+// Force a dummy call to see if it initializes
+try {
+  // Newer versions require this?
+  // const yf = new (require('yahoo-finance2').YahooFinance)();
+  // But usually .default.quote works.
+} catch (e) { }
+
+async function test() {
+  const symbols = ['AAPL', 'MTNN.LG'];
+
   for (const sym of symbols) {
     try {
-      const quote = await YahooFinance.quote(sym);
-      console.log(`✅ ${sym}: ${quote.regularMarketPrice} NGN (Change: ${quote.regularMarketChangePercent?.toFixed(2)}%)`);
+      console.log(`\n🔍 Checking ${sym}...`);
+      // Use the actual exported object which should have .quote
+      const result = await yahooFinance.quote(sym);
+      console.log(`- Success: ${result.symbol} | ${result.regularMarketPrice}`);
     } catch (e) {
-      console.log(`❌ ${sym} FAILED: ${e.message}`);
+      console.error(`- Error for ${sym}:`, e.message);
+      // Try to inspect the object
+      console.log('Keys available on yahooFinance:', Object.keys(yahooFinance || {}));
     }
   }
 }
 
+test();
 testYahoo();
