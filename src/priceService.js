@@ -100,6 +100,7 @@ class PriceService {
     // only 1 HTTP request fires. All 10 await the same promise.
     // ============================================
     this.inflightRequests = new Map();
+    this.ngxInflight = null; // 🛠️ Lock to prevent duplicate NGX fetches
 
     // ============================================
     // 🛠️ FIX 4: Concurrency limiter
@@ -583,63 +584,74 @@ class PriceService {
   // 📈 NGX MARKET FETCHING (Kwayisi)
   // ============================================
   async fetchNGXMarket() {
-    const now = Date.now();
-    // Return cached if fresh
-    if (this.ngxCache.data && Object.keys(this.ngxCache.data).length > 0 && (now - this.ngxCache.lastUpdate < this.ngxTTL)) {
-      return this.ngxCache.data;
-    }
+    // 🛠️ FIX: If a fetch is already in progress, wait for it instead of starting a new one
+    if (this.ngxInflight) return this.ngxInflight;
 
-    try {
-      console.log("📥 Fetching fresh NGX data from Kwayisi...");
-      const stocks = {};
-      
-      // Fetch sequentially instead of parallel to avoid triggering rate limits on small sites
-      for (const page of [1, 2]) {
-        try {
-          const url = page === 1 ? 'https://afx.kwayisi.org/ngx/' : `https://afx.kwayisi.org/ngx/?page=${page}`;
-          const { data } = await this.httpClient.get(url, { 
-            timeout: 15000,
-            headers: {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-              "Accept-Language": "en-US,en;q=0.5",
-              "Connection": "keep-alive",
-              "Upgrade-Insecure-Requests": "1"
-            }
-          });
-          const $ = cheerio.load(data);
-          
-          $('table tbody tr').each((i, element) => {
-            const cells = $(element).find('td');
-            if (cells.length >= 4) {
-              const ticker = $(cells[0]).text().trim();
-              const name = $(cells[1]).text().trim();
-              const price = parseFloat($(cells[3]).text().trim());
-              const change = parseFloat($(cells[4]).text().trim()) || null;
-              
-              if (ticker && !isNaN(price)) {
-                stocks[ticker] = { ticker, name, price, change };
+    this.ngxInflight = (async () => {
+      const now = Date.now();
+      // Return cached if fresh
+      if (this.ngxCache.data && Object.keys(this.ngxCache.data).length > 0 && (now - this.ngxCache.lastUpdate < this.ngxTTL)) {
+        return this.ngxCache.data;
+      }
+
+      try {
+        console.log("📥 Fetching fresh NGX data from Kwayisi...");
+        const stocks = {};
+        
+        // Fetch sequentially instead of parallel to avoid triggering rate limits on small sites
+        for (const page of [1, 2]) {
+          try {
+            const url = page === 1 ? 'https://afx.kwayisi.org/ngx/' : `https://afx.kwayisi.org/ngx/?page=${page}`;
+            const { data } = await this.httpClient.get(url, { 
+              timeout: 15000,
+              // Explicitly pass agents to ensure IPv4 (family: 4) is used
+              httpAgent: this.httpClient.defaults.httpAgent,
+              httpsAgent: this.httpClient.defaults.httpsAgent,
+              headers: {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1"
               }
-            }
-          });
+            });
+            const $ = cheerio.load(data);
+            
+            $('table tbody tr').each((i, element) => {
+              const cells = $(element).find('td');
+              if (cells.length >= 4) {
+                const ticker = $(cells[0]).text().trim();
+                const name = $(cells[1]).text().trim();
+                const price = parseFloat($(cells[3]).text().trim());
+                const change = parseFloat($(cells[4]).text().trim()) || null;
+                
+                if (ticker && !isNaN(price)) {
+                  stocks[ticker] = { ticker, name, price, change };
+                }
+              }
+            });
 
-          // Small delay before fetching page 2 to avoid WAF burst limits
-          if (page === 1) await new Promise(r => setTimeout(r, 1000));
-        } catch (err) {
-          console.error(`⚠️ Failed to fetch Kwayisi page ${page}:`, err.message);
+            // Small delay before fetching page 2 to avoid WAF burst limits
+            if (page === 1) await new Promise(r => setTimeout(r, 1500));
+          } catch (err) {
+            console.error(`⚠️ Failed to fetch Kwayisi page ${page}:`, err.message);
+          }
         }
-      }
 
-      if (Object.keys(stocks).length > 0) {
-        this.ngxCache = { data: stocks, lastUpdate: now };
-        console.log(`✅ Loaded ${Object.keys(stocks).length} NGX stocks from Kwayisi.`);
+        if (Object.keys(stocks).length > 0) {
+          this.ngxCache = { data: stocks, lastUpdate: now };
+          console.log(`✅ Loaded ${Object.keys(stocks).length} NGX stocks from Kwayisi.`);
+        }
+        return this.ngxCache.data;
+      } catch (error) {
+        console.error('⚠️ Error fetching NGX prices:', error.message);
+        return this.ngxCache.data || {};
+      } finally {
+        this.ngxInflight = null; // Release the lock
       }
-      return this.ngxCache.data;
-    } catch (error) {
-      console.error('⚠️ Error fetching NGX prices:', error.message);
-      // Return stale if available
-      return this.ngxCache.data || {};
-    }
+    })();
+
+    return this.ngxInflight;
   }
 
   // ============================================
