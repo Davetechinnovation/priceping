@@ -591,14 +591,18 @@ class PriceService {
       console.log("📥 Fetching fresh NGX data from Kwayisi...");
       const stocks = {};
       
-      // Fetch both pages in parallel since Kwayisi paginates (100 per page)
-      const pagePromises = [1, 2].map(async (page) => {
+      // Fetch sequentially instead of parallel to avoid triggering rate limits on small sites
+      for (const page of [1, 2]) {
         try {
           const url = page === 1 ? 'https://afx.kwayisi.org/ngx/' : `https://afx.kwayisi.org/ngx/?page=${page}`;
           const { data } = await this.httpClient.get(url, { 
             timeout: 15000,
             headers: {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+              "Accept-Language": "en-US,en;q=0.5",
+              "Connection": "keep-alive",
+              "Upgrade-Insecure-Requests": "1"
             }
           });
           const $ = cheerio.load(data);
@@ -616,12 +620,13 @@ class PriceService {
               }
             }
           });
+
+          // Small delay before fetching page 2 to avoid WAF burst limits
+          if (page === 1) await new Promise(r => setTimeout(r, 1000));
         } catch (err) {
           console.error(`⚠️ Failed to fetch Kwayisi page ${page}:`, err.message);
         }
-      });
-
-      await Promise.all(pagePromises);
+      }
 
       if (Object.keys(stocks).length > 0) {
         this.ngxCache = { data: stocks, lastUpdate: now };
