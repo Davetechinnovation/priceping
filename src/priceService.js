@@ -73,8 +73,10 @@ class PriceService {
     this.httpClient = axios.create({
       headers: this.headers,
       timeout: 8000,
-      httpAgent: new (require("http").Agent)({ keepAlive: true, maxSockets: 15 }),
-      httpsAgent: new (require("https").Agent)({ keepAlive: true, maxSockets: 15 }),
+      // 🛠️ FIX: Force IPv4 (family: 4) to prevent timeouts on Render
+      // Kwayisi and some other APIs often blackhole IPv6 connections from cloud providers.
+      httpAgent: new (require("http").Agent)({ keepAlive: true, maxSockets: 15, family: 4 }),
+      httpsAgent: new (require("https").Agent)({ keepAlive: true, maxSockets: 15, family: 4 }),
     });
 
     this.assetsBySymbol = {};
