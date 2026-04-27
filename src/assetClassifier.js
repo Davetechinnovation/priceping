@@ -18,8 +18,11 @@ class AssetClassifier {
       'STANBIC': 'STANBIC', 'STANBIC IBTC': 'STANBIC',
       'UBA': 'UBA', 'SEPLAT': 'SEPLAT', 'OANDO': 'OANDO',
       'FIDELITY': 'FIDELITYBK', 'FIDELITY BANK': 'FIDELITYBK',
-      'STERLING': 'STERLINGBANK', 'STERLING BANK': 'STERLINGBANK'
+      'STERLING': 'STERLINGBANK', 'STERLING BANK': 'STERLINGBANK',
+      'GLO': 'GLO'
     };
+
+    this.ngxLiveTickers = new Set();
 
     // 💎 Top 50 cryptocurrencies (by market cap)
     this.topCryptos = new Set([
@@ -120,6 +123,11 @@ class AssetClassifier {
       return { type: 'NGX_STOCK', symbol: this.ngxAliases[symbol], chain: null, confidence: 95 };
     }
 
+    // 🇳🇬 Dynamically seeded NGX tickers (from live doclib API)
+    if (this.ngxLiveTickers && this.ngxLiveTickers.has(symbol)) {
+      return { type: 'NGX_STOCK', symbol, chain: null, confidence: 90 };
+    }
+
     // 📈 Top 50 US stocks
     if (this.topUSStocks.has(symbol)) {
       return { type: 'US_STOCK', symbol, chain: null, confidence: 100 };
@@ -186,6 +194,34 @@ class AssetClassifier {
    */
   classifyBatch(symbols) {
     return symbols.map(s => this.classify(s));
+  }
+
+  /**
+   * 🇳🇬 Dynamically seed NGX tickers from live API data
+   * Called after fetchNGXMarket loads real data.
+   * This ensures ANY real NGX ticker gets classified correctly,
+   * not just the ~15 we hardcoded.
+   */
+  seedNGXTickers(tickers) {
+    if (!tickers || tickers.length === 0) return;
+
+    for (const ticker of tickers) {
+      const t = ticker.toUpperCase().trim();
+      // Only add if not already classified as something else
+      // (don't override BTC, USDT, etc. if they somehow appear)
+      if (
+        !this.topCryptos.has(t) &&
+        !this.topUSStocks.has(t) &&
+        !this.commodities.has(t) &&
+        !this.forexPairs.has(t)
+      ) {
+        this.ngxLiveTickers.add(t);
+      }
+    }
+
+    if (this.ngxLiveTickers.size > 0) {
+      console.log(`🇳🇬 Classifier seeded with ${this.ngxLiveTickers.size} NGX tickers`);
+    }
   }
 }
 

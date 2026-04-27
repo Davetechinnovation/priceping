@@ -18,6 +18,9 @@ class BaileysPricePingServer {
         console.log('🚀 Starting PricePing with Baileys WhatsApp Integration...');
         
         try {
+            // Initialize Database
+            await this.database.connect();
+            
             // Initialize WhatsApp service
             await this.whatsappService.initialize();
             

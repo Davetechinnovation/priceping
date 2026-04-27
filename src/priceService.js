@@ -517,7 +517,7 @@ class PriceService {
     this.ngxInflight = (async () => {
       const now = Date.now();
 
-      // ✅ 1. In-memory cache still fresh
+      // 1. In-memory cache
       if (
         this.ngxCache.data &&
         Object.keys(this.ngxCache.data).length > 0 &&
@@ -526,127 +526,147 @@ class PriceService {
         return this.ngxCache.data;
       }
 
-      // ✅ 2. MongoDB persistence layer (survives Render restarts)
+      // 2. MongoDB cache (survives Render restarts)
       if (db) {
         try {
-          const col = db.collection('ngx_cache');
-          const cached = await col.findOne({ _id: 'ngx_stocks' });
+          const col = db.collection("ngx_cache");
+          const cached = await col.findOne({ _id: "ngx_stocks" });
           if (cached && now - cached.updatedAt < this.ngxTTL) {
-            console.log(`📦 NGX: MongoDB cache hit — ${Object.keys(cached.stocks).length} stocks`);
-            this.ngxCache = { data: cached.stocks, lastUpdate: cached.updatedAt };
+            console.log(
+              `📦 NGX MongoDB hit — ${Object.keys(cached.stocks).length} stocks`,
+            );
+            this.ngxCache = {
+              data: cached.stocks,
+              lastUpdate: cached.updatedAt,
+            };
+            // ✅ seed classifier from cached data
+            this.classifier.seedNGXTickers(Object.keys(cached.stocks));
             return cached.stocks;
           }
         } catch (e) {
-          console.warn('⚠️ MongoDB NGX cache read failed:', e.message);
+          console.warn("⚠️ MongoDB NGX read failed:", e.message);
         }
       }
 
-      // ✅ 3. Full browser headers — defeats WAF fingerprinting
-      const browserHeaders = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'en-NG,en;q=0.9,en-US;q=0.8',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Referer': 'https://afx.kwayisi.org/',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'same-origin',
-        'Sec-Fetch-User': '?1',
-        'Sec-CH-UA': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-        'Sec-CH-UA-Mobile': '?0',
-        'Sec-CH-UA-Platform': '"Windows"',
-      };
-
-      // ✅ 4. Fetch with retry + exponential backoff
-      const fetchPageWithRetry = async (page, maxRetries = 3) => {
-        const url = page === 1
-          ? 'https://afx.kwayisi.org/ngx/'
-          : `https://afx.kwayisi.org/ngx/?page=${page}`;
-
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
-          try {
-            console.log(`🌐 [Kwayisi] Page ${page}, attempt ${attempt}/${maxRetries}`);
-            const start = Date.now();
-
-            const { data } = await axios.get(url, {
-              family: 4,
-              timeout: 40000, // 40s — Render needs breathing room
-              headers: browserHeaders,
-            });
-
-            console.log(`✅ [Kwayisi] Page ${page} in ${Date.now() - start}ms`);
-            return data;
-          } catch (err) {
-            const isLast = attempt === maxRetries;
-            console.warn(`⚠️ Kwayisi page ${page} attempt ${attempt} failed: ${err.message}`);
-            if (isLast) return null;
-            // Exponential backoff: 3s, 6s
-            await new Promise(r => setTimeout(r, 3000 * attempt));
-          }
-        }
-        return null;
-      };
+      // 3. NGX Official REST API — JSON, no scraping, datacenter friendly
+      console.log("📥 Fetching NGX data from doclib API...");
+      const stocks = {};
 
       try {
-        console.log('📥 Fetching fresh NGX data from Kwayisi...');
-        const stocks = {};
+        // Fetches ALL ~400 stocks in one request (pageSize=500)
+        const url =
+          "https://doclib.ngxgroup.com/REST/api/statistics/equities/?market=&sector=&orderby=&pageSize=500&pageNo=0";
 
-        // Page 1
-        const html1 = await fetchPageWithRetry(1);
-        if (html1) this._parseKwayisiPage(html1, stocks);
+        const { data } = await axios.get(url, {
+          timeout: 30000,
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            Accept: "application/json, text/plain, */*",
+          },
+        });
 
-        // Polite delay between pages
-        await new Promise(r => setTimeout(r, 2000));
+        // Handle both array and { data: [] } response shapes
+        const items = Array.isArray(data) ? data : data?.data || [];
 
-        // Page 2
-        const html2 = await fetchPageWithRetry(2);
-        if (html2) this._parseKwayisiPage(html2, stocks);
+        for (const item of items) {
+          // Map the JSON fields — confirmed field names from NGX pipeline article
+          const ticker = (item.Symbol || item.symbol || "").trim();
+          const name =
+            item.CompanyName || item.company_name || item.Name || ticker;
+          const price = parseFloat(
+            item.ClosePrice || item.close_price || item.LastPrice || 0,
+          );
+          const change =
+            parseFloat(item.PerChange || item.per_change || 0) || null;
 
-        if (Object.keys(stocks).length > 0) {
-          this.ngxCache = { data: stocks, lastUpdate: now };
-          console.log(`✅ Loaded ${Object.keys(stocks).length} NGX stocks from Kwayisi.`);
-
-          // ✅ 6. Persist to MongoDB — next restart reads from here
-          if (db) {
-            try {
-              await db.collection('ngx_cache').updateOne(
-                { _id: 'ngx_stocks' },
-                { $set: { stocks, updatedAt: now } },
-                { upsert: true }
-              );
-              console.log('💾 NGX data saved to MongoDB');
-            } catch (e) {
-              console.warn('⚠️ MongoDB NGX cache write failed:', e.message);
-            }
-          }
-        } else {
-          // ✅ 7. Kwayisi totally down — serve stale MongoDB data
-          console.warn('⚠️ Kwayisi returned no stocks, checking MongoDB stale cache...');
-          if (db) {
-            try {
-              const stale = await db.collection('ngx_cache').findOne({ _id: 'ngx_stocks' });
-              if (stale?.stocks) {
-                console.log(`📦 Serving stale NGX data (${Object.keys(stale.stocks).length} stocks, age: ${Math.round((now - stale.updatedAt) / 60000)}min)`);
-                this.ngxCache = { data: stale.stocks, lastUpdate: stale.updatedAt };
-              }
-            } catch (e) {}
+          if (ticker && price > 0) {
+            stocks[ticker] = { ticker, name, price, change };
           }
         }
 
-        return this.ngxCache.data;
-      } catch (error) {
-        console.error('⚠️ Error fetching NGX prices:', error.message);
-        return this.ngxCache.data || {};
-      } finally {
-        this.ngxInflight = null;
+        console.log(`✅ NGX doclib API: ${Object.keys(stocks).length} stocks loaded`);
+        // ✅ seeds classifier with ALL real NGX tickers
+        this.classifier.seedNGXTickers(Object.keys(stocks));
+      } catch (e) {
+        console.warn(`⚠️ NGX doclib API failed: ${e.message}`);
       }
+
+      // 4. Fallback: Kwayisi scraping (only if doclib fails)
+      if (Object.keys(stocks).length === 0) {
+        console.log("↩️ Falling back to Kwayisi scrape...");
+        try {
+          await this._scrapeKwayisiIntoStocks(stocks);
+        } catch (e) {
+          console.warn("⚠️ Kwayisi fallback also failed:", e.message);
+        }
+      }
+
+      if (Object.keys(stocks).length > 0) {
+        this.ngxCache = { data: stocks, lastUpdate: now };
+
+        if (db) {
+          try {
+            await db.collection("ngx_cache").updateOne(
+              { _id: "ngx_stocks" },
+              { $set: { stocks, updatedAt: now } },
+              { upsert: true },
+            );
+            console.log("💾 NGX data persisted to MongoDB");
+          } catch (e) {}
+        }
+      } else if (db) {
+        // Everything failed — serve stale MongoDB data
+        try {
+          const stale = await db
+            .collection("ngx_cache")
+            .findOne({ _id: "ngx_stocks" });
+          if (stale?.stocks) {
+            const age = Math.round((now - stale.updatedAt) / 60000);
+            console.log(`📦 Serving stale NGX data (age: ${age}min)`);
+            this.ngxCache = { data: stale.stocks, lastUpdate: stale.updatedAt };
+          }
+        } catch (e) {}
+      }
+
+      return this.ngxCache.data || {};
     })();
 
+    this.ngxInflight.finally(() => {
+      this.ngxInflight = null;
+    });
     return this.ngxInflight;
+  }
+
+  /**
+   * 🕸️ Fallback Scraper for Kwayisi (used only if Official API fails)
+   */
+  async _scrapeKwayisiIntoStocks(stocks) {
+    const browserHeaders = {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "en-NG,en;q=0.9",
+      Referer: "https://afx.kwayisi.org/",
+    };
+
+    for (const page of [1, 2]) {
+      try {
+        const url =
+          page === 1
+            ? "https://afx.kwayisi.org/ngx/"
+            : `https://afx.kwayisi.org/ngx/?page=${page}`;
+        const { data } = await axios.get(url, {
+          family: 4,
+          timeout: 40000,
+          headers: browserHeaders,
+        });
+        this._parseKwayisiPage(data, stocks);
+        if (page === 1) await new Promise((r) => setTimeout(r, 2000));
+      } catch (err) {
+        console.warn(`⚠️ Kwayisi fallback page ${page} failed: ${err.message}`);
+      }
+    }
   }
 
   // ✅ Extracted parser — clean separation
