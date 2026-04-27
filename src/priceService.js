@@ -283,7 +283,7 @@ class PriceService {
         let matchedStock = allNGX[symbol]; // Direct ticker match
 
         // Fuzzy match for company names
-        if (!matchedStock && symbol.length >= 5) {
+        if (!matchedStock && symbol.length >= 3) {
           matchedStock = Object.values(allNGX).find(s =>
             s.name.toUpperCase() === symbol ||
             s.name.toUpperCase().startsWith(symbol + " ") ||
@@ -302,19 +302,34 @@ class PriceService {
             others: [],
           };
         }
-      }
 
-      // Fallback if Kwayisi down but we know it's NGX
-      if (type === 'NGX_STOCK') {
-        return {
-          symbol: symbol,
-          name: `${symbol} (NGX)`,
-          blockchain: "Stock Market",
-          price: null,
-          currency: "NGN",
-          _unavailable: true,
-          others: [],
-        };
+        // ✅ Feed is UP but ticker not found = not listed
+        if (type === 'NGX_STOCK') {
+          return {
+            symbol: symbol,
+            name: `${symbol} (NGX)`,
+            blockchain: "Stock Market",
+            price: null,
+            currency: "NGN",
+            _notListed: true,
+            _unavailable: false,
+            others: [],
+          };
+        }
+      } else {
+        // Fallback if feed down but we know it's NGX
+        if (type === 'NGX_STOCK') {
+          return {
+            symbol: symbol,
+            name: `${symbol} (NGX)`,
+            blockchain: "Stock Market",
+            price: null,
+            currency: "NGN",
+            _unavailable: true,
+            _notListed: false,
+            others: [],
+          };
+        }
       }
     }
 

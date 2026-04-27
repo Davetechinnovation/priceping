@@ -417,9 +417,30 @@ ${usage.isPro ? "" : "🚀 Want unlimited alerts? Type *Subscribe*\n"}
       return `❌ *Not Found*\n\nI searched high and low for *"${input.toUpperCase()}"* but couldn't find it.\n\n💡 *Try:*\n• \`Price BTC\` — Crypto\n• \`Price Gold\` — Commodity\n• \`Price AAPL\` — US Stock\n• \`Price GBPUSD\` — Forex`;
     }
 
+    // ✅ Not publicly traded on NGX
+    if (info._notListed) {
+      return `*${info.symbol} (NGX)*
+━━━━━━━━━━━━━━━━━
+❌ *Not listed on NGX*
+
+_${info.symbol} is not publicly traded on the Nigerian Exchange. It may be a private company (e.g. Globacom/GLO) or delisted._
+
+💡 *Tip:* Check listed stocks at ngxgroup.com`;
+    }
+
     // NGX data temporarily unavailable (API down, no cache)
     if (info._unavailable) {
-      return `📊 *${info.name}*\n━━━━━━━━━━━━━━━━━\n⏳ *NGX market data is temporarily unavailable.*\n\nThe Nigerian stock data feed is currently offline. This is a known issue — please check back later.\n\n🌐 *Check manually:*\n• ngxgroup.com\n• nairametrics.com\n\n💡 _Tip: US stocks, Crypto, Forex & Gold are all working fine!_`;
+      return `📊 *${info.name}*
+━━━━━━━━━━━━━━━━━
+⏳ *NGX market data is temporarily unavailable.*
+
+The Nigerian stock data feed is currently offline. This is a known issue — please check back later.
+
+🌐 *Check manually:*
+• ngxgroup.com
+• nairametrics.com
+
+💡 _Tip: US stocks, Crypto, Forex & Gold are all working fine!_`;
     }
 
     let icon = "💎";
