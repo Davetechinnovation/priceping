@@ -428,6 +428,15 @@ _${info.symbol} is not publicly traded on the Nigerian Exchange. It may be a pri
 💡 *Tip:* Check listed stocks at ngxgroup.com`;
     }
 
+    // 🔒 Private Nigerian Company
+    if (info._privateCompany) {
+      return `*${info.name}*
+━━━━━━━━━━━━━━━━━
+🔒 *${info._privateNote}*
+
+_This company does not have a publicly traded share price on NGX._`;
+    }
+
     // NGX data temporarily unavailable (API down, no cache)
     if (info._unavailable) {
       return `📊 *${info.name}*

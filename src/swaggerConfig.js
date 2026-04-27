@@ -124,6 +124,7 @@ const options = {
           type: 'object',
           properties: {
             name: { type: 'string' },
+            category: { type: 'string' },
             status: { type: 'string' },
             latency: { type: 'string' }
           }
@@ -147,8 +148,17 @@ const options = {
               }
             },
             health: {
-              type: 'integer',
-              description: 'Overall system health score (0-100)'
+              type: 'object',
+              properties: {
+                overall: { type: 'integer' },
+                whatsapp: { type: 'integer' },
+                database: { type: 'integer' },
+                alerts: { type: 'integer' },
+                ngx: { type: 'integer' },
+                intelligence: { type: 'integer' },
+                memory: { type: 'integer' }
+              },
+              description: 'Detailed system health scores (0-100)'
             }
           }
         },

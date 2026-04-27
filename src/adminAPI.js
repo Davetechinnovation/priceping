@@ -57,17 +57,22 @@ function extractPhone(rawId) {
   return "+" + rawId.split("@")[0].split(":")[0];
 }
 
-function computeHealth(memPercent, whatsapp, database, alertMonitor) {
+function computeHealth(memPercent, whatsapp, database, alertMonitor, ngx, intelligence) {
   const wa = whatsapp?.isConnected ? 100 : 0;
   const db = database?.isConnected ? 100 : 0;
   const am = alertMonitor?.isRunning ? 100 : 0;
+  const nx = ngx ? 100 : 0;
+  const ai = intelligence ? 100 : 0;
   const mem =
     memPercent < 70 ? 100 : memPercent < 85 ? 70 : memPercent < 95 ? 30 : 0;
+  
   return {
-    overall: Math.round((wa + db + am + mem) / 4),
+    overall: Math.round((wa + db + am + nx + ai + mem) / 6),
     whatsapp: wa,
     database: db,
     alerts: am,
+    ngx: nx,
+    intelligence: ai,
     memory: mem,
   };
 }
@@ -272,19 +277,28 @@ function createAdminAPI(app, memoryMonitor) {
   app.get("/api/admin/external-status", async (req, res) => {
     try {
       const priceService = global.priceService;
+      const geminiService = global.geminiService;
       
       // If priceService is not yet initialized in the global object
       if (!priceService) {
         return res.json([
           { name: "Crypto API (DIA)", status: "Initializing...", latency: "N/A" },
-          { name: "Forex API", status: "Initializing...", latency: "N/A" }
+          { name: "Forex API", status: "Initializing...", latency: "N/A" },
+          { name: "NGX Official API", status: "Initializing...", latency: "N/A" },
+          { name: "SMS API (Termii)", status: "Initializing...", latency: "N/A" }
         ]);
       }
       
-      // Fetch URLs dynamically from the PriceService instance
+      // Complete list of external dependencies
       const apisToCheck = [
-        { name: "Crypto API (DIA)", url: priceService.quotedAssetsApi },
-        { name: "Forex API", url: priceService.forexApi }
+        { name: "Crypto API (DIA)", url: priceService.quotedAssetsApi, category: "Market Data" },
+        { name: "Forex API", url: priceService.forexApi, category: "Market Data" },
+        { name: "NGX Official API", url: priceService.ngxApi, category: "Market Data" },
+        { name: "Yahoo Finance", url: "https://finance.yahoo.com", category: "Market Data" },
+        { name: "NGX Fallback (Kwayisi)", url: "https://afx.kwayisi.org/ngx/", category: "Market Data" },
+        { name: "AI API (Groq)", url: "https://api.groq.com/openai/v1/models", category: "Intelligence" },
+        { name: "News API (Google)", url: "https://news.google.com/rss", category: "Intelligence" },
+        { name: "SMS API (Termii)", url: "https://api.ng.termii.com/api/check/health", category: "Messaging" }
       ];
 
       const checkApi = async (api) => {
@@ -594,11 +608,16 @@ Exchange: ${priceInfo.blockchain}
       const renderLim = mem.limits?.render || 512;
       const memPercent = Math.round((rss / renderLim) * 100);
       const cpuPercent = getRealCpuPercent();
+      const ngxStatus = Object.keys(priceService?.ngxCache?.data || {}).length > 0;
+      const aiStatus = !!global.geminiService?.apiKey;
+
       const health = computeHealth(
         memPercent,
         whatsappService,
         database,
         alertMonitor,
+        ngxStatus,
+        aiStatus
       );
 
       res.json({
@@ -628,7 +647,7 @@ Exchange: ${priceInfo.blockchain}
             percentage: memPercent,
           },
           cpu: { percentage: cpuPercent },
-          health: health.overall,
+          health: health,
         },
       });
     } catch (error) {
@@ -665,12 +684,17 @@ Exchange: ${priceInfo.blockchain}
       // 3. Measure API Response Latency
       const apiLatency = Date.now() - reqStart;
 
+      const ngxStatus = Object.keys(priceService?.ngxCache?.data || {}).length > 0;
+      const aiStatus = !!global.geminiService?.apiKey;
+
       // Calculate Health Score
       const health = computeHealth(
         ramPct,
         whatsappService,
         database,
-        alertMonitor
+        alertMonitor,
+        ngxStatus,
+        aiStatus
       );
 
       res.json({
@@ -689,6 +713,7 @@ Exchange: ${priceInfo.blockchain}
           },
         },
         health,
+        priceService: priceService?.getStats() || {},
         alertMonitor: {
           running: !!alertMonitor?.isRunning,
           checking: !!alertMonitor?.isChecking,

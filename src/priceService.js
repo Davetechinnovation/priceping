@@ -13,6 +13,8 @@ class PriceService {
     this.diaAssetApi = "https://api.diadata.org/v1/assetQuotation";
     this.diaCommodityApi = "https://api.diadata.org/v1/commodityQuotation";
     this.forexApi = "https://api.fxratesapi.com/latest";
+    this.ngxApi = "https://doclib.ngxgroup.com/REST/api/statistics/equities/?market=&sector=&orderby=&pageSize=500&pageNo=0";
+    this.termiiApi = "https://api.ng.termii.com/api/sms/send";
     this.alphaVantageKey = process.env.ALPHA_VANTAGE_KEY || null;
     this.itickKey = process.env.ITICK_API_KEY || null;
 
@@ -148,13 +150,25 @@ class PriceService {
   }
 
   async getAssetInfo(input) {
-    // ============================================
-    // 🧠 STEP 1: CLASSIFY THE INPUT
-    // ============================================
     const classification = this.classifier.classify(input);
     const { type, symbol, chain, confidence } = classification;
 
     console.log(`🔍 Classified "${input}" as ${type} (${confidence}% confidence) → ${symbol}`);
+
+    // 🇳🇬 Known Nigerian private companies (not on NGX)
+    if (type === 'NGX_PRIVATE') {
+      const info = this.classifier.privateNigerianAliases[symbol];
+      return {
+        symbol,
+        name: info.name,
+        blockchain: "Stock Market",
+        price: null,
+        currency: "NGN",
+        _privateCompany: true,
+        _privateNote: info.note,
+        others: [],
+      };
+    }
 
     // ============================================
     // 🏆 COMMODITIES
@@ -167,11 +181,10 @@ class PriceService {
     }
 
     // ============================================
-    // 💎 CRYPTO (High confidence OR dynamic fallback)
+    // 💎 CRYPTOCURRENCIES (DIA Data)
     // ============================================
     if (type === 'CRYPTO' || type === 'DYNAMIC') {
       await this.loadAssetList();
-
       let cryptoSymbol = symbol;
       if (this.nameToSymbol && this.nameToSymbol[cryptoSymbol]) {
         cryptoSymbol = this.nameToSymbol[cryptoSymbol];
@@ -181,7 +194,6 @@ class PriceService {
 
       if (options && options.length > 0) {
         let selected = null;
-
         if (chain) {
           selected = options.find((o) => o.blockchain.toUpperCase() === chain.toUpperCase());
           if (!selected) {
@@ -235,13 +247,6 @@ class PriceService {
           }
         }
       }
-
-      // If crypto failed and type was CRYPTO, try stocks next
-      if (type === 'CRYPTO') {
-        // Fall through to stock lookup
-      } else if (type === 'DYNAMIC') {
-        // Continue to next services
-      }
     }
 
     // ============================================
@@ -262,80 +267,37 @@ class PriceService {
     }
 
     // ============================================
-    // 📈 US & GLOBAL STOCKS (Yahoo Finance)
-    // Yahoo covers NYSE, NASDAQ, LSE, TSX, ASX, etc.
+    // 🇳🇬 NGX CHECK — before Yahoo for DYNAMIC
+    // For a Nigerian bot, local context beats global
+    // ============================================
+    if (type === 'NGX_STOCK' || type === 'DYNAMIC') {
+      const ngxResult = await this._lookupNGX(symbol);
+      if (ngxResult) return ngxResult;
+
+      // If explicitly NGX type but not found, return proper response
+      if (type === 'NGX_STOCK') {
+        const feedAlive = Object.keys(this.ngxCache.data || {}).length > 0;
+        return {
+          symbol,
+          name: `${symbol} (NGX)`,
+          blockchain: "Stock Market",
+          price: null,
+          currency: "NGN",
+          _notListed: feedAlive,    // Feed up = not listed
+          _unavailable: !feedAlive, // Feed down = unavailable
+          others: [],
+        };
+      }
+    }
+
+    // ============================================
+    // 📈 US & GLOBAL STOCKS — last resort for DYNAMIC
     // ============================================
     if (type === 'US_STOCK' || type === 'STOCK' || type === 'DYNAMIC') {
       const stockInfo = await this.getStockPrice(symbol, input);
       if (stockInfo !== null) return stockInfo;
     }
 
-    // ============================================
-    // 🇳🇬 NIGERIAN STOCKS (Last resort OR explicit NGX type)
-    // Only fetch Kwayisi if:
-    // 1. Classified as NGX_STOCK, OR
-    // 2. All other lookups failed (DYNAMIC fallback)
-    // ============================================
-    if (type === 'NGX_STOCK' || type === 'DYNAMIC') {
-      const allNGX = await this.fetchNGXMarket(this.db);
-
-      if (allNGX && Object.keys(allNGX).length > 0) {
-        let matchedStock = allNGX[symbol]; // Direct ticker match
-
-        // Fuzzy match for company names
-        if (!matchedStock && symbol.length >= 3) {
-          matchedStock = Object.values(allNGX).find(s =>
-            s.name.toUpperCase() === symbol ||
-            s.name.toUpperCase().startsWith(symbol + " ") ||
-            s.name.toUpperCase().includes(symbol)
-          );
-        }
-
-        if (matchedStock) {
-          return {
-            symbol: matchedStock.ticker,
-            name: `${matchedStock.name} (NGX)`,
-            blockchain: "Stock Market",
-            price: matchedStock.price,
-            currency: "NGN",
-            change24h: matchedStock.change,
-            others: [],
-          };
-        }
-
-        // ✅ Feed is UP but ticker not found = not listed
-        if (type === 'NGX_STOCK') {
-          return {
-            symbol: symbol,
-            name: `${symbol} (NGX)`,
-            blockchain: "Stock Market",
-            price: null,
-            currency: "NGN",
-            _notListed: true,
-            _unavailable: false,
-            others: [],
-          };
-        }
-      } else {
-        // Fallback if feed down but we know it's NGX
-        if (type === 'NGX_STOCK') {
-          return {
-            symbol: symbol,
-            name: `${symbol} (NGX)`,
-            blockchain: "Stock Market",
-            price: null,
-            currency: "NGN",
-            _unavailable: true,
-            _notListed: false,
-            others: [],
-          };
-        }
-      }
-    }
-
-    // ============================================
-    // ❌ NOT FOUND
-    // ============================================
     return null;
   }
 
@@ -569,8 +531,7 @@ class PriceService {
 
       try {
         // Fetches ALL ~400 stocks in one request (pageSize=500)
-        const url =
-          "https://doclib.ngxgroup.com/REST/api/statistics/equities/?market=&sector=&orderby=&pageSize=500&pageNo=0";
+        const url = this.ngxApi;
 
         const { data } = await axios.get(url, {
           timeout: 30000,
@@ -651,6 +612,51 @@ class PriceService {
       this.ngxInflight = null;
     });
     return this.ngxInflight;
+  }
+
+  async _lookupNGX(symbol) {
+    const allNGX = await this.fetchNGXMarket(this.db);
+    if (!allNGX || Object.keys(allNGX).length === 0) return null;
+
+    // 1. Direct ticker match: GLO, MTNN, DANGCEM
+    let match = allNGX[symbol];
+    if (match) return this._formatNGXResult(match);
+
+    // 2. Ticker starts-with: "ZEN" → ZENITHBANK
+    if (symbol.length >= 3) {
+      match = Object.values(allNGX).find(s =>
+        s.ticker.startsWith(symbol)
+      );
+      if (match) return this._formatNGXResult(match);
+    }
+
+    // 3. Company name fuzzy match against all stocks
+    const sym = symbol.toLowerCase();
+    match = Object.values(allNGX).find(s => {
+      const name = s.name.toLowerCase();
+      return (
+        name === sym ||
+        name.startsWith(sym) ||
+        name.includes(sym) ||
+        sym.includes(name.split(' ')[0]) // "dangote" matches "Dangote Cement"
+      );
+    });
+
+    if (match) return this._formatNGXResult(match);
+
+    return null; // Not in NGX data at all
+  }
+
+  _formatNGXResult(stock) {
+    return {
+      symbol: stock.ticker,
+      name: `${stock.name} (NGX)`,
+      blockchain: "Stock Market",
+      price: stock.price,
+      currency: "NGN",
+      change24h: stock.change,
+      others: [],
+    };
   }
 
   /**

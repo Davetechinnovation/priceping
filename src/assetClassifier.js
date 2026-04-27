@@ -39,6 +39,23 @@ class AssetClassifier {
       'POLKADOT': 'DOT', 'AVALANCHE': 'AVAX', 'SHIBAINU': 'SHIB', 'LITECOIN': 'LTC'
     };
 
+    this.privateNigerianCompanies = new Set([
+      'GLO', 'GLOBACOM',
+      '9MOBILE', 'ETISALAT',         // same company, rebranded
+      'STARLINK',
+      'DANGOTE_CEMENT_PRIVATE',      // the unlisted entities
+      'NNPC',                        // state owned
+      'GTBANK_PRIVATE',
+    ]);
+
+    this.privateNigerianAliases = {
+      'GLO':       { name: 'Globacom (GLO)', note: 'Private company — not listed on NGX' },
+      'GLOBACOM':  { name: 'Globacom (GLO)', note: 'Private company — not listed on NGX' },
+      '9MOBILE':   { name: '9mobile (formerly Etisalat)', note: 'Private company — not listed on NGX' },
+      'ETISALAT':  { name: '9mobile (formerly Etisalat)', note: 'Private company — not listed on NGX' },
+      'NNPC':      { name: 'NNPC Limited', note: 'State-owned — not listed on NGX' },
+    };
+
     // 📈 Top 50 US stocks (most searched)
     this.topUSStocks = new Set([
       'AAPL', 'TSLA', 'GOOGL', 'GOOG', 'MSFT', 'AMZN', 'META', 'NVDA', 'NFLX',
@@ -108,6 +125,11 @@ class AssetClassifier {
     // 🏆 Commodities (always first — "GOLD" shouldn't match stocks)
     if (this.commodities.has(symbol) || this.commodityAliases[symbol]) {
       return { type: 'COMMODITY', symbol: this.commodityAliases[symbol] || symbol, chain: null, confidence: 100 };
+    }
+
+    // 🇳🇬 Known Nigerian private companies (not on NGX)
+    if (this.privateNigerianAliases[symbol]) {
+      return { type: 'NGX_PRIVATE', symbol, chain: null, confidence: 100 };
     }
 
     // 💎 Top 50 Cryptos
