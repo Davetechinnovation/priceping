@@ -4,9 +4,11 @@ const http = require("http");
 const https = require("https");
 const YahooFinance = require('yahoo-finance2').default;
 const yf = new YahooFinance({ suppressNotices: ['yahooSurvey'] });
+const AssetClassifier = require('./assetClassifier');
 
 class PriceService {
-  constructor() {
+  constructor(db = null) {
+    this.db = db;
     this.quotedAssetsApi = "https://api.diadata.org/v1/quotedAssets";
     this.diaAssetApi = "https://api.diadata.org/v1/assetQuotation";
     this.diaCommodityApi = "https://api.diadata.org/v1/commodityQuotation";
@@ -17,54 +19,6 @@ class PriceService {
     this.headers = {
       "User-Agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    };
-
-    // Common NGX mapper (user alias -> exact NGX ticker)
-    this.ngxMapper = {
-      "MTN": "MTNN",
-      "MTNNG": "MTNN",
-      "MTN NIGERIA": "MTNN",
-      "ZENITH": "ZENITHBANK",
-      "ZENITH BANK": "ZENITHBANK",
-      "DANGOTE": "DANGCEM",
-      "DANGOTE CEMENT": "DANGCEM",
-      "GTB": "GTCO",
-      "GTBANK": "GTCO",
-      "GUARANTY TRUST": "GTCO",
-      "UBA": "UBA",
-      "ACCESS": "ACCESSCORP",
-      "ACCESSBANK": "ACCESSCORP",
-      "ACCESS BANK": "ACCESSCORP",
-      "FBN": "FBNH",
-      "FIRSTBANK": "FBNH",
-      "FIRST BANK": "FBNH",
-      "AIRTEL": "AIRTELAFRI",
-      "AIRTEL AFRICA": "AIRTELAFRI",
-      "STANBIC": "STANBIC",
-      "STANBIC IBTC": "STANBIC",
-      "SEPLAT": "SEPLAT",
-      "OANDO": "OANDO",
-      "FIDELITY": "FIDELITYBK",
-      "FIDELITY BANK": "FIDELITYBK",
-      "STERLING": "STERLINGBANK",
-      "STERLING BANK": "STERLINGBANK"
-    };
-
-    // Human-readable names for NGX tickers
-    this.ngxNames = {
-      "MTNN": "MTN Nigeria",
-      "ZENITHBANK": "Zenith Bank",
-      "DANGCEM": "Dangote Cement",
-      "GTCO": "Guaranty Trust Holding",
-      "UBA": "United Bank for Africa",
-      "ACCESSCORP": "Access Holdings",
-      "FBNH": "FBN Holdings",
-      "AIRTELAFRI": "Airtel Africa",
-      "STANBIC": "Stanbic IBTC",
-      "SEPLAT": "Seplat Energy",
-      "OANDO": "Oando",
-      "FIDELITYBK": "Fidelity Bank",
-      "STERLINGBANK": "Sterling Bank"
     };
 
     // ============================================
@@ -113,6 +67,8 @@ class PriceService {
     // NGX Market Cache (Kwayisi)
     this.ngxCache = { data: {}, lastUpdate: 0 };
     this.ngxTTL = 300000; // 5 mins cache for all NGX
+
+    this.classifier = new AssetClassifier();
   }
 
   // ============================================
@@ -192,208 +148,179 @@ class PriceService {
   }
 
   async getAssetInfo(input) {
-    let rawInput = input.toUpperCase().trim();
-    let symbol = rawInput;
-    let specificChain = null;
+    // ============================================
+    // 🧠 STEP 1: CLASSIFY THE INPUT
+    // ============================================
+    const classification = this.classifier.classify(input);
+    const { type, symbol, chain, confidence } = classification;
 
-    // 🔀 FOREX ALIASES: normalise common user typos / short-forms
-    const FOREX_ALIASES = {
-      'GBUSD': 'GBPUSD', 'USDGB': 'USDGBP', 'EUUSD': 'EURUSD',
-      'USDEU': 'USDEUR', 'JPUSD': 'JPYUSD', 'USDJP': 'USDJPY',
-      'GBPUS': 'GBPUSD', 'EURUS': 'EURUSD'
-    };
-    if (FOREX_ALIASES[symbol]) {
-      symbol = FOREX_ALIASES[symbol];
-      rawInput = symbol;
-    }
+    console.log(`🔍 Classified "${input}" as ${type} (${confidence}% confidence) → ${symbol}`);
 
-    // 🇳🇬 DYNAMIC NGX PRIORITY
-    // Check cached NGX market to dynamically match ANY ticker or company name.
-    const allNGX = await this.fetchNGXMarket();
-    if (allNGX && Object.keys(allNGX).length > 0) {
-      let matchedStock = null;
-      
-      if (this.ngxMapper[symbol] && allNGX[this.ngxMapper[symbol]]) {
-        matchedStock = allNGX[this.ngxMapper[symbol]];
-      } else if (allNGX[symbol]) {
-        matchedStock = allNGX[symbol];
-      } else {
-        // Safe fuzzy matching to prevent short cryptos (SOL, EOS) from matching randomly inside long NGX names
-        if (symbol.includes(" ")) {
-          // Phrases with spaces (e.g. "MEYER PLC") can safely use includes
-          matchedStock = Object.values(allNGX).find(s => s.name.toUpperCase().includes(symbol));
-        } else if (symbol.length >= 5) {
-          // Single words (e.g. "CADBURY") must strictly match the start of the company name
-          matchedStock = Object.values(allNGX).find(s => 
-            s.name.toUpperCase() === symbol ||
-            s.name.toUpperCase().startsWith(symbol + " ") ||
-            s.name.toUpperCase().startsWith(symbol + "PLC") ||
-            s.name.toUpperCase().startsWith(symbol + " PLC")
-          );
-        }
-      }
-
-      if (matchedStock) {
-        return {
-          symbol: matchedStock.ticker,
-          name: `${matchedStock.name} (NGX)`,
-          blockchain: "Stock Market",
-          price: matchedStock.price,
-          currency: "NGN",
-          change24h: matchedStock.change,
-          others: [],
-        };
-      }
-    } else if (this.ngxMapper[symbol]) {
-      // Fallback if Kwayisi is down but we know it's a valid NGX alias
-      return {
-        symbol: this.ngxMapper[symbol],
-        name: `${this.ngxNames[this.ngxMapper[symbol]] || symbol} (NGX)`,
-        blockchain: "Stock Market",
-        price: null,
-        currency: "NGN",
-        _unavailable: true,
-        others: [],
-      };
-    }
-
-    const parenMatch = rawInput.match(/^([A-Z0-9]+)\s*\((.+)\)$/);
-    if (parenMatch) {
-      symbol = parenMatch[1];
-      specificChain = parenMatch[2];
-    } else {
-      const parts = rawInput.split(" ");
-      symbol = parts[0];
-      if (parts.length > 1) specificChain = parts.slice(1).join(" ");
-    }
-
+    // ============================================
     // 🏆 COMMODITIES
-    if (
-      ["GOLD", "XAU", "SILVER", "XAG", "OIL", "WTI", "BRENT"].includes(symbol)
-    ) {
-      if (symbol === "GOLD") symbol = "XAU";
-      if (symbol === "SILVER") symbol = "XAG";
+    // ============================================
+    if (type === 'COMMODITY') {
       const price = await this.getCommodityPrice(symbol);
-      if (price)
-        return {
-          symbol,
-          name: symbol,
-          blockchain: "Commodities",
-          price,
-          others: [],
-        };
+      if (price) {
+        return { symbol, name: symbol, blockchain: "Commodities", price, currency: "USD", others: [] };
+      }
     }
 
-    // 💎 CRYPTO
-    await this.loadAssetList();
+    // ============================================
+    // 💎 CRYPTO (High confidence OR dynamic fallback)
+    // ============================================
+    if (type === 'CRYPTO' || type === 'DYNAMIC') {
+      await this.loadAssetList();
 
-    if (this.nameToSymbol && this.nameToSymbol[symbol]) {
-      symbol = this.nameToSymbol[symbol];
-    }
-
-    if (symbol === "DOGS") symbol = "CAW";
-    if (symbol === "BITCOIN") symbol = "BTC";
-
-    let options = this.assetsBySymbol[symbol];
-
-    if (options) {
-      let selected = null;
-
-      if (specificChain) {
-        selected = options.find(
-          (o) => o.blockchain.toUpperCase() === specificChain,
-        );
-        if (!selected) {
-          selected = options.find((o) =>
-            o.blockchain.toUpperCase().includes(specificChain),
-          );
-        }
-        if (!selected) {
-          console.log(
-            `⚠️ Chain '${specificChain}' not found for ${symbol}. Skipping fallback.`,
-          );
-          return null;
-        }
+      let cryptoSymbol = symbol;
+      if (this.nameToSymbol && this.nameToSymbol[cryptoSymbol]) {
+        cryptoSymbol = this.nameToSymbol[cryptoSymbol];
       }
 
-      if (!selected && !specificChain) {
-        const priority = [
-          "Bitcoin",
-          "Ethereum",
-          "Solana",
-          "Binance Smart Chain",
-          "Polygon",
-          "The Open Network",
-        ];
-        options.sort((a, b) => {
-          let pA = priority.indexOf(a.blockchain);
-          let pB = priority.indexOf(b.blockchain);
-          if (pA === -1) pA = 99;
-          if (pB === -1) pB = 99;
-          return pA - pB;
-        });
-        selected = options[0];
+      const options = this.assetsBySymbol[cryptoSymbol];
 
-        if (symbol === "BTC") {
-          const realBTC = options.find((o) => o.blockchain === "Bitcoin");
-          if (realBTC) selected = realBTC;
-        }
-        if (symbol === "ETH") {
-          const realETH = options.find((o) => o.blockchain === "Ethereum");
-          if (realETH) selected = realETH;
-        }
-      }
+      if (options && options.length > 0) {
+        let selected = null;
 
-      if (selected) {
-        const price = await this.fetchDiaPrice(selected);
-        if (price !== null) {
-          const rawOthers = options.filter(
-            (o) => o.blockchain !== selected.blockchain,
-          );
-          const uniqueOthers = [];
-          const seenChains = new Set();
-          for (const o of rawOthers) {
-            if (!seenChains.has(o.blockchain)) {
-              seenChains.add(o.blockchain);
-              uniqueOthers.push(o);
-            }
+        if (chain) {
+          selected = options.find((o) => o.blockchain.toUpperCase() === chain.toUpperCase());
+          if (!selected) {
+            selected = options.find((o) => o.blockchain.toUpperCase().includes(chain.toUpperCase()));
           }
-
-          return {
-            symbol: symbol,
-            name: selected.name,
-            blockchain: selected.blockchain,
-            address: selected.address,
-            price: price,
-            others: uniqueOthers,
-          };
         }
+
+        if (!selected) {
+          const priority = ["Bitcoin", "Ethereum", "Solana", "Binance Smart Chain", "Polygon", "The Open Network"];
+          options.sort((a, b) => {
+            let pA = priority.indexOf(a.blockchain);
+            let pB = priority.indexOf(b.blockchain);
+            if (pA === -1) pA = 99;
+            if (pB === -1) pB = 99;
+            return pA - pB;
+          });
+          selected = options[0];
+
+          if (cryptoSymbol === "BTC") {
+            const realBTC = options.find((o) => o.blockchain === "Bitcoin");
+            if (realBTC) selected = realBTC;
+          }
+          if (cryptoSymbol === "ETH") {
+            const realETH = options.find((o) => o.blockchain === "Ethereum");
+            if (realETH) selected = realETH;
+          }
+        }
+
+        if (selected) {
+          const price = await this.fetchDiaPrice(selected);
+          if (price !== null) {
+            const rawOthers = options.filter((o) => o.blockchain !== selected.blockchain);
+            const uniqueOthers = [];
+            const seenChains = new Set();
+            for (const o of rawOthers) {
+              if (!seenChains.has(o.blockchain)) {
+                seenChains.add(o.blockchain);
+                uniqueOthers.push(o);
+              }
+            }
+
+            return {
+              symbol: cryptoSymbol,
+              name: selected.name,
+              blockchain: selected.blockchain,
+              address: selected.address,
+              price: price,
+              currency: "USD",
+              others: uniqueOthers,
+            };
+          }
+        }
+      }
+
+      // If crypto failed and type was CRYPTO, try stocks next
+      if (type === 'CRYPTO') {
+        // Fall through to stock lookup
+      } else if (type === 'DYNAMIC') {
+        // Continue to next services
       }
     }
 
+    // ============================================
     // 💱 FOREX
-    if (symbol.length === 3 || symbol.length === 6) {
+    // ============================================
+    if (type === 'FOREX' || type === 'DYNAMIC') {
       const forexPrice = await this.getForexPrice(symbol);
       if (forexPrice !== null) {
         return {
           symbol: symbol,
-          name:
-            symbol.length === 6
-              ? `${symbol.substring(0, 3)}/${symbol.substring(3, 6)}`
-              : `${symbol}/USD`,
+          name: symbol.length === 6 ? `${symbol.substring(0, 3)}/${symbol.substring(3, 6)}` : `${symbol}/USD`,
           blockchain: "Forex Market",
           price: forexPrice,
+          currency: symbol.length === 6 ? symbol.substring(3, 6) : "USD",
           others: [],
         };
       }
     }
 
-    // 📈 STOCKS (US & Nigerian)
-    const stockInfo = await this.getStockPrice(symbol, rawInput);
-    if (stockInfo !== null) {
-      return stockInfo;
+    // ============================================
+    // 📈 US & GLOBAL STOCKS (Yahoo Finance)
+    // Yahoo covers NYSE, NASDAQ, LSE, TSX, ASX, etc.
+    // ============================================
+    if (type === 'US_STOCK' || type === 'STOCK' || type === 'DYNAMIC') {
+      const stockInfo = await this.getStockPrice(symbol, input);
+      if (stockInfo !== null) return stockInfo;
     }
 
+    // ============================================
+    // 🇳🇬 NIGERIAN STOCKS (Last resort OR explicit NGX type)
+    // Only fetch Kwayisi if:
+    // 1. Classified as NGX_STOCK, OR
+    // 2. All other lookups failed (DYNAMIC fallback)
+    // ============================================
+    if (type === 'NGX_STOCK' || type === 'DYNAMIC') {
+      const allNGX = await this.fetchNGXMarket(this.db);
+
+      if (allNGX && Object.keys(allNGX).length > 0) {
+        let matchedStock = allNGX[symbol]; // Direct ticker match
+
+        // Fuzzy match for company names
+        if (!matchedStock && symbol.length >= 5) {
+          matchedStock = Object.values(allNGX).find(s =>
+            s.name.toUpperCase() === symbol ||
+            s.name.toUpperCase().startsWith(symbol + " ") ||
+            s.name.toUpperCase().includes(symbol)
+          );
+        }
+
+        if (matchedStock) {
+          return {
+            symbol: matchedStock.ticker,
+            name: `${matchedStock.name} (NGX)`,
+            blockchain: "Stock Market",
+            price: matchedStock.price,
+            currency: "NGN",
+            change24h: matchedStock.change,
+            others: [],
+          };
+        }
+      }
+
+      // Fallback if Kwayisi down but we know it's NGX
+      if (type === 'NGX_STOCK') {
+        return {
+          symbol: symbol,
+          name: `${symbol} (NGX)`,
+          blockchain: "Stock Market",
+          price: null,
+          currency: "NGN",
+          _unavailable: true,
+          others: [],
+        };
+      }
+    }
+
+    // ============================================
+    // ❌ NOT FOUND
+    // ============================================
     return null;
   }
 
@@ -487,9 +414,10 @@ class PriceService {
 
   getCurrencyForSymbol(symbol) {
     const s = symbol.toUpperCase().trim();
+    
     // 🇳🇬 Nigerian Stocks (NGX)
-    const NGX_TICKERS = ['DANGCEM', 'ZENITHBANK', 'MTNN', 'GTCO', 'UBA', 'ACCESSCORP', 'FBNH', 'AIRTELAFRI', 'STANBIC', 'SEPLAT', 'OANDO', 'FIDELITYBK', 'STERLINGBANK'];
-    if (this.ngxMapper[s] || Object.values(this.ngxMapper).includes(s) || this.ngxNames[s] || NGX_TICKERS.includes(s)) {
+    const classification = this.classifier.classify(s);
+    if (classification.type === 'NGX_STOCK') {
       return "NGN";
     }
 
@@ -583,75 +511,159 @@ class PriceService {
   // ============================================
   // 📈 NGX MARKET FETCHING (Kwayisi)
   // ============================================
-  async fetchNGXMarket() {
-    // 🛠️ FIX: If a fetch is already in progress, wait for it instead of starting a new one
+  async fetchNGXMarket(db = null) {
     if (this.ngxInflight) return this.ngxInflight;
 
     this.ngxInflight = (async () => {
       const now = Date.now();
-      // Return cached if fresh
-      if (this.ngxCache.data && Object.keys(this.ngxCache.data).length > 0 && (now - this.ngxCache.lastUpdate < this.ngxTTL)) {
+
+      // ✅ 1. In-memory cache still fresh
+      if (
+        this.ngxCache.data &&
+        Object.keys(this.ngxCache.data).length > 0 &&
+        now - this.ngxCache.lastUpdate < this.ngxTTL
+      ) {
         return this.ngxCache.data;
       }
 
-      try {
-        console.log("📥 Fetching fresh NGX data from Kwayisi...");
-        const stocks = {};
-        
-        // Fetch sequentially instead of parallel to avoid triggering rate limits on small sites
-        for (const page of [1, 2]) {
+      // ✅ 2. MongoDB persistence layer (survives Render restarts)
+      if (db) {
+        try {
+          const col = db.collection('ngx_cache');
+          const cached = await col.findOne({ _id: 'ngx_stocks' });
+          if (cached && now - cached.updatedAt < this.ngxTTL) {
+            console.log(`📦 NGX: MongoDB cache hit — ${Object.keys(cached.stocks).length} stocks`);
+            this.ngxCache = { data: cached.stocks, lastUpdate: cached.updatedAt };
+            return cached.stocks;
+          }
+        } catch (e) {
+          console.warn('⚠️ MongoDB NGX cache read failed:', e.message);
+        }
+      }
+
+      // ✅ 3. Full browser headers — defeats WAF fingerprinting
+      const browserHeaders = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-NG,en;q=0.9,en-US;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Referer': 'https://afx.kwayisi.org/',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-User': '?1',
+        'Sec-CH-UA': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        'Sec-CH-UA-Mobile': '?0',
+        'Sec-CH-UA-Platform': '"Windows"',
+      };
+
+      // ✅ 4. Fetch with retry + exponential backoff
+      const fetchPageWithRetry = async (page, maxRetries = 3) => {
+        const url = page === 1
+          ? 'https://afx.kwayisi.org/ngx/'
+          : `https://afx.kwayisi.org/ngx/?page=${page}`;
+
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
           try {
-            const url = page === 1 ? 'https://afx.kwayisi.org/ngx/' : `https://afx.kwayisi.org/ngx/?page=${page}`;
-            console.log(`🌐 [Kwayisi] Fetching ${url} (Simple IPv4)`);
+            console.log(`🌐 [Kwayisi] Page ${page}, attempt ${attempt}/${maxRetries}`);
             const start = Date.now();
-            
-            // Use a fresh axios call without the instance's complex agents/headers
-            const { data } = await axios.get(url, { 
+
+            const { data } = await axios.get(url, {
               family: 4,
-              timeout: 20000,
-              headers: {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-              }
-            });
-            
-            console.log(`✅ [Kwayisi] Page ${page} received in ${Date.now() - start}ms`);
-            const $ = cheerio.load(data);
-            
-            $('table tbody tr').each((i, element) => {
-              const cells = $(element).find('td');
-              if (cells.length >= 4) {
-                const ticker = $(cells[0]).text().trim();
-                const name = $(cells[1]).text().trim();
-                const price = parseFloat($(cells[3]).text().trim());
-                const change = parseFloat($(cells[4]).text().trim()) || null;
-                
-                if (ticker && !isNaN(price)) {
-                  stocks[ticker] = { ticker, name, price, change };
-                }
-              }
+              timeout: 40000, // 40s — Render needs breathing room
+              headers: browserHeaders,
             });
 
-            // Small delay before fetching page 2 to avoid WAF burst limits
-            if (page === 1) await new Promise(r => setTimeout(r, 1500));
+            console.log(`✅ [Kwayisi] Page ${page} in ${Date.now() - start}ms`);
+            return data;
           } catch (err) {
-            console.error(`⚠️ Failed to fetch Kwayisi page ${page}:`, err.message);
+            const isLast = attempt === maxRetries;
+            console.warn(`⚠️ Kwayisi page ${page} attempt ${attempt} failed: ${err.message}`);
+            if (isLast) return null;
+            // Exponential backoff: 3s, 6s
+            await new Promise(r => setTimeout(r, 3000 * attempt));
           }
         }
+        return null;
+      };
+
+      try {
+        console.log('📥 Fetching fresh NGX data from Kwayisi...');
+        const stocks = {};
+
+        // Page 1
+        const html1 = await fetchPageWithRetry(1);
+        if (html1) this._parseKwayisiPage(html1, stocks);
+
+        // Polite delay between pages
+        await new Promise(r => setTimeout(r, 2000));
+
+        // Page 2
+        const html2 = await fetchPageWithRetry(2);
+        if (html2) this._parseKwayisiPage(html2, stocks);
 
         if (Object.keys(stocks).length > 0) {
           this.ngxCache = { data: stocks, lastUpdate: now };
           console.log(`✅ Loaded ${Object.keys(stocks).length} NGX stocks from Kwayisi.`);
+
+          // ✅ 6. Persist to MongoDB — next restart reads from here
+          if (db) {
+            try {
+              await db.collection('ngx_cache').updateOne(
+                { _id: 'ngx_stocks' },
+                { $set: { stocks, updatedAt: now } },
+                { upsert: true }
+              );
+              console.log('💾 NGX data saved to MongoDB');
+            } catch (e) {
+              console.warn('⚠️ MongoDB NGX cache write failed:', e.message);
+            }
+          }
+        } else {
+          // ✅ 7. Kwayisi totally down — serve stale MongoDB data
+          console.warn('⚠️ Kwayisi returned no stocks, checking MongoDB stale cache...');
+          if (db) {
+            try {
+              const stale = await db.collection('ngx_cache').findOne({ _id: 'ngx_stocks' });
+              if (stale?.stocks) {
+                console.log(`📦 Serving stale NGX data (${Object.keys(stale.stocks).length} stocks, age: ${Math.round((now - stale.updatedAt) / 60000)}min)`);
+                this.ngxCache = { data: stale.stocks, lastUpdate: stale.updatedAt };
+              }
+            } catch (e) {}
+          }
         }
+
         return this.ngxCache.data;
       } catch (error) {
         console.error('⚠️ Error fetching NGX prices:', error.message);
         return this.ngxCache.data || {};
       } finally {
-        this.ngxInflight = null; // Release the lock
+        this.ngxInflight = null;
       }
     })();
 
     return this.ngxInflight;
+  }
+
+  // ✅ Extracted parser — clean separation
+  _parseKwayisiPage(html, stocks) {
+    const $ = cheerio.load(html);
+    $('table tbody tr').each((i, element) => {
+      const cells = $(element).find('td');
+      if (cells.length >= 4) {
+        const ticker = $(cells[0]).text().trim();
+        const name = $(cells[1]).text().trim();
+        const price = parseFloat($(cells[3]).text().trim().replace(/,/g, ''));
+        const change = parseFloat($(cells[4]).text().trim()) || null;
+        if (ticker && !isNaN(price)) {
+          stocks[ticker] = { ticker, name, price, change };
+        }
+      }
+    });
   }
 
   // ============================================

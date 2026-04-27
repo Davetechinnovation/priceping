@@ -140,7 +140,7 @@ async function initializeBot() {
     }
 
     // 3. START SERVICES
-    const priceService = new PriceService();
+    const priceService = new PriceService(database.db);
     const termiiService = new TermiiService();
     console.log("🔥 Warming up caches...");
     try {

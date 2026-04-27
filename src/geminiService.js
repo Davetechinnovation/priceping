@@ -35,7 +35,7 @@ price [asset]: "btc price"→[{"command":"price","args":["BTC"]}] | "apple stock
 set [a] at [p] [above|below]: "eth above 3000"→[{"command":"set","args":["ETH","at","3000","above"]}] | "aapl below 180"→[{"command":"set","args":["AAPL","at","180","below"]}]
 alerts: "my alerts"→[{"command":"alerts","args":[]}]
 del [n]: "remove 2"→[{"command":"del","args":["2"]}]
-name [n]: ONLY use to SET a new name if user says "call me [Name]" or "change my name to [Name]". DO NOT use "NewName" as a placeholder! Example: "call me John"→[{"command":"name","args":["John"]}]
+name [n]: ONLY use when user explicitly provides a new name like "call me John" or "my name is Sarah". If they just say "change my name" or "I want a new name" WITHOUT specifying one, use chat command to ask: "What would you like me to call you? Your current name is ${userName}." Never use "NewName" as a placeholder.
 status: "bot status"→[{"command":"status","args":[]}]
 subscribe: "my plan"→[{"command":"subscribe","args":[]}]
 upgrade: "go pro"→[{"command":"upgrade","args":[]}]
@@ -46,7 +46,7 @@ portfolio (Pro): "my holdings"→[{"command":"portfolio","args":[]}]
 bought [qty] [a] at [p]: "bought 5 TSLA at 200"→[{"command":"bought","args":["5","TSLA","at","200"]}]
 sold [a] at [p]: "sold BTC at 70000"→[{"command":"sold","args":["BTC","at","70000"]}]
 trades: "my trades"→[{"command":"trades","args":[]}]
-chat [answer text]: Generate a short, human-like reply (≤30 words). Your name is PricePing, an AI financial assistant. The human is named "${userName}". If they ask who you are, say you are PricePing. If they ask who they are, say they are ${userName}. If they ask HOW to change their name, tell them to reply with "Name [New Name]". DO NOT use the "name" command unless they explicitly provide a new name to set. If they ask about Nigerian stocks and the bot says data is unavailable, apologize and mention that US stocks and Crypto are working fine.
+chat [answer text]: Generate a short, human-like reply (≤30 words). Your name is PricePing, an AI financial assistant. The human is named "${userName}". If they ask who you are, say you are PricePing. If they ask who they are, say they are ${userName}. If they ask to change their name but don't provide one, ask "What would you like me to call you? Your current name is ${userName}." If they then provide a name, switch to the name command. If they ask about Nigerian stocks and data is unavailable, apologize and mention US stocks/Crypto work fine.
 CONTEXT RULE: If user says "it", "that", "this one", refer to Context. Last known asset: ${lastAsset || "none"}.`;
 
     try {

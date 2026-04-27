@@ -865,10 +865,15 @@ ${usage.isPro ? "👑 Unlimited" : `⏰ Resets every 12 hours (${usage.resetIn} 
   // ✏️ SET NAME
   // ==========================================
   async handleSetName(args, phoneNumber, db) {
-    const name = args.join(" ");
-    if (!name) return "⚠️ Usage: `Name Tony Stark`";
+    const name = args.join(" ").trim();
+    
+    // Block generic placeholders or invalid names
+    if (!name || name.toLowerCase() === "newname" || name.length < 2) {
+      return "⚠️ Please provide a valid name. Example: `Name Sarah`";
+    }
+
     await db.updateUserName(phoneNumber, name);
-    return `✅ Nice to meet you, *${name}*!\n\n💡 _This name will be used everywhere including admin messages._`;
+    return `✅ Got it! I'll call you *${name}* from now on.\n\n💡 _This name will be used everywhere including admin messages._`;
   }
 
   // ==========================================

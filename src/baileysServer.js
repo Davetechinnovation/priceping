@@ -9,7 +9,7 @@ class BaileysPricePingServer {
     constructor() {
         this.whatsappService = new BaileysWhatsAppService();
         this.database = new DatabaseManager();
-        this.priceService = new PriceService();
+        this.priceService = new PriceService(this.database.db);
         this.commandParser = new CommandParser();
         this.alertMonitor = new AlertMonitor();
     }
