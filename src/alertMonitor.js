@@ -1,11 +1,12 @@
 const cron = require('node-cron');
 
 class AlertMonitor {
-    constructor(database, priceService, whatsappService, termiiService = null) {
+    constructor(database, priceService, whatsappService, termiiService = null, userState = null) {
         this.database = database;
         this.priceService = priceService;
         this.whatsappService = whatsappService;
         this.termiiService = termiiService;
+        this.userState = userState;
         this.isChecking = false;
         this.isRunning = false;
 
@@ -91,6 +92,16 @@ class AlertMonitor {
                     if (sent) {
                         await this.database.markAlertTriggered(alert.id);
                         alertsTriggered++;
+
+                        // ✅ Lift the SMS activation prompt "defence" if this alert triggers
+                        // This prevents users from being stuck in a prompt for an alert that's gone
+                        if (this.userState && this.userState.has(recipient)) {
+                            const state = this.userState.get(recipient);
+                            if (state.type === 'CONFIRM_SMS_NUMBER' || state.type === 'AWAITING_SMS_NUMBER') {
+                                console.log(`🔓 [Cleanup] Lifting SMS prompt for ${recipient} (Alert Triggered)`);
+                                this.userState.delete(recipient);
+                            }
+                        }
                     }
                 }
             }
@@ -214,17 +225,27 @@ _Alert disabled. Reply to set new one._`;
         const asset = alert.asset.toUpperCase();
         const direction = alert.direction;
         const target = alert.target_price;
-        const icon = direction === 'above' ? '📈' : '📉';
-        const pctDiff = ((currentPrice - target) / target * 100).toFixed(2);
-
+        const icon = direction === 'above' ? '▲' : '▼';
+        
         const fTarget = this.priceService.formatPrice(target, asset);
         const fPrice = this.priceService.formatPrice(currentPrice, asset);
+        const pctDiff = ((currentPrice - target) / target * 100).toFixed(2);
 
-        return `${icon} PricePing Alert: ${asset}
-Target hit: ${direction.toUpperCase()} ${fTarget}
-Current price: ${fPrice}
+        // Build a dynamic link to the bot
+        let botNumber = (process.env.WHATSAPP_PHONE_NUMBER || '2348103393608').replace(/[^0-9]/g, '');
+        if (this.whatsappService?.myJid) {
+            botNumber = this.whatsappService.myJid.split('@')[0].split(':')[0];
+        }
+        const botLink = `wa.me/${botNumber}?text=START`;
+
+        return `[PricePing Alert] ${icon} ${asset}
+--------------------
+Target: ${direction.toUpperCase()} ${fTarget}
+Current: ${fPrice}
 Move: ${pctDiff}%
-Alert disabled. Reply START to set a new one.`;
+--------------------
+Set new alerts here:
+https://${botLink}`;
     }
 
     sleep(ms) {

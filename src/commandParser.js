@@ -522,21 +522,8 @@ The Nigerian stock data feed is currently offline. This is a known issue — ple
 Reply "Set ${info.symbol} at ${info.price.toFixed(2)}"`;
     }
 
-    if (info.others && info.others.length > 0) {
-      userState.set(phoneNumber, {
-        type: "SELECT_CHAIN_PRICE",
-        symbol: info.symbol,
-        options: info.others,
-      });
-
-      response += this.getReadMore();
-      response += `\n\n📋 *Wait! I found other versions:*`;
-      response += `\n_Reply with a number to check specific price:_\n`;
-
-      info.others.slice(0, 10).forEach((opt, i) => {
-        response += `\n*${i + 1}.* ${opt.blockchain} Chain`;
-      });
-    }
+    // ✅ Chain selection removed - bot auto-selects best chain
+    // The price shown is already from the optimal chain based on priority list
 
     return response;
   }
@@ -777,13 +764,14 @@ Type *Subscribe* for unlimited alerts!`;
 ━━━━━━━━━━━━━━━━━
 📊 *Alerts:* ${this.getUsageBar(u.used, u.limit)}
 ${u.isPro ? "👑 Pro Plan" : `⏰ Resets in: ${u.resetIn}`}
-━━━━━━━━━━━━━━━━━
-_I'll message you the moment it hits!_`;
+━━━━━━━━━━━━━━━━━`;
 
-    // 👑 Pro-only: append SMS footer
+    // 👑 Pro-only: append SMS prompt
     if (u.isPro) {
       const user = await db.getUserByPhoneNumber(phoneNumber);
       response += this._buildSmsFooter(user, phoneNumber, userState);
+    } else {
+      response += `\n_I'll message you the moment it hits!_`;
     }
 
     return response;
@@ -797,22 +785,26 @@ _I'll message you the moment it hits!_`;
     if (user?.sms_number) {
       // Has a number — ask if they want to keep it or use a different one
       userState.set(phoneNumber, { type: 'CONFIRM_SMS_NUMBER', smsNumber: user.sms_number });
-      return `\n\n📱 *SMS Alert:* Send to *+${user.sms_number}*?
+      return `\n📱 *SMS Notification:* 
+Receive on *+${user.sms_number}*?
 ━━━━━━━━━━━━━━━━━
-*1* → Yes, same number ✓
-*2* → Use a different number`;
+*1* → Yes, use this number ✓
+*2* → No, use different number
+
+_I'll message you on both channels!_`;
     }
     if (this.smsSkippedThisSession.has(phoneNumber)) {
       // Skipped this session — tiny one-liner hint only
-      return `\n\n📱 _Add SMS alerts? Send your number anytime._`;
+      return `\n\n📱 _Note: SMS alerts are currently disabled._
+_I'll notify you on WhatsApp only._`;
     }
     // First time seeing this — show the full prompt and enter state
     userState.set(phoneNumber, { type: 'AWAITING_SMS_NUMBER' });
-    return `\n\n👑 *Pro Perk: SMS Alerts*
+    return `\n🚀 *Pro Perk: SMS Alerts*
 ━━━━━━━━━━━━━━━━━
-You can receive this alert on SMS too!
-📱 Send your number to enable it
-   e.g. *08012345678*
+Would you like an SMS alert as well?
+📱 *Reply with your phone number*
+   (e.g. *08012345678*)
 🚫 Or type *SKIP* for WhatsApp only.`;
   }
 

@@ -189,7 +189,8 @@ async function initializeBot() {
               }
 
               // Invalid input — re-prompt
-              return `📱 Please send your phone number (e.g. *08012345678*)\nor type *SKIP* for WhatsApp only.`;
+              return `📱 *Please respond to the SMS setup above:* 
+Send your phone number (e.g. *08012345678*) or type *SKIP* to continue with WhatsApp only.`;
             }
 
             // ── Pro SMS number confirmation (already has one) ──
@@ -218,7 +219,9 @@ async function initializeBot() {
                 return `✅ *SMS number updated!*\n📱 Alerts will now be sent to *+${smsNum}*`;
               }
 
-              return `Reply *1* to keep *+${state.smsNumber}* or *2* to enter a new number.`;
+              return `📱 *Action Required:* 
+Please respond to the SMS prompt above. 
+Reply *1* to keep *+${state.smsNumber}* or *2* to enter a new number.`;
             }
 
             const selection = parseInt(messageText.trim());
@@ -317,13 +320,14 @@ Type *Subscribe* for unlimited alerts!`;
 ━━━━━━━━━━━━━━━━━
 📊 *Alerts:* ${u.used}/${u.limit}
 ${u.isPro ? "👑 Pro Plan" : `⏰ Resets in: ${u.resetIn}`}
-━━━━━━━━━━━━━━━━━
-_I'll message you the moment it hits!_`;
+━━━━━━━━━━━━━━━━━`;
 
                 // 👑 Pro-only SMS footer for multi-chain alerts too
                 if (u.isPro) {
                   const user = await database.getUserByPhoneNumber(cleanPhone);
                   response += commandParser._buildSmsFooter(user, cleanPhone, userState);
+                } else {
+                  response += `\n_I'll message you the moment it hits!_`;
                 }
 
                 return response;
@@ -358,6 +362,7 @@ _I'll message you the moment it hits!_`;
       priceService,
       whatsappService,
       termiiService,
+      userState
     );
     alertMonitor.start();
 
