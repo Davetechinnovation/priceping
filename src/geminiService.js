@@ -120,6 +120,10 @@ CRITICAL RULES:
 3. If user says "set me an alert" or "set an alert" with NO price → chat asking for price
 4. If asset unclear + lastAssets exist → use the MOST RECENT one from lastAssets.
 5. If asset unclear + no lastAssets → chat asking which asset
+6. MATH CALCULATIONS: If user requests an alert with a mathematical formula (e.g., "BTC price times 2 plus 1000"), DO NOT return the formula as a string. Instead:
+   - Calculate the final target price using current market data
+   - Return a chat command asking for confirmation: "I calculated $[RESULT]. Should I set an alert for [ASSET] at $[RESULT]?"
+   - If they confirm (yes/ok/sure), THEN return the set command with the calculated number
 
 NGX TICKERS: Zenith/ZenithBank→ZENITHBANK, MTN/MTNNigeria→MTNN, Dangote→DANGCEM, GTB/GtBank→GTCO, Access/AccessBank→ACCESSCORP, FirstBank/FBNH→FBNH, UBA→UBA, Airtel→AIRTELAFRI, Fidelity→FIDELITYBK, Sterling→STERLINGBANK
 US TICKERS: Apple→AAPL, Tesla→TSLA, Nvidia→NVDA, Google→GOOGL, Microsoft→MSFT, Amazon→AMZN, Meta→META
@@ -153,8 +157,8 @@ EXAMPLES:
 "set an alert for the three of them when they hit an increase of 10% each" (Last assets: ZENITHBANK, MTNN, DANGCEM)
 → [{"command":"set_percent","args":["ZENITHBANK","10"]},{"command":"set_percent","args":["MTNN","10"]},{"command":"set_percent","args":["DANGCEM","10"]}]
 
-"set an alert for it" (Last assets: ZENITHBANK, MTNN, DANGCEM)
-→ [{"command":"set","args":["DANGCEM","at","[PRICE]","[DIR]"]}] // "it" refers to the most recent one
+"set an alert when BTC price times 5 divided by 2 plus 5000"
+→ [{"command":"chat","args":["The current BTC price is $76,263. Calculating: (76,263 × 5) ÷ 2 + 5,000 = $195,658. Should I set an alert for BTC at $195,658?"]}]
 
 "delete all my alerts"
 → [{"command":"del","args":["all"]}]

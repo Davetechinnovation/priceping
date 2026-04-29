@@ -1,3 +1,4 @@
+const { evaluate } = require('mathjs');
 const GeminiService = require('./geminiService');
 const fearGreedService = require('./fearGreedService');
 const newsService = require('./newsService');
@@ -649,13 +650,29 @@ ${analysis}
     if (args.includes("below")) direction = "below";
     if (args.includes("above")) direction = "above";
 
-    const priceArg = args.find((a) =>
-      /^\d+(\.\d+)?$/.test(a.replace(/,/g, "")),
+    // Try to find a numeric or formula-based price argument
+    const possiblePriceArg = args.find(a => 
+      !['at', 'above', 'below', asset].includes(a.toLowerCase()) && 
+      ( /^\d+(\.\d+)?$/.test(a.replace(/,/g, "")) || /[\+\-\*\/\(\)]/.test(a) )
     );
-    if (priceArg) targetPrice = parseFloat(priceArg.replace(/,/g, ""));
+
+    if (possiblePriceArg) {
+      try {
+        // Use mathjs to evaluate (handles raw numbers and complex formulas)
+        const cleaned = possiblePriceArg.replace(/,/g, "");
+        targetPrice = evaluate(cleaned);
+        
+        if (typeof targetPrice !== 'number' || isNaN(targetPrice)) {
+          targetPrice = null;
+        }
+      } catch (e) {
+        console.warn("Math evaluation failed for:", possiblePriceArg);
+        targetPrice = null;
+      }
+    }
 
     if (!targetPrice)
-      return "⚠️ I need a target price! Example: `Set BTC at 65000`";
+      return "⚠️ I need a valid target price! Example: `Set BTC at 65000` or `Set BTC at (76000+1000)`";
 
     const usage = await db.getAlertUsage(phoneNumber);
 
