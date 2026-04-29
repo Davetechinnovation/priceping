@@ -24,24 +24,36 @@ class GeminiService {
     const t = text.trim();
     
     const DIRECT_PATTERNS = [
-      { re: /^price\s+(\S+)/i,        cmd: 'price',     args: m => [m[1].toUpperCase()] },
-      { re: /^alerts?$/i,             cmd: 'alerts',    args: () => [] },
-      { re: /^status$/i,              cmd: 'status',    args: () => [] },
-      { re: /^subscribe$/i,           cmd: 'subscribe', args: () => [] },
-      { re: /^upgrade$/i,             cmd: 'upgrade',   args: () => [] },
-      { re: /^features?$/i,           cmd: 'features',  args: () => [] },
-      { re: /^trades?$/i,             cmd: 'trades',    args: () => [] },
-      { re: /^portfolio$/i,           cmd: 'portfolio', args: () => [] },
-      { re: /^del(?:ete)?\s+all/i,    cmd: 'del',       args: () => ['all'] },
-      { re: /^del(?:ete)?\s+([\d\s,and]+)/i, cmd: 'del', args: m => m[1].match(/\d+/g) },
-      { re: /^news\s+(\S+)/i,         cmd: 'news',      args: m => [m[1].toUpperCase()] },
-      { re: /^analyze\s+(\S+)/i,      cmd: 'analyze',   args: m => [m[1].toUpperCase()] },
+      { re: /^price\s+(\S+)$/i,        cmd: 'price',     args: m => [m[1].toUpperCase()] },
+      { re: /^alerts?$/i,              cmd: 'alerts',    args: () => [] },
+      { re: /^status$/i,               cmd: 'status',    args: () => [] },
+      { re: /^subscribe$/i,            cmd: 'subscribe', args: () => [] },
+      { re: /^upgrade$/i,              cmd: 'upgrade',   args: () => [] },
+      { re: /^features?$/i,            cmd: 'features',  args: () => [] },
+      { re: /^trades?$/i,              cmd: 'trades',    args: () => [] },
+      { re: /^portfolio$/i,            cmd: 'portfolio', args: () => [] },
+      { re: /^del(?:ete)?\s+all$/i,    cmd: 'del',       args: () => ['all'] },
+      { re: /^del(?:ete)?\s+([\d\s,and]+)$/i, cmd: 'del', args: m => m[1].match(/\d+/g) || [] },
+      { re: /^news\s+(\S+)$/i,         cmd: 'news',      args: m => [m[1].toUpperCase()] },
+      { re: /^analyze\s+(\S+)$/i,      cmd: 'analyze',   args: m => [m[1].toUpperCase()] },
+      
+      // ✅ NEW: Structured set commands (zero AI calls for clean alerts)
+      { 
+        re: /^set\s+([a-z0-9]+)\s+(?:at\s+)?(\d+(?:\.\d+)?)\s*(above|below)?$/i, 
+        cmd: 'set', 
+        args: m => {
+          const asset = m[1].toUpperCase();
+          const price = m[2];
+          const direction = m[3]?.toLowerCase() || 'below'; // default to below
+          return [asset, 'at', price, direction];
+        }
+      },
     ];
 
     for (const { re, cmd, args } of DIRECT_PATTERNS) {
       const m = t.match(re);
       if (m) {
-        console.log(`⚡ [Regex Gate] Matched "${cmd}" locally`);
+        console.log(`⚡ [Regex Gate] Matched "${cmd}" locally (zero tokens)`);
         return [{ command: cmd, args: args(m) }];
       }
     }
