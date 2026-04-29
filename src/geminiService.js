@@ -7,7 +7,7 @@ class GeminiService {
     // ✅ Switch to standard 1,000 RPD model
     this.modelName = "meta-llama/llama-4-scout-17b-16e-instruct";
     this.apiUrl = "https://api.groq.com/openai/v1/chat/completions";
-    
+
     // ✅ Unified cache
     this.cache = new Map();
   }
@@ -22,25 +22,25 @@ class GeminiService {
   // ==========================================
   tryDirectParse(text) {
     const t = text.trim();
-    
+
     const DIRECT_PATTERNS = [
-      { re: /^price\s+(\S+)$/i,        cmd: 'price',     args: m => [m[1].toUpperCase()] },
-      { re: /^alerts?$/i,              cmd: 'alerts',    args: () => [] },
-      { re: /^status$/i,               cmd: 'status',    args: () => [] },
-      { re: /^subscribe$/i,            cmd: 'subscribe', args: () => [] },
-      { re: /^upgrade$/i,              cmd: 'upgrade',   args: () => [] },
-      { re: /^features?$/i,            cmd: 'features',  args: () => [] },
-      { re: /^trades?$/i,              cmd: 'trades',    args: () => [] },
-      { re: /^portfolio$/i,            cmd: 'portfolio', args: () => [] },
-      { re: /^del(?:ete)?\s+all$/i,    cmd: 'del',       args: () => ['all'] },
+      { re: /^price\s+(\S+)$/i, cmd: 'price', args: m => [m[1].toUpperCase()] },
+      { re: /^alerts?$/i, cmd: 'alerts', args: () => [] },
+      { re: /^status$/i, cmd: 'status', args: () => [] },
+      { re: /^subscribe$/i, cmd: 'subscribe', args: () => [] },
+      { re: /^upgrade$/i, cmd: 'upgrade', args: () => [] },
+      { re: /^features?$/i, cmd: 'features', args: () => [] },
+      { re: /^trades?$/i, cmd: 'trades', args: () => [] },
+      { re: /^portfolio$/i, cmd: 'portfolio', args: () => [] },
+      { re: /^del(?:ete)?\s+all$/i, cmd: 'del', args: () => ['all'] },
       { re: /^del(?:ete)?\s+([\d\s,and]+)$/i, cmd: 'del', args: m => m[1].match(/\d+/g) || [] },
-      { re: /^news\s+(\S+)$/i,         cmd: 'news',      args: m => [m[1].toUpperCase()] },
-      { re: /^analyze\s+(\S+)$/i,      cmd: 'analyze',   args: m => [m[1].toUpperCase()] },
-      
+      { re: /^news\s+(\S+)$/i, cmd: 'news', args: m => [m[1].toUpperCase()] },
+      { re: /^analyze\s+(\S+)$/i, cmd: 'analyze', args: m => [m[1].toUpperCase()] },
+
       // ✅ NEW: Structured set commands (zero AI calls for clean alerts)
-      { 
-        re: /^set\s+([a-z0-9]+)\s+(?:at\s+)?(\d+(?:\.\d+)?)\s*(above|below)?$/i, 
-        cmd: 'set', 
+      {
+        re: /^set\s+([a-z0-9]+)\s+(?:at\s+)?(\d+(?:\.\d+)?)\s*(above|below)?$/i,
+        cmd: 'set',
         args: m => {
           const asset = m[1].toUpperCase();
           const price = m[2];
@@ -61,28 +61,31 @@ class GeminiService {
   }
 
   // ==========================================
-  // 📂 PERSISTENT CONTEXT
-  // Using MongoDB for session persistence
+  // 📂 PERSISTENT CONTEXT (now with multi-asset memory)
   // ==========================================
   async getUserContext(phone) {
-    if (!this.db) return { history: [], lastAsset: null };
+    if (!this.db) return { history: [], lastAssets: [] }; // ← lastAssets is now an array
     try {
       const col = this.db.collection('ai_context');
       const doc = await col.findOne({ _id: phone });
-      return doc || { history: [], lastAsset: null };
+      // Ensure lastAssets is always an array
+      if (doc && !Array.isArray(doc.lastAssets)) {
+        doc.lastAssets = doc.lastAsset ? [doc.lastAsset] : [];
+      }
+      return doc || { history: [], lastAssets: [] };
     } catch (e) {
       console.warn('⚠️ Context Load Failed:', e.message);
-      return { history: [], lastAsset: null };
+      return { history: [], lastAssets: [] };
     }
   }
 
-  async saveUserContext(phone, history, lastAsset) {
+  async saveUserContext(phone, history, lastAssets) {
     if (!this.db) return;
     try {
       const col = this.db.collection('ai_context');
       await col.updateOne(
         { _id: phone },
-        { $set: { history, lastAsset, updatedAt: Date.now() } },
+        { $set: { history, lastAssets, updatedAt: Date.now() } }, // ← save the array
         { upsert: true }
       );
     } catch (e) {
@@ -99,27 +102,29 @@ class GeminiService {
 
     // ── 📂 STEP 2: Load Persistent Context ────────────────────────────
     const context = await this.getUserContext(phone);
-    let { history: userHist, lastAsset } = context;
+    let { history: userHist, lastAssets } = context; // ← lastAssets array
 
     userHist.push(`U:${messageText}`);
     if (userHist.length > 5) userHist.shift();
 
-    // ── ✂️ STEP 3: Slim System Prompt ──────────────────────────────────
+    // ── ✂️ STEP 3: Slim System Prompt (now with multi-asset awareness) ──
     const tier = isPro ? "PRO" : "FREE";
+    const lastAssetsString = lastAssets.length > 0 ? lastAssets.join(', ') : 'none'; // ← Create a string for the prompt
+
     const systemPrompt = `PricePing WhatsApp bot. Output ONLY raw JSON array. No markdown, no text.
-User: ${userName} | Plan: ${tier} | Last asset discussed: ${lastAsset || "none"}
+User: ${userName} | Plan: ${tier} | Last assets discussed: ${lastAssetsString}
 
 CRITICAL RULES:
-1. NEVER use these words as asset names: me, my, an, a, the, it, that, this, one, them, those, alert, price, stock, crypto, coin, share
-2. If user says "set me an alert" or "set an alert" with NO price → chat asking for price
-3. If user says "set me an alert when IT goes below X" → IT = lastAsset (${lastAsset || "none"})
-4. If asset unclear + lastAsset exists → use lastAsset
-5. If asset unclear + no lastAsset → chat asking which asset
+1. MULTI-ASSET: If user mentions "all of them", "the three", "both", etc., refer to "Last assets discussed" and create a command for EACH one.
+2. NEVER use these as asset names: me, my, an, a, the, it, that, this, one, them, those, alert, price, stock, crypto, coin, share
+3. If user says "set me an alert" or "set an alert" with NO price → chat asking for price
+4. If asset unclear + lastAssets exist → use the MOST RECENT one from lastAssets.
+5. If asset unclear + no lastAssets → chat asking which asset
 
-NGX TICKERS: Zenith/ZenithBank→ZENITHBANK, MTN/MTNNigeria→MTNN, Dangote→DANGCEM, GTB/GtBank→GTCO, Access/AccessBank→ACCESSCORP, FirstBank/FBN→FBNH, UBA→UBA, Airtel→AIRTELAFRI, Fidelity→FIDELITYBK, Sterling→STERLINGBANK
-US TICKERS: Apple→AAPL, Tesla→TSLA, Nvidia→NVDA, Google→GOOGL, Microsoft→MSFT, Amazon→AMZN, Meta/Facebook→META
+NGX TICKERS: Zenith/ZenithBank→ZENITHBANK, MTN/MTNNigeria→MTNN, Dangote→DANGCEM, GTB/GtBank→GTCO, Access/AccessBank→ACCESSCORP, FirstBank/FBNH→FBNH, UBA→UBA, Airtel→AIRTELAFRI, Fidelity→FIDELITYBK, Sterling→STERLINGBANK
+US TICKERS: Apple→AAPL, Tesla→TSLA, Nvidia→NVDA, Google→GOOGL, Microsoft→MSFT, Amazon→AMZN, Meta→META
 
-COMMANDS (return matching command only):
+COMMANDS:
 price [a]              → [{"command":"price","args":["BTC"]}]
 set [a] at [p] [dir]   → [{"command":"set","args":["ETH","at","3000","above"]}]
 alerts                 → [{"command":"alerts","args":[]}]
@@ -138,24 +143,25 @@ features               → [{"command":"features","args":[]}]
 name [n]               → only when user gives explicit new name like "call me John"
 chat                   → [{"command":"chat","args":["reply under 20 words"]}]
 
-EXAMPLES (study these carefully):
-"set me an alert" (lastAsset=BTC, no price given)
-→ [{"command":"chat","args":["Sure! What price should I watch for BTC? Above or below?"]}]
+EXAMPLES:
+"I would like to know their prices" (Last assets: ZENITHBANK, MTNN, DANGCEM)
+→ [{"command":"price","args":["ZENITHBANK"]},{"command":"price","args":["MTNN"]},{"command":"price","args":["DANGCEM"]}]
 
-"set me an alert when it goes below 80000" (lastAsset=BTC)
-→ [{"command":"set","args":["BTC","at","80000","below"]}]
+"set an alert for the three of them" (Last assets: ZENITHBANK, MTNN, DANGCEM)
+→ [{"command":"chat","args":["Sure! What price should I watch for ZENITHBANK, MTNN, and DANGCEM? You can tell me one by one."]}]
 
-"set an alert when zenith goes below 223"
-→ [{"command":"set","args":["ZENITHBANK","at","223","below"]}]
+"set an alert for the three of them when they hit an increase of 10% each" (Last assets: ZENITHBANK, MTNN, DANGCEM)
+→ [{"command":"set_percent","args":["ZENITHBANK","10"]},{"command":"set_percent","args":["MTNN","10"]},{"command":"set_percent","args":["DANGCEM","10"]}]
 
-"what about BTC?" 
-→ [{"command":"price","args":["BTC"]}]
-
-"set me an alert when it goes below 80000" (lastAsset=BTC)
-→ [{"command":"set","args":["BTC","at","80000","below"]}]
+"set an alert for it" (Last assets: ZENITHBANK, MTNN, DANGCEM)
+→ [{"command":"set","args":["DANGCEM","at","[PRICE]","[DIR]"]}] // "it" refers to the most recent one
 
 "delete all my alerts"
 → [{"command":"del","args":["all"]}]
+
+"are u stupid?"
+→ [{"command":"chat","args":["Sorry for the confusion! What would you like to do?"]}]`;
+"]}]
 
 "delete 1 and 3"
 → [{"command":"del","args":["1","3"]}]
@@ -215,23 +221,23 @@ EXAMPLES (study these carefully):
 
       // ── 🔧 STEP 4: Asset Context Safety Net ──────────────────────────
       const GENERIC_WORDS = new Set([
-        'it','that','this','stock','stocks','asset','assets','coin','crypto',
-        'shares','share','one','the','them','those',
+        'it', 'that', 'this', 'stock', 'stocks', 'asset', 'assets', 'coin', 'crypto',
+        'shares', 'share', 'one', 'the', 'them', 'those',
         // THE KEY ADDITIONS - these were causing your "ME" and "AN" bugs:
-        'me','my','an','a','alert','alerts','price','set'
+        'me', 'my', 'an', 'a', 'alert', 'alerts', 'price', 'set'
       ]);
 
       if (Array.isArray(parsed)) {
         parsed = parsed.map(cmd => {
 
           // Fix generic asset words using last known context
-          if (['price','analyze','news','set','bought','sold'].includes(cmd.command)) {
+          if (['price', 'analyze', 'news', 'set', 'bought', 'sold'].includes(cmd.command)) {
             const assetArg = (cmd.args?.[0] || '').toLowerCase().trim();
 
             if (GENERIC_WORDS.has(assetArg)) {
-              if (lastAsset) {
-                console.log(`🔧 Context fix: "${cmd.args[0]}" → "${lastAsset}"`);
-                cmd.args[0] = lastAsset;
+              if (lastAssets.length > 0) {
+                console.log(`🔧 Context fix: "${cmd.args[0]}" → "${lastAssets[0]}"`);
+                cmd.args[0] = lastAssets[0];
               } else {
                 // No context at all — convert set to a chat question
                 if (cmd.command === 'set') {
@@ -253,9 +259,9 @@ EXAMPLES (study these carefully):
           if (cmd.command === 'set') {
             const assetArg = (cmd.args?.[0] || '').toLowerCase().trim();
             if (GENERIC_WORDS.has(assetArg) || assetArg.length <= 1) {
-              if (lastAsset) {
-                console.log(`🔧 Set-alert context fix: "${cmd.args[0]}" → "${lastAsset}"`);
-                cmd.args[0] = lastAsset;
+              if (lastAssets.length > 0) {
+                console.log(`🔧 Set-alert context fix: "${cmd.args[0]}" → "${lastAssets[0]}"`);
+                cmd.args[0] = lastAssets[0];
               } else {
                 return {
                   command: 'chat',
@@ -272,15 +278,20 @@ EXAMPLES (study these carefully):
       // ── 💾 STEP 5: Save Updated Context ──────────────────────────────
       if (Array.isArray(parsed)) {
         const aiChats = parsed.filter(p => p.command === "chat").map(p => p.args[0]);
-        userHist.push(aiChats.length > 0 ? `A:${aiChats[0].slice(0,60)}` : `A:[cmd]`);
+        userHist.push(aiChats.length > 0 ? `A:${aiChats[0].slice(0, 60)}` : `A:[cmd]`);
         if (userHist.length > 5) userHist.shift();
 
-        const assetCmd = parsed.find(p => ['price','analyze','news','set','bought','sold'].includes(p.command));
-        if (assetCmd && assetCmd.args?.[0]) {
-          lastAsset = assetCmd.args[0];
+        // Find ALL asset commands in the response
+        const newAssets = parsed
+          .filter(p => ['price', 'analyze', 'news', 'set', 'bought', 'sold', 'set_percent'].includes(p.command) && p.args?.[0])
+          .map(p => p.args[0]);
+
+        if (newAssets.length > 0) {
+          // Add new assets to the front, remove duplicates, and keep the last 5
+          lastAssets = [...new Set([...newAssets, ...lastAssets])].slice(0, 5);
         }
-        
-        await this.saveUserContext(phone, userHist, lastAsset);
+
+        await this.saveUserContext(phone, userHist, lastAssets);
         return parsed;
       }
 
@@ -296,13 +307,13 @@ EXAMPLES (study these carefully):
 
   async injectBotResponse(phone, responseText) {
     const context = await this.getUserContext(phone);
-    let { history: userHist, lastAsset } = context;
+    let { history: userHist, lastAssets } = context;
 
     const snippet = responseText.replace(/\n+/g, " ").slice(0, 150) + (responseText.length > 150 ? "..." : "");
     userHist.push(`A:${snippet}`);
     if (userHist.length > 5) userHist.shift();
 
-    await this.saveUserContext(phone, userHist, lastAsset);
+    await this.saveUserContext(phone, userHist, lastAssets);
   }
   // ==========================================
   // 💎 PREMIUM AI FEATURES
@@ -315,7 +326,7 @@ EXAMPLES (study these carefully):
 
   async analyzeMarket(asset, price, percentChange24h = null, currency = "USD") {
     if (!this.apiKey) return null;
-    
+
     const cacheKey = `market:${asset}`;
     const now = Date.now();
     const cached = this.cache.get(cacheKey);
@@ -341,13 +352,13 @@ Explain it in simple, easy-to-understand terms that a beginner would grasp, whil
         },
         { headers: { Authorization: `Bearer ${this.apiKey}` }, timeout: 8000 }
       );
-      
+
       const text = response.data?.choices?.[0]?.message?.content?.trim();
       if (text) {
         this.cache.set(cacheKey, { text, ts: now });
         return text;
       }
-    } catch(e) {
+    } catch (e) {
       console.error('Groq Analysis Error:', e.message);
     }
     return null;
@@ -377,7 +388,7 @@ Return exactly in this JSON format strictly, no explanation: {"support": number,
         },
         { headers: { Authorization: `Bearer ${this.apiKey}` }, timeout: 8000 }
       );
-      
+
       const text = response.data?.choices?.[0]?.message?.content?.trim();
       if (text) {
         const parsed = JSON.parse(text);
@@ -386,7 +397,7 @@ Return exactly in this JSON format strictly, no explanation: {"support": number,
           return parsed;
         }
       }
-    } catch(e) {
+    } catch (e) {
       console.error('Groq Alert Suggest Error:', e.message);
     }
     return null;
@@ -414,13 +425,13 @@ Return exactly in this JSON format strictly, no explanation: {"support": number,
         },
         { headers: { Authorization: `Bearer ${this.apiKey}` }, timeout: 8000 }
       );
-      
+
       const text = response.data?.choices?.[0]?.message?.content?.trim();
       if (text) {
         this.cache.set(cacheKey, { text, ts: now });
         return text;
       }
-    } catch(e) {
+    } catch (e) {
       console.error('Groq News Analyst Error:', e.message);
     }
     return null;
@@ -452,7 +463,7 @@ Write 2 short, insightful sentences about their portfolio performance today. Be 
         this.cache.set(cacheKey, { text, ts: now });
         return text;
       }
-    } catch(e) { console.error('Groq Portfolio Error:', e.message); }
+    } catch (e) { console.error('Groq Portfolio Error:', e.message); }
     return null;
   }
 
@@ -477,7 +488,7 @@ Write 1 short, punchy, honest sentence (max 20 words) reacting to this trade res
         { headers: { Authorization: `Bearer ${this.apiKey}` }, timeout: 8000 }
       );
       return response.data?.choices?.[0]?.message?.content?.trim() || null;
-    } catch(e) { return null; }
+    } catch (e) { return null; }
   }
 
   async generateDailyBrief(marketData, userName = 'Trader') {
@@ -486,7 +497,7 @@ Write 1 short, punchy, honest sentence (max 20 words) reacting to this trade res
     const cacheKey = 'daily_brief';
     const now = Date.now();
     const cached = this.cache.get(cacheKey);
-    
+
     if (cached && now - cached.ts < 3600000) {
       return cached.text.replace('{{NAME}}', userName);
     }
@@ -509,7 +520,7 @@ Write a 3-sentence morning brief in plain text (no markdown headers). Mention th
         this.cache.set(cacheKey, { text: text.replace(userName, '{{NAME}}'), ts: now });
         return text;
       }
-    } catch(e) { console.error('Groq Daily Brief Error:', e.message); }
+    } catch (e) { console.error('Groq Daily Brief Error:', e.message); }
     return null;
   }
 }

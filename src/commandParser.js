@@ -24,6 +24,8 @@ class CommandParser {
 
       // Alerts
       set: this.handleSetAlert.bind(this),
+      set_percent: this.handleSetPercentAlert.bind(this),
+      set_ask: this.handleSetAsk.bind(this),
       alert: this.handleSetAlert.bind(this),
       alerts: this.handleMyAlerts.bind(this),
       del: this.handleDeleteAlert.bind(this),
@@ -775,6 +777,31 @@ ${u.isPro ? "👑 Pro Plan" : `⏰ Resets in: ${u.resetIn}`}
     }
 
     return response;
+  }
+
+  async handleSetPercentAlert(args, phoneNumber, db, priceService, pushName, userState) {
+    if (args.length < 2) return "⚠️ Invalid format for percentage alert.";
+
+    const asset = args[0].toUpperCase();
+    const percentIncrease = parseFloat(args[1]);
+
+    if (isNaN(percentIncrease)) return "⚠️ Invalid percentage.";
+
+    const info = await priceService.getAssetInfo(asset);
+    if (!info || !info.price) return `❌ Couldn't get current price for ${asset}.`;
+
+    const currentPrice = info.price;
+    const targetPrice = currentPrice * (1 + percentIncrease / 100);
+
+    // Now just reuse your existing handleSetAlert logic
+    const newArgs = [asset, 'at', targetPrice.toFixed(4), percentIncrease >= 0 ? 'above' : 'below'];
+    return this.handleSetAlert(newArgs, phoneNumber, db, priceService, pushName, userState);
+  }
+
+  async handleSetAsk(args, phoneNumber, db, priceService, pushName, userState) {
+    if (args.length < 1) return "⚠️ Invalid format.";
+    const asset = args[0].toUpperCase();
+    return `Sure! What price should I watch for *${asset}*? You can say "above 150" or "below 120".`;
   }
 
 
