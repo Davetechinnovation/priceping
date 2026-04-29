@@ -33,17 +33,43 @@ class AlertMonitor {
         console.log('🚀 Starting PricePing Alert Monitor...');
         this.isRunning = true;
 
-        // Check alerts every 30 seconds
+        // ── Crypto + Forex: Every 30 seconds (24/7, fast APIs) ────────────
         cron.schedule('*/30 * * * * *', async () => {
             await this.checkAlerts();
         });
 
-        // Update price history every 5 minutes
+        // ── NGX Stocks: Every 5 minutes during market hours ───────────────
+        // NGX prices only update ~every few minutes anyway (not tick-by-tick)
+        // Mon-Fri, 09:30-14:30 WAT
+        cron.schedule('*/5 * * * 1-5', async () => {
+            const markets = this.getActiveMarkets();
+            if (markets.ngx) {
+                console.log('🇳🇬 NGX market check...');
+                await this.fetchNGXAndCheckAlerts();
+            }
+        });
+
+        // ── US Stocks: Every 2 minutes during market hours ────────────────
+        // Yahoo Finance has rate limits — 2min is safe
+        // Mon-Fri only
+        cron.schedule('*/2 * * * 1-5', async () => {
+            const markets = this.getActiveMarkets();
+            if (markets.us_stock) {
+                // Stock alerts are handled in the main checkAlerts loop
+                // This just warms the cache proactively
+                await this.warmStockCache();
+            }
+        });
+
+        // ── Price history: Every 5 minutes ────────────────────────────────
         cron.schedule('*/5 * * * *', async () => {
             await this.updatePriceHistory();
         });
 
-        console.log('✅ Alert monitor started successfully');
+        console.log('✅ Alert monitor started');
+        console.log('   📡 Crypto/Forex: every 30s');
+        console.log('   🇳🇬 NGX Stocks: every 5min (market hours only)');
+        console.log('   📈 US Stocks: every 2min (market hours only)');
     }
 
     async checkAlerts() {
@@ -53,54 +79,87 @@ class AlertMonitor {
         const checkStart = Date.now();
 
         try {
-            // ⏱️ STEP 1: Measure Database Speed ONLY (This is your "Latency")
+            // ⏱️ Measure DB latency separately
             const dbStart = Date.now();
             const activeAlerts = await this.database.getActiveAlerts();
-            this.dbLatency = Date.now() - dbStart; // Should be < 50ms
+            this.dbLatency = Date.now() - dbStart;
 
             if (activeAlerts.length === 0) return;
 
-            // ⏱️ STEP 2: The rest involves external APIs (This is "Duration")
-            const uniqueAssets = [...new Set(activeAlerts.map(a => a.asset.toUpperCase()))];
+            // ── Which markets are open right now? ──────────────────────────
+            const activeMarkets = this.getActiveMarkets();
 
-            // This line takes 500ms - 2000ms (Internet speed)
-            const allPrices = await this.priceService.getMultiplePrices(uniqueAssets);
+            // ── Group alerts by asset type ─────────────────────────────────
+            // Only fetch prices for markets that are currently open
+            const assetsToCheck = new Set();
+            const skippedAssets = new Set();
+
+            for (const alert of activeAlerts) {
+                const sym = alert.asset.toUpperCase();
+                const classification = this.priceService.classifier.classify(sym);
+                
+                if (this.shouldCheckAsset(classification.type, activeMarkets)) {
+                    assetsToCheck.add(sym);
+                } else {
+                    skippedAssets.add(sym);
+                }
+            }
+
+            if (skippedAssets.size > 0) {
+                // Only log this occasionally to avoid log spam
+                if (Math.random() < 0.1) { // Log ~10% of the time
+                    console.log(`💤 Market closed — skipping: ${[...skippedAssets].join(', ')}`);
+                }
+            }
+
+            if (assetsToCheck.size === 0) return;
+
+            // ── Fetch prices for open markets only ────────────────────────
+            const allPrices = await this.priceService.getMultiplePrices([...assetsToCheck]);
 
             let alertsTriggered = 0;
 
             for (const alert of activeAlerts) {
-                const currentPrice = allPrices[alert.asset.toUpperCase()];
+                const sym = alert.asset.toUpperCase();
+                
+                // Skip assets whose markets are closed
+                if (!assetsToCheck.has(sym)) continue;
 
+                const currentPrice = allPrices[sym];
                 if (currentPrice === null || currentPrice === undefined) continue;
 
                 let shouldTrigger = false;
-                if (alert.direction === 'above' && currentPrice >= alert.target_price) shouldTrigger = true;
-                else if (alert.direction === 'below' && currentPrice <= alert.target_price) shouldTrigger = true;
+                if (alert.direction === 'above' && currentPrice >= alert.target_price) {
+                    shouldTrigger = true;
+                } else if (alert.direction === 'below' && currentPrice <= alert.target_price) {
+                    shouldTrigger = true;
+                }
 
-                if (shouldTrigger) {
-                    const recipient = alert.phone_number || alert.whatsapp_number;
-                    if (!recipient) {
-                        console.warn(`⚠️ Skipping alert ${alert.id}: No valid phone number found for user ${alert.user_id}`);
-                        continue;
-                    }
+                if (!shouldTrigger) continue;
 
-                    console.log(`🚨 Trigger: ${alert.asset} ${alert.direction} ${alert.target_price} for ${recipient}`);
+                const recipient = alert.phone_number || alert.whatsapp_number;
+                if (!recipient) {
+                    console.warn(`⚠️ Skipping alert ${alert.id}: No phone number`);
+                    continue;
+                }
 
-                    // Send message (Async to not block the loop too much)
-                    const sent = await this.sendWithRetry(recipient, alert, currentPrice, 3);
+                console.log(`🚨 Trigger: ${alert.asset} ${alert.direction} ${alert.target_price} for ${recipient}`);
 
-                    if (sent) {
-                        await this.database.markAlertTriggered(alert.id);
-                        alertsTriggered++;
+                const sent = await this.sendWithRetry(recipient, alert, currentPrice, 3);
 
-                        // ✅ Lift the SMS activation prompt "defence" if this alert triggers
-                        // This prevents users from being stuck in a prompt for an alert that's gone
-                        if (this.userState && this.userState.has(recipient)) {
-                            const state = this.userState.get(recipient);
-                            if (state.type === 'CONFIRM_SMS_NUMBER' || state.type === 'AWAITING_SMS_NUMBER') {
-                                console.log(`🔓 [Cleanup] Lifting SMS prompt for ${recipient} (Alert Triggered)`);
-                                this.userState.delete(recipient);
-                            }
+                if (sent) {
+                    await this.database.markAlertTriggered(alert.id);
+                    alertsTriggered++;
+
+                    // Clean up any pending SMS prompt state for this user
+                    if (this.userState?.has(recipient)) {
+                        const state = this.userState.get(recipient);
+                        if (
+                            state.type === 'CONFIRM_SMS_NUMBER' ||
+                            state.type === 'AWAITING_SMS_NUMBER'
+                        ) {
+                            console.log(`🔓 [Cleanup] Lifting SMS prompt for ${recipient}`);
+                            this.userState.delete(recipient);
                         }
                     }
                 }
@@ -113,7 +172,6 @@ class AlertMonitor {
             console.error('❌ Error checking alerts:', error.message);
         } finally {
             this.isChecking = false;
-            // Total time including external APIs (for debug, not health)
             this.lastCheckDuration = Date.now() - checkStart;
             this.lastCheckTime = new Date();
         }
@@ -264,6 +322,90 @@ https://${botLink}`;
             }
         } catch (error) {
             console.error('Price history update failed:', error.message);
+        }
+    }
+
+    // ============================================
+    // 🕐 MARKET HOURS AWARENESS
+    // Avoids pointless API calls when markets are closed
+    // ============================================
+
+    getActiveMarkets() {
+        // Returns which markets are currently open
+        const now = new Date();
+        const utcHour = now.getUTCHours();
+        const utcMin = now.getUTCMinutes();
+        const utcDay = now.getUTCDay(); // 0=Sun, 1=Mon...6=Sat
+        const utcTime = utcHour * 60 + utcMin; // Minutes since midnight UTC
+
+        const markets = {
+            crypto: true, // 24/7, always monitor
+            forex: true, // 24/5 (closed Sat-Sun), but we still check
+        };
+
+        // 🇳🇬 NGX: Mon-Fri, 09:30-14:30 WAT = 08:30-13:30 UTC
+        const isWeekday = utcDay >= 1 && utcDay <= 5;
+        markets.ngx = isWeekday && utcTime >= 510 && utcTime <= 810; // 8:30-13:30 UTC
+
+        // 📈 US Markets: Mon-Fri, 09:30-16:00 EST = 14:30-21:00 UTC
+        // Extended hours: 04:00-20:00 EST = 09:00-01:00 UTC next day
+        markets.us_stock =
+            isWeekday &&
+            ((utcTime >= 870 && utcTime <= 1260) || // Regular: 14:30-21:00 UTC
+                (utcTime >= 540 && utcTime < 870)); // Pre-market: 09:00-14:30 UTC
+
+        return markets;
+    }
+
+    shouldCheckAsset(assetType, markets) {
+        switch (assetType) {
+            case "CRYPTO":
+                return markets.crypto; // Always
+            case "FOREX":
+                return markets.forex; // Always (with caching)
+            case "COMMODITY":
+                return markets.crypto; // Treat like 24/7
+            case "NGX_STOCK":
+                return markets.ngx; // Only during NGX hours
+            case "US_STOCK":
+            case "STOCK":
+                return markets.us_stock; // Only during US hours
+            default:
+                return true; // Check unknown types anyway
+        }
+    }
+
+    // Proactively refresh NGX cache and check NGX-specific alerts
+    async fetchNGXAndCheckAlerts() {
+        try {
+            // This refreshes the 5-minute NGX cache
+            await this.priceService.fetchNGXMarket(this.priceService.db);
+            // The next checkAlerts() call will pick up fresh NGX prices from cache
+        } catch (e) {
+            console.error("NGX refresh failed:", e.message);
+        }
+    }
+
+    // Warm Yahoo Finance cache for stocks that have active alerts
+    async warmStockCache() {
+        try {
+            const activeAlerts = await this.database.getActiveAlerts();
+            const stockAlerts = activeAlerts.filter((a) => {
+                const cls = this.priceService.classifier.classify(
+                    a.asset.toUpperCase(),
+                );
+                return cls.type === "US_STOCK" || cls.type === "STOCK";
+            });
+
+            if (stockAlerts.length === 0) return;
+
+            const symbols = [
+                ...new Set(stockAlerts.map((a) => a.asset.toUpperCase())),
+            ];
+            // Warm the cache silently
+            await this.priceService.getMultiplePrices(symbols);
+        } catch (e) {
+            // Silent fail — this is just cache warming
         }
     }
 

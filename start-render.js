@@ -153,7 +153,7 @@ async function initializeBot() {
     }
 
     const whatsappService = new BaileysWhatsAppService(database);
-    const commandParser = new CommandParser();
+    const commandParser = new CommandParser(database.db);
 
     whatsappService.setExpressApp(app);
 
@@ -222,6 +222,23 @@ Send your phone number (e.g. *08012345678*) or type *SKIP* to continue with What
               return `📱 *Action Required:* 
 Please respond to the SMS prompt above. 
 Reply *1* to keep *+${state.smsNumber}* or *2* to enter a new number.`;
+            }
+
+            // ── Delete All Confirmation ────────────────────
+            if (state.type === 'CONFIRM_DELETE_ALL') {
+              const reply = messageText.trim().toUpperCase();
+              
+              if (reply === 'YES' || reply === 'Y') {
+                userState.delete(cleanPhone);
+                const count = await database.deleteAllAlerts(cleanPhone);
+                return `✅ *Done!* Deleted all *${count}* alert(s).\n\n💡 _Your quota does not reset when you delete alerts._`;
+              } else if (reply === 'NO' || reply === 'N' || reply === 'CANCEL') {
+                userState.delete(cleanPhone);
+                return `↩️ *Cancelled.* Your alerts are safe!`;
+              } else {
+                // Anything else — re-prompt
+                return `❓ Please reply *YES* to confirm deletion or *NO* to cancel.`;
+              }
             }
 
             const selection = parseInt(messageText.trim());
@@ -369,7 +386,7 @@ ${u.isPro ? "👑 Pro Plan" : `⏰ Resets in: ${u.resetIn}`}
     // ==========================================
     // ☀️ DAILY MORNING BRIEF (8:00 AM WAT = 7:00 AM UTC)
     // ==========================================
-    const geminiService = new GeminiService();
+    const geminiService = new GeminiService(database.db);
     const TOP_COINS = ['BTC', 'ETH', 'SOL', 'AAPL', 'ZENITHBANK', 'DANGCEM', 'MTNN', 'GTCO'];
 
     cron.schedule('0 7 * * *', async () => {

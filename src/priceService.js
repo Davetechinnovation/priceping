@@ -751,94 +751,229 @@ class PriceService {
   async getMultiplePrices(symbols) {
     const uniqueSymbols = [...new Set(symbols)];
     const prices = {};
-
-    // ============================================
-    // Process in batches of maxConcurrent to avoid
-    // overwhelming the API. Previous version fired ALL
-    // at once with Promise.all — kills you at 50+ assets
-    // ============================================
     const batchSize = this.maxConcurrent;
 
     for (let i = 0; i < uniqueSymbols.length; i += batchSize) {
       const batch = uniqueSymbols.slice(i, i + batchSize);
-      const batchPromises = batch.map(async (symbol) => {
-        try {
-          // Resolve to blockchain/address first
-          await this.loadAssetList();
-          let sym = symbol.toUpperCase().trim();
 
-          // Handle "SOL (Solana)" format from alert names
-          const parenMatch = sym.match(/^([A-Z0-9]+)\s*\((.+)\)$/);
-          let resolvedSymbol = sym;
-          let chain = null;
-
-          if (parenMatch) {
-            resolvedSymbol = parenMatch[1];
-            chain = parenMatch[2];
-          }
-
-          if (this.nameToSymbol && this.nameToSymbol[resolvedSymbol]) {
-            resolvedSymbol = this.nameToSymbol[resolvedSymbol];
-          }
-          if (resolvedSymbol === "BITCOIN") resolvedSymbol = "BTC";
-          if (resolvedSymbol === "DOGS") resolvedSymbol = "CAW";
-
-          const options = this.assetsBySymbol[resolvedSymbol];
-          if (!options || options.length === 0) {
-            // Try forex
-            const forexPrice = await this.getForexPrice(resolvedSymbol);
-            prices[symbol] = forexPrice;
-            return;
-          }
-
-          let selected = null;
-          if (chain) {
-            selected = options.find(
-              (o) => o.blockchain.toUpperCase() === chain.toUpperCase(),
-            );
-            if (!selected) {
-              selected = options.find((o) =>
-                o.blockchain.toUpperCase().includes(chain.toUpperCase()),
-              );
-            }
-          }
-
-          if (!selected) {
-            const priority = [
-              "Bitcoin", "Ethereum", "Solana",
-              "Binance Smart Chain", "Polygon", "The Open Network",
-            ];
-            const sorted = [...options].sort((a, b) => {
-              let pA = priority.indexOf(a.blockchain);
-              let pB = priority.indexOf(b.blockchain);
-              if (pA === -1) pA = 99;
-              if (pB === -1) pB = 99;
-              return pA - pB;
-            });
-            selected = sorted[0];
-          }
-
-          if (selected) {
-            // 🔑 Use "alert" mode for longer cache TTL
-            prices[symbol] = await this.fetchDiaPrice(selected, "alert");
-          } else {
+      await Promise.all(
+        batch.map(async (symbol) => {
+          try {
+            const price = await this._resolveAlertPrice(symbol);
+            prices[symbol] = price;
+          } catch (e) {
+            console.error(`⚠️ Price fetch error for ${symbol}:`, e.message);
             prices[symbol] = null;
           }
-        } catch (e) {
-          console.error(`⚠️ Price fetch error for ${symbol}:`, e.message);
-          prices[symbol] = null;
-        }
-      });
+        }),
+      );
 
-      await Promise.all(batchPromises);
+      // Small delay between batches to avoid hammering APIs
+      if (i + batchSize < uniqueSymbols.length) {
+        await new Promise((r) => setTimeout(r, 200));
+      }
     }
 
-    // Map back to original symbols
+    // Map back to original symbols (preserves duplicates)
     const result = {};
     symbols.forEach((symbol) => {
       result[symbol] = prices[symbol] ?? null;
     });
     return result;
+  }
+
+  // NEW: Single unified price resolver for alert monitoring
+  // This is the core method that routes each asset to the right API
+  async _resolveAlertPrice(symbol) {
+    const sym = symbol.toUpperCase().trim();
+
+    // ── Step 1: Classify the asset ──────────────────────────────────────
+    const classification = this.classifier.classify(sym);
+    const { type } = classification;
+
+    console.log(`🔍 [Alert Monitor] ${sym} → ${type}`);
+
+    // ── Step 2: Route to correct API based on type ──────────────────────
+
+    // 💎 CRYPTO — DIA API (existing, fast)
+    if (type === "CRYPTO") {
+      return await this._resolveCryptoPrice(sym);
+    }
+
+    // 💱 FOREX — FX Rates API (existing, fast)
+    if (type === "FOREX") {
+      return await this.getForexPrice(sym);
+    }
+
+    // 🏆 COMMODITY — DIA Commodity API (existing)
+    if (type === "COMMODITY") {
+      return await this.getCommodityPrice(sym);
+    }
+
+    // 🇳🇬 NGX STOCK — NGX cache (refreshes every 5min)
+    if (type === "NGX_STOCK") {
+      return await this._resolveNGXPrice(sym);
+    }
+
+    // 📈 US/GLOBAL STOCK — Yahoo Finance
+    if (type === "US_STOCK" || type === "STOCK") {
+      return await this._resolveStockPrice(sym);
+    }
+
+    // 🔀 DYNAMIC — try all in order, return first hit
+    if (type === "DYNAMIC") {
+      // Try crypto first
+      const cryptoPrice = await this._resolveCryptoPrice(sym);
+      if (cryptoPrice !== null) return cryptoPrice;
+
+      // Try NGX
+      const ngxPrice = await this._resolveNGXPrice(sym);
+      if (ngxPrice !== null) return ngxPrice;
+
+      // Try forex
+      const forexPrice = await this.getForexPrice(sym);
+      if (forexPrice !== null) return forexPrice;
+
+      // Try US stocks last (slowest)
+      const stockPrice = await this._resolveStockPrice(sym);
+      if (stockPrice !== null) return stockPrice;
+
+      return null;
+    }
+
+    return null;
+  }
+
+  // ── Private resolvers ────────────────────────────────────────────────────
+
+  async _resolveCryptoPrice(sym) {
+    try {
+      await this.loadAssetList();
+
+      let resolvedSymbol = sym;
+
+      // Handle "SOL (Solana)" format stored in some alerts
+      const parenMatch = sym.match(/^([A-Z0-9]+)\s*\((.+)\)$/);
+      let chain = null;
+      if (parenMatch) {
+        resolvedSymbol = parenMatch[1];
+        chain = parenMatch[2];
+      }
+
+      if (this.nameToSymbol?.[resolvedSymbol]) {
+        resolvedSymbol = this.nameToSymbol[resolvedSymbol];
+      }
+
+      const options = this.assetsBySymbol[resolvedSymbol];
+      if (!options || options.length === 0) return null;
+
+      let selected = null;
+
+      // Match specific chain if requested
+      if (chain) {
+        selected = options.find(
+          (o) =>
+            o.blockchain.toUpperCase() === chain.toUpperCase() ||
+            o.blockchain.toUpperCase().includes(chain.toUpperCase()),
+        );
+      }
+
+      // Priority selection if no chain specified
+      if (!selected) {
+        const priority = [
+          "Bitcoin",
+          "Ethereum",
+          "Solana",
+          "Binance Smart Chain",
+          "Polygon",
+          "The Open Network",
+        ];
+        const sorted = [...options].sort((a, b) => {
+          let pA = priority.indexOf(a.blockchain);
+          let pB = priority.indexOf(b.blockchain);
+          if (pA === -1) pA = 99;
+          if (pB === -1) pB = 99;
+          return pA - pB;
+        });
+        selected = sorted[0];
+
+        // Force correct chain for majors
+        if (resolvedSymbol === "BTC") {
+          selected =
+            options.find((o) => o.blockchain === "Bitcoin") || selected;
+        }
+        if (resolvedSymbol === "ETH") {
+          selected =
+            options.find((o) => o.blockchain === "Ethereum") || selected;
+        }
+      }
+
+      if (!selected) return null;
+
+      // Use alert TTL (60s cache) — less aggressive than interactive (30s)
+      return await this.fetchDiaPrice(selected, "alert");
+    } catch (e) {
+      console.error(`⚠️ Crypto price failed for ${sym}:`, e.message);
+      return null;
+    }
+  }
+
+  async _resolveNGXPrice(sym) {
+    try {
+      // NGX data is cached for 5 minutes — no per-stock API call needed
+      // The entire market is fetched in one batch, so this is essentially free
+      const allNGX = await this.fetchNGXMarket(this.db);
+      if (!allNGX || Object.keys(allNGX).length === 0) return null;
+
+      // Direct ticker match first
+      if (allNGX[sym]) return allNGX[sym].price;
+
+      // Partial match (e.g. "ZENITH" → "ZENITHBANK")
+      const match = Object.values(allNGX).find(
+        (s) => s.ticker.startsWith(sym) || sym.startsWith(s.ticker),
+      );
+
+      return match ? match.price : null;
+    } catch (e) {
+      console.error(`⚠️ NGX price failed for ${sym}:`, e.message);
+      return null;
+    }
+  }
+
+  async _resolveStockPrice(sym) {
+    try {
+      const cacheKey = `stock:${sym}`;
+      const cached = this.priceCache[cacheKey];
+
+      // Use longer cache for alert monitoring (60s vs 30s interactive)
+      if (cached && Date.now() - cached.ts < this.alertTTL) {
+        return cached.data?.price || null;
+      }
+
+      const quote = await yf.quote(sym);
+      if (quote?.regularMarketPrice) {
+        const result = {
+          symbol: quote.symbol,
+          name: quote.shortName || quote.symbol,
+          blockchain: "Stock Market",
+          price: quote.regularMarketPrice,
+          currency: quote.currency || "USD",
+          change24h: quote.regularMarketChangePercent,
+          others: [],
+        };
+        this.priceCache[cacheKey] = { data: result, ts: Date.now() };
+        return quote.regularMarketPrice;
+      }
+      return null;
+    } catch (e) {
+      // Stale fallback
+      const cached = this.priceCache[`stock:${sym}`];
+      if (cached && Date.now() - cached.ts < this.staleTTL) {
+        return cached.data?.price || null;
+      }
+      console.error(`⚠️ Stock price failed for ${sym}:`, e.message);
+      return null;
+    }
   }
 
   cleanupExpiredCache() {

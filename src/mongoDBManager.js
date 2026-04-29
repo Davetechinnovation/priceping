@@ -363,31 +363,44 @@ class MongoDBManager {
   // 🔔 ALERT OPERATIONS
   // ==========================================
 
-  async createAlert(userId, asset, targetPrice, direction = "above") {
+  async createAlert(userId, asset, targetPrice, direction = "above", blockchain = null, address = null) {
     try {
       let user = await this.getUserByPhoneNumber(userId);
       if (!user) {
         user = await this.createUser(userId, userId);
       }
 
+      const col = this.db.collection("alerts");
+      
+      // Get the highest alert_number ever used by this user (including deleted ones)
+      // This ensures numbers are never reused
+      const lastAlert = await col.findOne(
+        { user_id: user.id },
+        { sort: { alert_number: -1 }, projection: { alert_number: 1 } }
+      );
+      
+      const nextNumber = lastAlert?.alert_number ? lastAlert.alert_number + 1 : 1;
+
       const alert = {
         user_id: user.id,
         asset: asset.toUpperCase(),
         target_price: parseFloat(targetPrice),
         direction: direction,
+        blockchain: blockchain || null,
+        address: address || null,
         status: "active",
+        alert_number: nextNumber,          // ← persistent, never reused
         triggered_at: null,
         created_at: new Date(),
         updated_at: new Date(),
       };
 
-      const result = await this.db.collection("alerts").insertOne(alert);
+      const result = await col.insertOne(alert);
       return {
+        ...alert,
         id: result.insertedId.toString(),
         userId: user.id,
-        asset,
-        targetPrice,
-        direction,
+        targetPrice: alert.target_price,
       };
     } catch (error) {
       throw error;
@@ -473,12 +486,13 @@ class MongoDBManager {
           user_id: user.id,
           status: "active",
         })
+        .sort({ alert_number: 1 })   // Sort by alert_number, not createdAt
         .toArray();
 
-      return alerts.map((alert, index) => ({
+      return alerts.map((alert) => ({
         ...alert,
         id: alert._id.toString(),
-        displayId: index + 1,
+        alert_number: alert.alert_number,   // ← expose this field
         targetPrice: alert.target_price,
         asset: alert.asset,
         direction: alert.direction,
@@ -506,18 +520,23 @@ class MongoDBManager {
   async deleteAllUserAlerts(phoneNumber) {
     try {
       const user = await this.getUserByPhoneNumber(phoneNumber);
-      if (!user) return false;
+      if (!user) return 0;
 
       const result = await this.db
         .collection("alerts")
         .updateMany(
-          { user_id: user.id },
-          { $set: { status: "deleted", updated_at: new Date() } },
+          { user_id: user.id, status: "active" },
+          { $set: { status: "deleted", updated_at: new Date(), deletedAt: new Date() } }
         );
-      return result.modifiedCount > 0;
+      return result.modifiedCount;
     } catch (error) {
       throw error;
     }
+  }
+
+  // Alias for index.js consistency
+  async deleteAllAlerts(phoneNumber) {
+    return this.deleteAllUserAlerts(phoneNumber);
   }
 
   async markAlertTriggered(alertId) {

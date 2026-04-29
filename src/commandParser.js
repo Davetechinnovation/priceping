@@ -2,8 +2,8 @@ const GeminiService = require('./geminiService');
 const fearGreedService = require('./fearGreedService');
 const newsService = require('./newsService');
 class CommandParser {
-  constructor() {
-    this.geminiService = new GeminiService();
+  constructor(db = null) {
+    this.geminiService = new GeminiService(db);
     this.commands = {
       hi: this.handleGreeting.bind(this),
       hello: this.handleGreeting.bind(this),
@@ -826,15 +826,19 @@ Try: \`Set BTC at 70000\``;
 
     let msg = `${this.getHeader("Your Watchlist")}\n`;
 
-    alerts.forEach((a, i) => {
+    alerts.forEach((a) => {
       const icon = a.direction === "above" ? "📈" : "📉";
-      msg += `\n*${i + 1}.* ${a.asset} ${icon} ${priceService.formatPrice(a.targetPrice, a.asset)}`;
+      // Use persistent alert_number, not array index
+      msg += `\n*#${a.alert_number}* ${a.asset} ${icon} ${priceService.formatPrice(a.targetPrice, a.asset)}`;
     });
 
     msg += `\n\n━━━━━━━━━━━━━━━━━`;
     msg += `\n📊 *Quota:* ${this.getUsageBar(usage.used, usage.limit)}`;
     msg += usage.isPro ? "\n👑 Pro Plan" : `\n⏰ Resets in: ${usage.resetIn}`;
-    msg += `\n\n🗑️ *To Delete:* Reply \`Delete 1\``;
+    msg += `\n\n🗑️ *To Delete:*`;
+    msg += `\n• Single: \`Delete 1\``;
+    msg += `\n• Multiple: \`Delete 1 3 5\``;
+    msg += `\n• All: \`Delete all\``;
     return msg;
   }
 
@@ -873,14 +877,79 @@ ${usage.isPro ? "👑 Unlimited" : `⏰ Resets every 12 hours (${usage.resetIn} 
   // ==========================================
   // 🗑️ DELETE ALERT
   // ==========================================
-  async handleDeleteAlert(args, phoneNumber, db) {
-    if (!args[0]) return "⚠️ Which one? Usage: `Delete 1`";
-    const index = parseInt(args[0]) - 1;
-    const alerts = await db.getUserAlerts(phoneNumber);
-    if (!alerts[index]) return "❌ Alert number not found.";
+  async handleDeleteAlert(args, phoneNumber, db, priceService, pushName, userState) {
+    if (!args || args.length === 0) {
+      return "⚠️ *Usage:*\n• `Delete 1` — remove one alert\n• `Delete 1 3 5` — remove multiple\n• `Delete all` — clear everything";
+    }
 
-    await db.deleteAlert(alerts[index].id);
-    return `🗑️ *Deleted:* Alert for ${alerts[index].asset}\n\n💡 _Note: Deleting an alert does not refund your quota._`;
+    // ── DELETE ALL with confirmation ──────────────────────────────────────
+    if (args[0].toLowerCase() === 'all') {
+      // Set pending confirmation state
+      userState.set(phoneNumber, { type: 'CONFIRM_DELETE_ALL' });
+      
+      const alerts = await db.getUserAlerts(phoneNumber);
+      if (alerts.length === 0) {
+        return `📂 You have no active alerts to delete.`;
+      }
+
+      return `⚠️ *Are you sure?*
+━━━━━━━━━━━━━━━━━
+You are about to delete *all ${alerts.length} alert(s)*:
+
+${alerts.map(a => {
+  const icon = a.direction === 'above' ? '📈' : '📉';
+  return `• #${a.alert_number} ${a.asset} ${icon} ${a.targetPrice}`;
+}).join('\n')}
+
+━━━━━━━━━━━━━━━━━
+Reply *YES* to confirm deletion
+Reply *NO* to cancel`;
+    }
+
+    // ── DELETE BY ALERT NUMBER(S) ─────────────────────────────────────────
+    // Parse all numeric args — supports "del 1 3 5" or "del 1, 3, 5"
+    const numbersToDelete = args
+      .join(' ')
+      .split(/[\s,]+/)
+      .map(n => parseInt(n.replace(/\D/g, '')))
+      .filter(n => !isNaN(n) && n > 0);
+
+    if (numbersToDelete.length === 0) {
+      return "⚠️ Please provide valid alert number(s). Example: `Delete 1` or `Delete 1 3 5`";
+    }
+
+    const alerts = await db.getUserAlerts(phoneNumber);
+    
+    if (alerts.length === 0) {
+      return `📂 You have no active alerts to delete.`;
+    }
+
+    // Match by persistent alert_number field (not array index)
+    const toDelete = alerts.filter(a => numbersToDelete.includes(a.alert_number));
+    const notFound = numbersToDelete.filter(n => !alerts.find(a => a.alert_number === n));
+
+    if (toDelete.length === 0) {
+      return `❌ Alert number(s) *${numbersToDelete.join(', ')}* not found.\n\nType *My Alerts* to see your current alert numbers.`;
+    }
+
+    // Delete them all
+    for (const alert of toDelete) {
+      await db.deleteAlert(alert.id);
+    }
+
+    let response = '';
+    if (toDelete.length === 1) {
+      response = `🗑️ *Deleted:* Alert #${toDelete[0].alert_number} — ${toDelete[0].asset}`;
+    } else {
+      response = `🗑️ *Deleted ${toDelete.length} alerts:*\n${toDelete.map(a => `• #${a.alert_number} ${a.asset}`).join('\n')}`;
+    }
+
+    if (notFound.length > 0) {
+      response += `\n\n⚠️ Not found: #${notFound.join(', #')}`;
+    }
+
+    response += `\n\n💡 _Deleting an alert does not refund your quota._`;
+    return response;
   }
 
   // ==========================================
