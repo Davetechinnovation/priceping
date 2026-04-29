@@ -161,16 +161,6 @@ EXAMPLES:
 
 "are u stupid?"
 → [{"command":"chat","args":["Sorry for the confusion! What would you like to do?"]}]`;
-"]}]
-
-"delete 1 and 3"
-→ [{"command":"del","args":["1","3"]}]
-
-"are u stupid?"
-→ [{"command":"chat","args":["Sorry for the confusion! What would you like to do?"]}]
-
-"can u help me set an alert?"
-→ [{"command":"chat","args":["Of course! Which asset and price should I watch? (e.g. BTC below 80000)"]}]`;
 
     try {
       const recentCtx = userHist.slice(0, -1).join(" | ");
