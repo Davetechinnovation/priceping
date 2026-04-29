@@ -242,7 +242,7 @@ function createAdminAPI(app, memoryMonitor) {
       const feed = alerts.map(a => ({
         timestamp: a.created_at,
         symbol: a.asset,
-        condition: `Price ${a.direction === 'above' ? '>' : '<'} $${a.target_price.toLocaleString()}`,
+        condition: `Price ${a.direction === 'above' ? '>' : '<'} ${global.priceService?.formatPrice(a.target_price, a.asset) || a.target_price.toLocaleString()}`,
         user: userMap[a.user_id] || a.user_id,
         status: a.status
       }));
@@ -278,52 +278,67 @@ function createAdminAPI(app, memoryMonitor) {
     try {
       const priceService = global.priceService;
       const geminiService = global.geminiService;
-      
-      // If priceService is not yet initialized in the global object
-      if (!priceService) {
+      const termiiService = global.termiiService;
+
+      // If services aren't ready, show Initializing state
+      if (!priceService || !geminiService || !termiiService) {
         return res.json([
           { name: "Crypto API (DIA)", status: "Initializing...", latency: "N/A" },
           { name: "Forex API", status: "Initializing...", latency: "N/A" },
-          { name: "NGX Official API", status: "Initializing...", latency: "N/A" },
-          { name: "SMS API (Termii)", status: "Initializing...", latency: "N/A" }
+          { name: "AI API (Groq)", status: "Initializing...", latency: "N/A" },
+          { name: "SMS API", status: "Initializing...", latency: "N/A" },
         ]);
       }
-      
-      // Complete list of external dependencies
-      const apisToCheck = [
-        { name: "Crypto API (DIA)", url: priceService.quotedAssetsApi, category: "Market Data" },
-        { name: "Forex API", url: priceService.forexApi, category: "Market Data" },
-        { name: "NGX Official API", url: priceService.ngxApi, category: "Market Data" },
-        { name: "Yahoo Finance", url: "https://finance.yahoo.com", category: "Market Data" },
-        { name: "NGX Fallback (Kwayisi)", url: "https://afx.kwayisi.org/ngx/", category: "Market Data" },
-        { name: "AI API (Groq)", url: "https://api.groq.com/openai/v1/models", category: "Intelligence" },
-        { name: "News API (Google)", url: "https://news.google.com/rss", category: "Intelligence" },
-        { name: "SMS API (Termii)", url: "https://api.ng.termii.com/api/check/health", category: "Messaging" }
-      ];
 
-      const checkApi = async (api) => {
-        if (!api.url) return { name: api.name, status: "Misconfigured", latency: "N/A" };
-        
+      // ✅ Smarter health check function
+      const checkApiHealth = async (name, url, options = {}) => {
+        if (!url) return { name, status: "Misconfigured", latency: "N/A" };
         const start = Date.now();
         try {
-          // Use the httpClient from priceService to benefit from its keep-alive agents
-          await priceService.httpClient.get(api.url, { timeout: 5000 });
-          return {
-            name: api.name,
-            status: "Connected",
-            latency: `${Date.now() - start}ms`
-          };
+          // Use a fresh axios instance for health checks to avoid header pollution
+          const axios = require('axios');
+          await axios.get(url, { timeout: 8000, ...options });
+          return { name, status: "Connected", latency: `${Date.now() - start}ms` };
         } catch (e) {
-          return {
-            name: api.name,
-            status: "Disconnected",
-            latency: "N/A"
-          };
+          return { name, status: "Disconnected", latency: "N/A" };
         }
       };
 
-      const results = await Promise.all(apisToCheck.map(checkApi));
+      const checks = [
+        // 1. DIA (Crypto) - Simple GET
+        checkApiHealth("Crypto API (DIA)", priceService.quotedAssetsApi),
+        
+        // 2. Forex - Simple GET
+        checkApiHealth("Forex API", `${priceService.forexApi}?base=USD`),
+
+        // 3. NGX Official - Simple GET
+        checkApiHealth("NGX Official API", priceService.ngxApi),
+
+        // 4. Yahoo Finance - Ping a real endpoint (e.g., search)
+        checkApiHealth("Yahoo Finance", "https://query1.finance.yahoo.com/v1/finance/search?q=AAPL"),
+        
+        // 5. Kwayisi - Mimic browser headers
+        checkApiHealth("NGX Fallback (Kwayisi)", "https://afx.kwayisi.org/ngx/", {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
+        }),
+
+        // 6. Groq AI - Check models endpoint with Auth header
+        checkApiHealth("AI API (Groq)", "https://api.groq.com/openai/v1/models", {
+          headers: { 'Authorization': `Bearer ${geminiService.apiKey}` }
+        }),
+
+        // 7. News API (Google) - Simple GET
+        checkApiHealth("News API (Google)", "https://news.google.com/rss"),
+
+        // 8. Termii SMS - Use their health check endpoint with API key
+        checkApiHealth("SMS API (Termii)", "https://api.ng.termii.com/api/check/balance", {
+          params: { 'api_key': termiiService.apiKey }
+        })
+      ];
+
+      const results = await Promise.all(checks);
       res.json(results);
+
     } catch (error) {
       console.error("External status error:", error);
       res.status(500).json({ error: "Failed to get external status" });
@@ -348,7 +363,13 @@ function createAdminAPI(app, memoryMonitor) {
         return res.status(404).json({ error: "Coin not found" });
       }
 
-      res.json({ price: priceInfo.price, symbol: priceInfo.symbol, name: priceInfo.name });
+      res.json({ 
+        price: priceInfo.price, 
+        symbol: priceInfo.symbol, 
+        name: priceInfo.name,
+        currency: priceInfo.currency,
+        formattedPrice: priceService.formatPrice(priceInfo.price, priceInfo.symbol, priceInfo.currency)
+      });
     } catch (error) {
       console.error("Price check error:", error);
       res.status(500).json({ error: error.message });
@@ -2416,7 +2437,7 @@ Exchange: ${priceInfo.blockchain}
               id: `triggered-${a._id}`,
               type: "alert",
               title: `Alert triggered: ${a.asset}`,
-              description: `Target: $${a.target_price} • ${a.direction}`,
+              description: `Target: ${global.priceService?.formatPrice(a.target_price, a.asset) || a.target_price} • ${a.direction}`,
               timestamp: new Date(a.triggered_at),
               level: "success",
             }),
@@ -2439,7 +2460,7 @@ Exchange: ${priceInfo.blockchain}
               id: `created-${a._id}`,
               type: "alert",
               title: `Alert created: ${a.asset}`,
-              description: `Target: $${a.target_price} • ${a.direction} • Status: ${a.status}`,
+              description: `Target: ${global.priceService?.formatPrice(a.target_price, a.asset) || a.target_price} • ${a.direction} • Status: ${a.status}`,
               timestamp: new Date(a.created_at),
               level: "info",
             }),
@@ -2462,7 +2483,7 @@ Exchange: ${priceInfo.blockchain}
               id: `deleted-${a._id}`,
               type: "alert",
               title: `Alert removed: ${a.asset}`,
-              description: `Was: $${a.target_price} • ${a.direction}`,
+              description: `Was: ${global.priceService?.formatPrice(a.target_price, a.asset) || a.target_price} • ${a.direction}`,
               timestamp: new Date(a.updated_at),
               level: "warning",
             }),

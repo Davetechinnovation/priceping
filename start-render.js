@@ -552,6 +552,7 @@ _You checked ${sym} recently_`;
     global.alertMonitor = alertMonitor;
     global.priceService = priceService;
     global.termiiService = termiiService;
+    global.geminiService = geminiService;
     global.botInitialized = true;
     console.log('🎉 PricePing Bot is fully operational!');
   } catch (error) {
