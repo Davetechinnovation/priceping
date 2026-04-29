@@ -121,19 +121,97 @@ class GeminiService {
     const tier = isPro ? "PRO" : "FREE";
     const lastAssetsString = lastAssets.length > 0 ? lastAssets.join(', ') : 'none'; // ← Create a string for the prompt
 
+    // ─────────────────────────────────────────────────────────────
+    // 🧠 BOT SUPPORT INTENT DETECTOR — TIGHT ALLOWLIST
+    // Only injects KB for unmistakable bot/service questions.
+    // Flipping the logic: DON'T try to block market queries —
+    // ONLY trigger for clearly bot-related support intent.
+    // ─────────────────────────────────────────────────────────────
+    const msgLower = messageText.toLowerCase().trim();
+
+    // --- Tier 1: Exact/near-exact bot-service phrases (highest confidence) ---
+    const botPhrases = [
+      // Identity
+      'who are you', 'what are you', 'what is priceping', 'about priceping', 'about this bot',
+      'what is this bot', 'what can you do', 'how do you work', 'how does this work', 'how does the bot',
+      // Pricing / plans
+      'how much', 'how to upgrade', 'how to pay', 'upgrade to pro', 'go pro', 'pro plan',
+      'free plan', 'free vs pro', 'subscription fee', 'cancel subscription', 'subscription plan',
+      'pricing', 'price plan', 'cost of', 'what does pro', 'what is pro',
+      // Referral system
+      'referral', 'how does invite', 'how does redeem', 'referral code', 'invite code',
+      'how to invite', 'how to get bonus', 'bonus slot', 'extra slot',
+      // Alerts / limits
+      'alert limit', 'how many alerts', 'why can\'t i set', 'quota reset', 'quota refill',
+      'when does my quota', 'alert quota', 'delete refund', 'does deleting', 'alert slot',
+      // Features
+      'watchlist', 'portfolio feature', 'trade journal', 'what is sms', 'sms notification',
+      'how to watch', 'how does watchlist', 'how does portfolio', 'set percent',
+      // Support
+      'help me', 'i need help', 'customer support', 'contact support', 'refund',
+    ];
+
+    // --- Tier 2: Fallback pattern — explicit "about the bot" framing ---
+    // e.g. "tell me about the bot", "explain how this works", "what features do you have"
+    const tier2Patterns = [
+      /\b(tell me|explain|describe)\b.{0,20}\b(bot|priceping|this app|this service)\b/i,
+      /\b(what|which)\b.{0,20}\b(features?|commands?|plans?|tiers?)\b.{0,10}\b(you have|available|offered|exist)\b/i,
+    ];
+
+    const isBotQuestion =
+      botPhrases.some(phrase => msgLower.includes(phrase)) ||
+      tier2Patterns.some(re => re.test(msgLower));
+
+    const isQuestion = isBotQuestion;
+
+
+    // ─────────────────────────────────────────────────────────────
+    // 📚 KNOWLEDGE BASE (only injected if user asks a question)
+    // ─────────────────────────────────────────────────────────────
+    const knowledgeBase = isQuestion ? `
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📚 BOT KNOWLEDGE (Use this to answer the user's question. Max 40 words per answer)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎁 REFERRAL PROGRAM:
+- Get code: "Invite" command → 6-digit code
+- How it works: Friend redeems → You get +1 alert slot (max +3)
+- Free limit increases: 3 → 6 alerts per 12 hours
+- Cannot refer yourself or redeem multiple codes
+
+💰 PRICING:
+- Free: 3 alerts/12h, watchlist (10 max), basic features
+- Pro: ₦2,500/month (Unlimited alerts, AI, SMS, portfolio)
+- Promo: PRICEPING50 = 10% off first month
+
+🔔 ALERT SYSTEM:
+- Free: 3 per 12 hours (auto-resets)
+- Pro: Unlimited
+- Delete does NOT refund quota
+- Alert numbers never reused (permanent IDs)
+- Volatility: "Set BTC 5% move" creates upper/lower bounds
+
+💡 KEY COMMANDS:
+- Invite = Get referral code
+- Redeem [CODE] = Use friend's code
+- Upgrade = Contact admin for Pro
+- Subscribe = View plan comparison
+- Watch [ASSET] = Add to watchlist
+- Watchlist = View watched assets
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+` : '';
+
     const systemPrompt = `PricePing WhatsApp bot. Output ONLY raw JSON array. No markdown, no text.
-User: ${userName} | Plan: ${tier} | Last assets discussed: ${lastAssetsString}
+User: ${userName} | Plan: ${tier} | Last assets: ${lastAssetsString}
+${knowledgeBase}
 
 CRITICAL RULES:
-1. MULTI-ASSET: If user mentions "all of them", "the three", "both", etc., refer to "Last assets discussed" and create a command for EACH one.
+1. MULTI-ASSET: If user mentions "all of them", "the three", "both", refer to "Last assets" and create a command for EACH one.
 2. NEVER use these as asset names: me, my, an, a, the, it, that, this, one, them, those, alert, price, stock, crypto, coin, share
-3. If user says "set me an alert" or "set an alert" with NO price → chat asking for price
-4. If asset unclear + lastAssets exist → use the MOST RECENT one from lastAssets.
-5. If asset unclear + no lastAssets → chat asking which asset
-6. MATH CALCULATIONS: If user requests an alert with a mathematical formula (e.g., "BTC price times 2 plus 1000"), DO NOT return the formula as a string. Instead:
-   - Calculate the final target price using current market data
-   - Return a chat command asking for confirmation: "I calculated $[RESULT]. Should I set an alert for [ASSET] at $[RESULT]?"
-   - If they confirm (yes/ok/sure), THEN return the set command with the calculated number
+3. No price in "set" command → ask via chat
+4. Asset unclear + lastAssets exists → use most recent
+5. MATH: Calculate formulas first, then ask for confirmation via chat. Do NOT output formulas.
+6. SUPPORT QUESTIONS: If Knowledge Base is present above, use it to answer accurately and keep the answer under 40 words via "chat" command.
 
 NGX TICKERS: Zenith/ZenithBank→ZENITHBANK, MTN/MTNNigeria→MTNN, Dangote→DANGCEM, GTB/GtBank→GTCO, Access/AccessBank→ACCESSCORP, FirstBank/FBNH→FBNH, UBA→UBA, Airtel→AIRTELAFRI, Fidelity→FIDELITYBK, Sterling→STERLINGBANK
 US TICKERS: Apple→AAPL, Tesla→TSLA, Nvidia→NVDA, Google→GOOGL, Microsoft→MSFT, Amazon→AMZN, Meta→META
@@ -154,27 +232,17 @@ status                 → [{"command":"status","args":[]}]
 subscribe              → [{"command":"subscribe","args":[]}]
 upgrade                → [{"command":"upgrade","args":[]}]
 features               → [{"command":"features","args":[]}]
-name [n]               → only when user gives explicit new name like "call me John"
-chat                   → [{"command":"chat","args":["reply under 20 words"]}]
+chat                   → [{"command":"chat","args":["reply under 40 words"]}]
 
 EXAMPLES:
-"I would like to know their prices" (Last assets: ZENITHBANK, MTNN, DANGCEM)
-→ [{"command":"price","args":["ZENITHBANK"]},{"command":"price","args":["MTNN"]},{"command":"price","args":["DANGCEM"]}]
-
-"set an alert for the three of them" (Last assets: ZENITHBANK, MTNN, DANGCEM)
-→ [{"command":"chat","args":["Sure! What price should I watch for ZENITHBANK, MTNN, and DANGCEM? You can tell me one by one."]}]
+"I would like to know their prices" (Last assets: ZENITHBANK, MTNN)
+→ [{"command":"price","args":["ZENITHBANK"]},{"command":"price","args":["MTNN"]}]
 
 "set an alert for the three of them when they hit an increase of 10% each" (Last assets: ZENITHBANK, MTNN, DANGCEM)
 → [{"command":"set_percent","args":["ZENITHBANK","10"]},{"command":"set_percent","args":["MTNN","10"]},{"command":"set_percent","args":["DANGCEM","10"]}]
 
-"set an alert when BTC price times 5 divided by 2 plus 5000"
-→ [{"command":"chat","args":["The current BTC price is $76,263. Calculating: (76,263 × 5) ÷ 2 + 5,000 = $195,658. Should I set an alert for BTC at $195,658?"]}]
-
-"delete all my alerts"
-→ [{"command":"del","args":["all"]}]
-
-"are u stupid?"
-→ [{"command":"chat","args":["Sorry for the confusion! What would you like to do?"]}]`;
+"how does the referral program work?"
+→ [{"command":"chat","args":["Get your code with the Invite command! When a friend redeems it, you get +1 free alert slot (up to 3 total bonus slots)."]}]`;
 
     try {
       const recentCtx = userHist.slice(0, -1).join(" | ");

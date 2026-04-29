@@ -1302,6 +1302,17 @@ and unlock unlimited alerts! 🚀`;
       return `👑 *You're already on Pro!*\nEnjoy your unlimited alerts! 🎉`;
     }
 
+    // ✅ Track that they clicked "Upgrade"
+    try {
+      await db.db.collection('conversion_events').insertOne({
+        phone_number: phoneNumber,
+        event: 'upgrade_command_clicked',
+        timestamp: new Date()
+      });
+    } catch (e) {
+      console.warn(`⚠️ [Upgrade] Click log failed for ${phoneNumber}`);
+    }
+
     const name = this.getDisplayName(user, pushName);
     const link = this.getAdminLink(phoneNumber, name);
 
