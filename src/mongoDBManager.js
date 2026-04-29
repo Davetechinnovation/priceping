@@ -74,6 +74,11 @@ class MongoDBManager {
         last_active: new Date(),
         streak: { current: 1, last_active_date: new Date().toISOString().split('T')[0] },
         sms_number: null, // Premium SMS Notification
+        bonus_alert_slots: 0, // 🎁 Earned via referrals (max 3)
+        referral_code: null,
+        referrals: [], // Array of phone numbers invited
+        watchlist: [], // 👀 Passive price tracking
+        onboarding_completed: false, // 📊 For guided tour
         created_at: new Date(),
       };
 
@@ -182,7 +187,13 @@ class MongoDBManager {
       }
 
       const isPro = user.subscription_type === "pro";
-      const limit = isPro ? 999 : 3; // Pro = unlimited (999), Free = 3
+      
+      // 🎁 REFERRAL BONUS LOGIC
+      const BASE_FREE_LIMIT = 3;
+      const bonusSlots = user.bonus_alert_slots || 0;
+      const freeLimit = BASE_FREE_LIMIT + bonusSlots; // 3 + up to 3 bonus = max 6
+      
+      const limit = isPro ? 999 : freeLimit;
 
       // Check if 12 hours have passed since last reset
       const lastReset = user.last_alert_reset
@@ -229,6 +240,7 @@ class MongoDBManager {
       return {
         used: 0,
         limit: 3,
+        bonusSlots: 0,
         remaining: 3,
         nextReset: new Date(),
         resetIn: "12h 0m",
@@ -796,6 +808,95 @@ class MongoDBManager {
   }
 
   // ==========================================
+  // 🎁 REFERRAL SYSTEM
+  // ==========================================
+
+  async generateReferralCode(phoneNumber) {
+    const code = phoneNumber.slice(-6); // Last 6 digits as code
+    await this.db.collection("users").updateOne(
+      { phone_number: phoneNumber },
+      { $set: { referral_code: code } }
+    );
+    return code;
+  }
+
+  async useReferralCode(newUserPhone, referralCode) {
+    // 1. Find the referrer
+    const referrer = await this.db.collection("users").findOne({ referral_code: referralCode });
+    if (!referrer) return { success: false, error: "Invalid code" };
+
+    // 2. Prevent self-referral
+    if (referrer.phone_number === newUserPhone) return { success: false, error: "Cannot refer yourself" };
+
+    // 3. Check if newUser already used a code or is already a referral
+    const newUser = await this.getUserByPhoneNumber(newUserPhone);
+    if (newUser?.referred_by) return { success: false, error: "Already redeemed a code" };
+
+    // 4. Update referrer: +1 bonus slot (max 3)
+    const newBonus = Math.min((referrer.bonus_alert_slots || 0) + 1, 3);
+    await this.db.collection("users").updateOne(
+      { phone_number: referrer.phone_number },
+      { 
+        $set: { bonus_alert_slots: newBonus },
+        $addToSet: { referrals: newUserPhone }
+      }
+    );
+
+    // 5. Mark new user as referred
+    await this.db.collection("users").updateOne(
+      { phone_number: newUserPhone },
+      { $set: { referred_by: referralCode } }
+    );
+
+    return { success: true, referrerName: referrer.name || referrer.phone_number };
+  }
+
+  // ==========================================
+  // 👀 WATCHLIST
+  // ==========================================
+
+  async addToWatchlist(phoneNumber, asset) {
+    await this.db.collection("users").updateOne(
+      { phone_number: phoneNumber },
+      { 
+        $addToSet: { watchlist: asset.toUpperCase() },
+        $set: { updated_at: new Date() }
+      }
+    );
+  }
+
+  async removeFromWatchlist(phoneNumber, asset) {
+    await this.db.collection("users").updateOne(
+      { phone_number: phoneNumber },
+      { 
+        $pull: { watchlist: asset.toUpperCase() },
+        $set: { updated_at: new Date() }
+      }
+    );
+  }
+
+  async getWatchlist(phoneNumber) {
+    const user = await this.getUserByPhoneNumber(phoneNumber);
+    return user?.watchlist || [];
+  }
+
+  // ==========================================
+  // 📊 ONBOARDING
+  // ==========================================
+
+  async isNewUser(phoneNumber) {
+    const user = await this.getUserByPhoneNumber(phoneNumber);
+    return !user?.onboarding_completed;
+  }
+
+  async completeOnboarding(phoneNumber) {
+    await this.db.collection("users").updateOne(
+      { phone_number: phoneNumber },
+      { $set: { onboarding_completed: true, updated_at: new Date() } }
+    );
+  }
+
+  // ==========================================
   // 👑 PRO USERS QUERY (for Daily Brief)
   // ==========================================
 
@@ -807,6 +908,19 @@ class MongoDBManager {
       }).toArray();
     } catch (e) {
       console.error('Error fetching Pro users:', e.message);
+      return [];
+    }
+  }
+
+  async getActiveUsers(days = 7) {
+    try {
+      const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+      return this.db.collection('users').find({
+        last_active: { $gte: cutoff },
+        whatsapp_number: { $exists: true, $ne: null }
+      }).toArray();
+    } catch (e) {
+      console.error('Error fetching active users:', e.message);
       return [];
     }
   }

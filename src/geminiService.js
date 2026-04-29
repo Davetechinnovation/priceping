@@ -48,6 +48,16 @@ class GeminiService {
           return [asset, 'at', price, direction];
         }
       },
+      {
+        re: /^set\s+([a-z0-9]+)\s+(\d+(?:\.\d+)?)\s*%\s*(move|either|both)?$/i,
+        cmd: 'set_percent',
+        args: m => {
+          const asset = m[1].toUpperCase();
+          const percent = m[2];
+          const type = m[3] ? 'move' : '';
+          return [asset, percent, type];
+        }
+      },
     ];
 
     for (const { re, cmd, args } of DIRECT_PATTERNS) {

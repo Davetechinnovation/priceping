@@ -390,7 +390,7 @@ ${u.isPro ? "👑 Pro Plan" : `⏰ Resets in: ${u.resetIn}`}
     const TOP_COINS = ['BTC', 'ETH', 'SOL', 'AAPL', 'ZENITHBANK', 'DANGCEM', 'MTNN', 'GTCO'];
 
     cron.schedule('0 7 * * *', async () => {
-      console.log('☀️ [Daily Brief] Sending morning brief to Pro users...');
+      console.log('☀️ [Daily Brief] Sending morning brief to ALL active users (Pro + Free teaser)...');
       try {
         // 1. Fetch top coin prices
         const marketData = [];
@@ -403,21 +403,23 @@ ${u.isPro ? "👑 Pro Plan" : `⏰ Resets in: ${u.resetIn}`}
 
         if (marketData.length === 0) return;
 
-        // 2. Get all Pro users
-        const proUsers = await database.getProUsers();
-        if (proUsers.length === 0) {
-          console.log('☀️ [Daily Brief] No Pro users found, skipping.');
+        // 2. Get ALL active users (used in last 7 days)
+        const activeUsers = await database.getActiveUsers(7);
+        if (activeUsers.length === 0) {
+          console.log('☀️ [Daily Brief] No active users found, skipping.');
           return;
         }
 
         // 3. Generate ONE AI brief (cached — all users share it)
         const baseBrief = await geminiService.generateDailyBrief(marketData, '{{NAME}}');
+        const today = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
 
-        // 4. Send personalised message to each Pro user
-        for (const user of proUsers) {
+        // 4. Send personalised message to each user
+        for (const user of activeUsers) {
           try {
             const name = user.name || 'Trader';
             const jid = user.whatsapp_number;
+            const isPro = user.subscription_type === 'pro';
             const userAlerts = await database.getUserAlerts(user.phone_number);
             const activeAlerts = userAlerts.filter(a => a.status === 'active');
 
@@ -428,27 +430,67 @@ ${u.isPro ? "👑 Pro Plan" : `⏰ Resets in: ${u.resetIn}`}
               })
               .join('\n');
 
-            let alertLine = '';
-            if (activeAlerts.length > 0) {
-              alertLine = `\n\n📋 *Your Alerts:* ${activeAlerts.length} active\n` +
-                activeAlerts.slice(0, 3).map(a =>
-                  `   └ ${a.asset} ${a.direction} ${priceService.formatPrice(a.target_price, a.asset)}`
-                ).join('\n');
-            }
-
-            const aiInsight = baseBrief ? baseBrief.replace('{{NAME}}', name) : '';
-            const today = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
-
-            const msg = `☀️ *Good Morning, ${name}!*
+            let msg = `☀️ *Good Morning, ${name}!*
 
 📊 *Daily Market Brief — ${today}*
 ━━━━━━━━━━━━━━━━━
-${priceLines}${alertLine}
+${priceLines}`;
+
+            if (isPro) {
+              // ✅ PRO: Full AI insight + alerts
+              let alertLine = '';
+              if (activeAlerts.length > 0) {
+                alertLine = `\n\n📋 *Your Alerts:* ${activeAlerts.length} active\n` +
+                  activeAlerts.slice(0, 3).map(a =>
+                    `   └ ${a.asset} ${a.direction} ${priceService.formatPrice(a.target_price, a.asset)}`
+                  ).join('\n');
+              }
+
+              const aiInsight = baseBrief ? baseBrief.replace('{{NAME}}', name) : '';
+
+              msg += `${alertLine}
 ━━━━━━━━━━━━━━━━━
 🤖 *AI Insight:*
 ${aiInsight || 'Markets are moving — check your alerts!'}
 
 _Reply with any coin name for full analysis._`;
+
+            } else {
+              // 🔒 FREE: Teaser version with upgrade CTA
+              const aiInsight = baseBrief ? baseBrief.replace('{{NAME}}', name) : '';
+              
+              // Truncate the AI insight to first 120 characters
+              const teaserInsight = aiInsight.length > 120 
+                ? aiInsight.substring(0, 120) + '...' 
+                : aiInsight;
+
+              msg += `
+━━━━━━━━━━━━━━━━━
+🤖 *AI Insight:*
+${teaserInsight}
+
+━━━━━━━━━━━━━━━━━
+🔒 *Upgrade to read the full analysis*
+
+For just *₦2,000/month*, unlock:
+✅ Full daily AI market briefs
+✅ Unlimited alerts (vs 3 per 12h)
+✅ Portfolio tracking & trade journal
+✅ SMS notifications (never miss an alert)
+
+Type *Upgrade* now! 🚀`;
+
+              // ✅ LOG CONVERSION EVENT
+              try {
+                await database.db.collection('conversion_events').insertOne({
+                  phone_number: user.phone_number,
+                  event: 'daily_brief_teaser_shown',
+                  timestamp: new Date()
+                });
+              } catch (e) {
+                console.warn(`⚠️ [Daily Brief] Event log failed for ${user.phone_number}`);
+              }
+            }
 
             await whatsappService.sendMessage(jid, msg);
             // Small delay to avoid flooding
@@ -457,7 +499,9 @@ _Reply with any coin name for full analysis._`;
             console.error(`☀️ [Daily Brief] Failed for ${user.phone_number}:`, e.message);
           }
         }
-        console.log(`☀️ [Daily Brief] Sent to ${proUsers.length} Pro users.`);
+        
+        const proCount = activeUsers.filter(u => u.subscription_type === 'pro').length;
+        console.log(`☀️ [Daily Brief] Sent to ${activeUsers.length} users (${proCount} Pro, ${activeUsers.length - proCount} Free).`);
       } catch (e) {
         console.error('☀️ [Daily Brief] Error:', e.message);
       }

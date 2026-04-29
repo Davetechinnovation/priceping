@@ -2998,6 +2998,148 @@ Exchange: ${priceInfo.blockchain}
     }
   });
 
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  //  GET /api/admin/conversion-funnel
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  app.get("/api/admin/conversion-funnel", async (req, res) => {
+    try {
+      const database = global.database;
+      if (!database?.isConnected) {
+        return res.status(500).json({ error: "Database not available" });
+      }
+
+      const days = parseInt(req.query.days) || 30;
+      const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+      const teaserEvents = await database.db.collection('conversion_events')
+        .find({ event: 'daily_brief_teaser_shown', timestamp: { $gte: cutoff } })
+        .sort({ timestamp: -1 })
+        .toArray();
+
+      // Group by phone number
+      const userStats = {};
+      teaserEvents.forEach(event => {
+        const phone = event.phone_number;
+        if (!userStats[phone]) {
+          userStats[phone] = { phone, teaserCount: 0, firstSeen: event.timestamp, lastSeen: event.timestamp, upgraded: false, nudgeSent: false };
+        }
+        userStats[phone].teaserCount++;
+        if (event.timestamp < userStats[phone].firstSeen) userStats[phone].firstSeen = event.timestamp;
+        if (event.timestamp > userStats[phone].lastSeen) userStats[phone].lastSeen = event.timestamp;
+      });
+
+      // Check nudge events
+      const nudgeEvents = await database.db.collection('conversion_events')
+        .find({ event: 'conversion_nudge_sent', timestamp: { $gte: cutoff } })
+        .toArray();
+      nudgeEvents.forEach(e => { if (userStats[e.phone_number]) userStats[e.phone_number].nudgeSent = true; });
+
+      // Check upgrade click events
+      const clickEvents = await database.db.collection('conversion_events')
+        .find({ event: 'upgrade_command_clicked', timestamp: { $gte: cutoff } })
+        .toArray();
+      clickEvents.forEach(e => { if (userStats[e.phone_number]) userStats[e.phone_number].clickedUpgrade = true; });
+
+      // Check which users upgraded
+      const phoneNumbers = Object.keys(userStats);
+      if (phoneNumbers.length > 0) {
+        const users = await database.db.collection('users')
+          .find({ phone_number: { $in: phoneNumbers } })
+          .toArray();
+        users.forEach(u => {
+          if (userStats[u.phone_number]) {
+            userStats[u.phone_number].userName = u.name || 'Unknown';
+            if (u.subscription_type === 'pro') {
+              userStats[u.phone_number].upgraded = true;
+              userStats[u.phone_number].upgradedAt = u.subscription_start_date;
+            }
+          }
+        });
+      }
+
+      const funnel = Object.values(userStats).sort((a, b) => b.teaserCount - a.teaserCount);
+      const totalShown = funnel.length;
+      const totalUpgraded = funnel.filter(u => u.upgraded).length;
+      const clickedUpgrade = funnel.filter(u => u.clickedUpgrade).length;
+      const conversionRate = totalShown > 0 ? ((totalUpgraded / totalShown) * 100).toFixed(1) : 0;
+      const clickRate = totalShown > 0 ? ((clickedUpgrade / totalShown) * 100).toFixed(1) : 0;
+
+      res.json({
+        summary: {
+          totalUsersShown: totalShown,
+          totalClickedUpgrade: clickedUpgrade,
+          totalUpgraded,
+          conversionRate: `${conversionRate}%`,
+          clickRate: `${clickRate}%`,
+          periodDays: days
+        },
+        funnel: funnel.map(u => ({
+          phone: u.phone,
+          name: u.userName || 'Unknown',
+          teasersReceived: u.teaserCount,
+          firstSeen: u.firstSeen,
+          lastSeen: u.lastSeen,
+          daysSinceFirst: Math.floor((Date.now() - new Date(u.firstSeen).getTime()) / (1000 * 60 * 60 * 24)),
+          clickedUpgrade: u.clickedUpgrade || false,
+          nudgeSent: u.nudgeSent || false,
+          status: u.upgraded ? 'upgraded' : 'warm_lead',
+          upgradedAt: u.upgradedAt || null
+        }))
+      });
+    } catch (error) {
+      console.error("Conversion funnel error:", error);
+      res.status(500).json({ error: "Failed to get conversion data" });
+    }
+  });
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  //  POST /api/admin/send-conversion-nudge
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  app.post("/api/admin/send-conversion-nudge", async (req, res) => {
+    try {
+      const { phoneNumber } = req.body;
+      if (!phoneNumber) return res.status(400).json({ error: "phoneNumber required" });
+
+      const database = global.database;
+      const whatsappService = global.whatsappService;
+
+      const user = await database.getUserByPhoneNumber(phoneNumber);
+      if (!user) return res.status(404).json({ error: "User not found" });
+      if (user.subscription_type === 'pro') return res.status(400).json({ error: "User is already Pro" });
+
+      const teaserCount = await database.db.collection('conversion_events')
+        .countDocuments({ phone_number: phoneNumber, event: 'daily_brief_teaser_shown' });
+
+      const name = user.name || 'Trader';
+      let nudgeMessage;
+      let engagementLevel;
+
+      if (teaserCount >= 7) {
+        engagementLevel = 'high';
+        nudgeMessage = `Hey ${name}! 👋\n\nI noticed you've been enjoying the daily market briefs for the past week! 🎯\n\n*Special offer just for you:*\nUpgrade to Pro today and get *50% off your first month* — just ₦1,000!\n\n✅ Full AI market analysis every morning\n✅ Unlimited alerts (no more 3-alert limit)\n✅ Portfolio tracking & trade journal\n✅ SMS notifications\n\nType *UPGRADE* now to claim this exclusive deal! 🔥\n\n_Offer expires in 24 hours._`;
+      } else if (teaserCount >= 3) {
+        engagementLevel = 'medium';
+        nudgeMessage = `Hi ${name}! 📊\n\nYou've been checking the daily briefs regularly — love to see it!\n\nFor just ₦2,000/month, you'd get:\n✅ The *full AI analysis* (not just the teaser)\n✅ Unlimited alerts\n✅ SMS notifications\n\nReply *UPGRADE* if you're ready! 💬`;
+      } else {
+        engagementLevel = 'low';
+        nudgeMessage = `Hey ${name}!\n\nJust a reminder — Pro users get the *full daily AI analysis* plus unlimited alerts for just ₦2,000/month.\n\nType *UPGRADE* anytime to unlock the full experience! 🚀`;
+      }
+
+      await whatsappService.sendMessage(user.whatsapp_number, nudgeMessage);
+      await database.db.collection('conversion_events').insertOne({
+        phone_number: phoneNumber,
+        event: 'conversion_nudge_sent',
+        teaserCount,
+        timestamp: new Date()
+      });
+
+      res.json({ success: true, message: `Nudge sent to ${name}`, teaserCount, engagementLevel });
+    } catch (error) {
+      console.error("Nudge send error:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
 }
 
 module.exports = { createAdminAPI };

@@ -32,6 +32,15 @@ class CommandParser {
       del: this.handleDeleteAlert.bind(this),
       delete: this.handleDeleteAlert.bind(this),
 
+      // Watchlist (👀 NEW)
+      watch: this.handleWatch.bind(this),
+      watchlist: this.handleWatchlist.bind(this),
+      unwatch: this.handleUnwatch.bind(this),
+
+      // Referrals (🎁 NEW)
+      invite: this.handleInvite.bind(this),
+      redeem: this.handleRedeem.bind(this),
+
       // Account
       name: this.handleSetName.bind(this),
 
@@ -145,6 +154,12 @@ class CommandParser {
     }
     if (["bought", "buy", "sold", "sell"].includes(command)) {
       return args.length >= 1;
+    }
+    if (["watch", "unwatch", "redeem"].includes(command)) {
+      return args.length >= 1;
+    }
+    if (["watchlist", "invite"].includes(command)) {
+      return args.length === 0;
     }
     return false;
   }
@@ -291,8 +306,18 @@ _soon as possible._`;
         pushName,
         userState,
       );
-      if (this.geminiService) this.geminiService.injectBotResponse(cleanPhone, resp);
-      return resp;
+
+      let finalResp = resp;
+
+      // 📊 ONBOARDING PROGRESSION
+      const isNew = await db.isNewUser(cleanPhone);
+      if (isNew && (command === 'set' || command === 'alert' || command === 'set_percent')) {
+        await db.completeOnboarding(cleanPhone);
+        finalResp += `\n\n🎉 *Onboarding Complete!* You've set your first alert. I'll notify you the second it hits!\n\n💡 _Type *Menu* anytime to see all features._`;
+      }
+
+      if (this.geminiService) this.geminiService.injectBotResponse(cleanPhone, finalResp);
+      return finalResp;
     } catch (error) {
       console.error(error);
       return "⚠️ *System Error*: Something went wrong. Try again!";
@@ -363,6 +388,22 @@ ${suggestions.map((s) => `• ${s}`).join("\n")}
   // 🟢 GREETING
   // ==========================================
   async handleGreeting(args, phoneNumber, db, priceService, pushName) {
+    const isNew = await db.isNewUser(phoneNumber);
+    const displayName = this.getDisplayName(null, pushName); // No user object yet usually here
+
+    if (isNew) {
+      return `👋 *Welcome to PricePing, ${displayName}!*
+
+I'm your AI crypto & stock alert assistant. I'll message you the second your target price is hit! 🚀
+
+🎯 *Let's get started in 3 steps:*
+
+*Step 1:* Check a price
+Try: \`Price BTC\`
+
+(I'll guide you through setting your first alert after that!)`;
+    }
+
     const user = await db.getUserByPhoneNumber(phoneNumber);
     const name = this.getDisplayName(user, pushName);
     const usage = await db.getAlertUsage(phoneNumber);
@@ -518,7 +559,15 @@ The Nigerian stock data feed is currently offline. This is a known issue — ple
       console.error("AI Suggestion failed:", e.message);
     }
 
-    if (!hasAiSuggestions) {
+    // Onboarding step 1 completion hint
+    const isNew = await db.isNewUser(phoneNumber);
+    if (isNew) {
+      response += `
+━━━━━━━━━━━━━━━━━
+🎯 *Step 2: Set an alert!*
+Since you checked ${info.symbol}, try setting an alert for it:
+Type: \`Set ${info.symbol} at ${Math.round(info.price * 1.05)}\``;
+    } else if (!hasAiSuggestions) {
       response += `
 ━━━━━━━━━━━━━━━━━
 💡 *Quick Alert:* 
@@ -797,22 +846,160 @@ ${u.isPro ? "👑 Pro Plan" : `⏰ Resets in: ${u.resetIn}`}
   }
 
   async handleSetPercentAlert(args, phoneNumber, db, priceService, pushName, userState) {
-    if (args.length < 2) return "⚠️ Invalid format for percentage alert.";
+    if (args.length < 2) return "⚠️ *Usage:* `Set [Asset] [Percentage]%`\nExample: `Set BTC 5%` or `Set BTC 5% move` (for two-way alert)";
 
     const asset = args[0].toUpperCase();
-    const percentIncrease = parseFloat(args[1]);
+    const rawPercent = args[1].replace('%', '');
+    const percent = parseFloat(rawPercent);
 
-    if (isNaN(percentIncrease)) return "⚠️ Invalid percentage.";
+    if (isNaN(percent)) return "⚠️ Invalid percentage. Example: `Set BTC 5%`";
 
     const info = await priceService.getAssetInfo(asset);
     if (!info || !info.price) return `❌ Couldn't get current price for ${asset}.`;
 
     const currentPrice = info.price;
-    const targetPrice = currentPrice * (1 + percentIncrease / 100);
+    const isTwoWay = args.includes("move") || args.includes("either") || args.includes("both");
 
-    // Now just reuse your existing handleSetAlert logic
-    const newArgs = [asset, 'at', targetPrice.toFixed(4), percentIncrease >= 0 ? 'above' : 'below'];
-    return this.handleSetAlert(newArgs, phoneNumber, db, priceService, pushName, userState);
+    if (isTwoWay) {
+      const upperTarget = currentPrice * (1 + Math.abs(percent) / 100);
+      const lowerTarget = currentPrice * (1 - Math.abs(percent) / 100);
+      
+      // Check quota for 2 slots
+      const usage = await db.getAlertUsage(phoneNumber);
+      if (usage.remaining < 2 && !usage.isPro) {
+        return `🚫 *Quota Low!* This two-way alert requires 2 slots, but you only have ${usage.remaining} left. Type *Upgrade* for unlimited!`;
+      }
+
+      await db.createAlert(phoneNumber, asset, upperTarget, 'above');
+      await db.createAlert(phoneNumber, asset, lowerTarget, 'below');
+
+      return `✅ *Two-way Alert Activated!*
+━━━━━━━━━━━━━━━━━
+🔔 *Asset:* ${asset}
+📊 *Current:* ${priceService.formatPrice(currentPrice, asset)}
+📈 *Upper:* ${priceService.formatPrice(upperTarget, asset)} (+${Math.abs(percent)}%)
+📉 *Lower:* ${priceService.formatPrice(lowerTarget, asset)} (-${Math.abs(percent)}%)
+━━━━━━━━━━━━━━━━━
+_I'll notify you if it moves ${Math.abs(percent)}% in either direction!_`;
+    } else {
+      // Single direction alert (default to above if positive, below if negative)
+      const targetPrice = currentPrice * (1 + percent / 100);
+      const direction = percent >= 0 ? 'above' : 'below';
+      
+      const newArgs = [asset, 'at', targetPrice.toFixed(4), direction];
+      return this.handleSetAlert(newArgs, phoneNumber, db, priceService, pushName, userState);
+    }
+  }
+
+  // ==========================================
+  // 👀 WATCHLIST HANDLERS
+  // ==========================================
+
+  async handleWatch(args, phoneNumber, db, priceService) {
+    if (args.length === 0) return "⚠️ *Usage:* `Watch [Asset]`\nExample: `Watch BTC` or `Watch TSLA`";
+    const asset = args[0].toUpperCase();
+    
+    const watchlist = await db.getWatchlist(phoneNumber);
+    if (watchlist.length >= 10) {
+      const usage = await db.getAlertUsage(phoneNumber);
+      if (!usage.isPro) return "🚫 *Limit Reached!* Free users can watch up to 10 assets. Type *Upgrade* for unlimited slots!";
+    }
+    
+    await db.addToWatchlist(phoneNumber, asset);
+    const info = await priceService.getAssetInfo(asset);
+    
+    // Complete onboarding step 1 if they are in the tour
+    const isNew = await db.isNewUser(phoneNumber);
+    let onboardingHint = "";
+    if (isNew) {
+      onboardingHint = "\n\n🎯 *Step 2:* Now set an alert when it hits a price!\nTry: `Set ${asset} at ${Math.round(info.price * 1.1)}`";
+    }
+
+    return `👀 *Now watching ${asset}*
+Current price: ${priceService.formatPrice(info.price, asset)}
+━━━━━━━━━━━━━━━━━
+💡 Type *Watchlist* to see all tracked assets.${onboardingHint}`;
+  }
+
+  async handleWatchlist(args, phoneNumber, db, priceService) {
+    const watchlist = await db.getWatchlist(phoneNumber);
+    if (watchlist.length === 0) return "📂 *Your watchlist is empty.* Try: `Watch BTC` to start tracking!";
+    
+    let msg = `👀 *Your Watchlist*\n━━━━━━━━━━━━━━━━━\n`;
+    
+    for (const asset of watchlist) {
+      try {
+        const info = await priceService.getAssetInfo(asset);
+        if (info) {
+          const change = info.change24h !== undefined ? ` (${info.change24h >= 0 ? '+' : ''}${info.change24h.toFixed(1)}%)` : '';
+          msg += `\n• *${asset}:* ${priceService.formatPrice(info.price, asset)}${change}`;
+        } else {
+          msg += `\n• *${asset}:* Price unavailable`;
+        }
+      } catch (e) {
+        msg += `\n• *${asset}:* Error fetching price`;
+      }
+    }
+    
+    msg += `\n\n━━━━━━━━━━━━━━━━━\n💡 To remove: \`Unwatch BTC\``;
+    return msg;
+  }
+
+  async handleUnwatch(args, phoneNumber, db) {
+    if (args.length === 0) return "⚠️ *Usage:* `Unwatch [Asset]`";
+    const asset = args[0].toUpperCase();
+    await db.removeFromWatchlist(phoneNumber, asset);
+    return `✅ Removed *${asset}* from your watchlist.`;
+  }
+
+  // ==========================================
+  // 🎁 REFERRAL HANDLERS
+  // ==========================================
+
+  async handleInvite(args, phoneNumber, db) {
+    const user = await db.getUserByPhoneNumber(phoneNumber);
+    let code = user.referral_code;
+    
+    if (!code) {
+      code = await db.generateReferralCode(phoneNumber);
+    }
+    
+    const referralCount = user.referrals?.length || 0;
+    const bonusSlots = user.bonus_alert_slots || 0;
+    
+    return `🎁 *Invite Friends, Get More Alerts!*
+━━━━━━━━━━━━━━━━━
+Your unique code: *${code}*
+
+📊 *Your Stats:*
+• Friends invited: ${referralCount}
+• Bonus slots earned: +${bonusSlots}
+• Current total limit: ${3 + bonusSlots} per 12 hours
+
+🎯 *How it works:*
+1. Share your code with friends
+2. They use: \`Redeem ${code}\`
+3. You get *+1 alert slot* (max +3 total)
+
+💡 *Share now:*
+_wa.me/?text=Get%20real-time%20crypto%20alerts%20with%20PricePing!%20Use%20my%20code%20*${code}*%20for%20bonus%20alert%20slots!_`;
+  }
+
+  async handleRedeem(args, phoneNumber, db) {
+    if (args.length === 0) return "⚠️ *Usage:* `Redeem [Code]`";
+    
+    const code = args[0].toUpperCase();
+    const result = await db.useReferralCode(phoneNumber, code);
+    
+    if (!result.success) {
+      return `❌ *Error:* ${result.error || "Invalid referral code."} Ask your friend for their 6-digit code!`;
+    }
+    
+    return `🎉 *Referral Applied!*
+━━━━━━━━━━━━━━━━━
+*${result.referrerName}* just earned +1 bonus alert slot! 
+
+💡 You can earn bonus slots too — type *Invite* to get your own code.`;
   }
 
   async handleSetAsk(args, phoneNumber, db, priceService, pushName, userState) {
@@ -892,30 +1079,36 @@ Try: \`Set BTC at 70000\``;
   async handleHelp(args, phoneNumber, db) {
     const usage = await db.getAlertUsage(phoneNumber);
 
-    return `❓ *PricePing Help*
+    return `❓ *PricePing Help Guide*
 ━━━━━━━━━━━━━━━━━
 
-1️⃣ *Check Prices*
-   "Price XRP"
-   "Price Gold"
+*1️⃣ Basic Commands*
+   • \`Price BTC\` - Get live price
+   • \`Analyze SOL\` - AI technical analysis
+   • \`Menu\` - Main menu & quota
 
-2️⃣ *Set Alerts* (${usage.remaining} left)
-   "Set SOL at 200"
-   "Set EURUSD at 1.05"
+*2️⃣ Setting Alerts*
+   • \`Set ETH at 3000\` - Simple price target
+   • \`Set BTC 5% move\` - Two-way volatility alert
 
-3️⃣ *Manage Alerts*
-   "My alerts" - View list
-   "Delete 1" - Remove alert
+*3️⃣ Watchlist (Passive Tracking)*
+   • \`Watch TSLA\` - Add to watchlist
+   • \`Watchlist\` - View all watched assets
 
-4️⃣ *Account*
-   "Name Tony Stark" - Set name
-   "Status" - Bot info
-   "Subscribe" - View plan
-   "Upgrade" - Go Pro
+*4️⃣ Managing Your Account*
+   • \`My alerts\` - View your alert dashboard
+   • \`Delete 1 3\` - Remove specific alerts
+   • \`Delete all\` - Clear everything
+
+*5️⃣ Growth & Pro Features*
+   • \`Invite\` - Get your referral code to earn bonuses
+   • \`Subscribe\` - View Pro benefits & pricing
 
 ━━━━━━━━━━━━━━━━━
 📊 *Your Quota:* ${this.getUsageBar(usage.used, usage.limit)}
-${usage.isPro ? "👑 Unlimited" : `⏰ Resets every 12 hours (${usage.resetIn} left)`}`;
+${usage.isPro ? "👑 *Pro Tier:* Unlimited alerts!" : `⏰ Resets every 12 hours (${usage.resetIn} left)`}
+
+💡 _Tip: Type *Features* to see everything I can do!_`;
   }
 
   // ==========================================
@@ -1158,29 +1351,32 @@ I am *PricePing AI* — your elite, AI-driven personal market analyst. Here is e
 
 🆓 *FREE TIER FEATURES:*
 ━━━━━━━━━━━━━━━━━
-🔎 *Live Prices:* Crypto, Forex, Commodities & Stocks (\`Price BTC\` or \`Price AAPL\`)
-🌡️ *Market Mood:* Global Fear & Greed Index on every crypto check
-🔔 *Basic Alerts:* Up to 3 price target alerts every 12 hours (\`Set ETH at 3000\`)
+🔎 *Live Prices:* Crypto, Forex, Commodities & Stocks
+🌡️ *Market Mood:* Global Fear & Greed Index
+🔔 *Basic Alerts:* Up to 3 target alerts per 12 hours
+👀 *Watchlist:* Passive price tracking (\`Watch BTC\`)
+🎁 *Referral Bonuses:* Earn up to +3 bonus alert slots (\`Invite\`)
 🎮 *Usage Streaks:* Gamified daily interaction streaks
 
 👑 *PRO VIP FEATURES:*
 ━━━━━━━━━━━━━━━━━
-🤖 *AI Analysis:* On-demand deep market analysis on ANY asset (\`Analyze SOL\` or \`Analyze DANGCEM\`)
-📰 *Live News:* Instant AI-summarized breaking headlines (\`News BTC\` or \`News AAPL\`)
-💡 *Smart Alerts:* AI-suggested Support & Resistance levels on every price check
-💼 *Live Portfolio:* Track your crypto & stock holdings with live PnL (\`Portfolio\`)
-📓 *Trade Journal:* Log buys/sells and auto-track your win rate (\`Bought 2 BTC at 65000\`)
-☀️ *Daily Briefs:* Personalized morning market intel every day at 8AM
-🔥 *Move Detectors:* Instant warnings when any asset pumps or dumps 5% in an hour
-📞 *SMS Fallback:* Text-message alerts so you never miss a price hit
+🤖 *AI Analysis:* On-demand deep technical analysis
+📰 *Live News:* Instant AI-summarized breaking headlines
+💡 *Smart Alerts:* AI-suggested Support & Resistance levels
+📈 *Volatility Alerts:* Two-way percentage alerts (\`Set BTC 5% move\`)
+💼 *Live Portfolio:* Track holdings with live PnL (\`Portfolio\`)
+📓 *Trade Journal:* Auto-track your win rate (\`Bought 2 BTC at 65000\`)
+☀️ *Daily Briefs:* Personalized morning market intel at 8AM
+🔥 *Move Detectors:* Instant warnings on pumps/dumps
+📞 *SMS Fallback:* Text-message alerts (offline support)
 ♾️ *Unlimited Alerts:* Absolutely zero usage limits
 
 📈 *SUPPORTED MARKETS:*
 ━━━━━━━━━━━━━━━━━
 💎 *Crypto:* Bitcoin, Ethereum, Solana, and thousands more
-📈 *US Stocks:* Apple, Tesla, Nvidia, Google, and all NYSE/NASDAQ tickers
-🇳🇬 *NGX Stocks:* MTN Nigeria, Zenith Bank, Dangote, Guaranty Trust, UBA and more
-💱 *Forex:* EUR/USD, GBP/USD, USD/NGN, and all major pairs
+📈 *US Stocks:* Apple, Tesla, Nvidia, Google, and all NYSE/NASDAQ
+🇳🇬 *NGX Stocks:* MTN, Zenith, Dangote, GTCO, UBA and more
+💱 *Forex:* EUR/USD, GBP/USD, USD/NGN, and major pairs
 🏆 *Commodities:* Gold, Silver, Crude Oil
 
 Type *Upgrade* to view Pro pricing, or just type any ticker to get started!`;
