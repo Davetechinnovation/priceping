@@ -254,6 +254,17 @@ class PriceService {
     // ============================================
     if (type === 'FOREX' || type === 'DYNAMIC') {
       const forexPrice = await this.getForexPrice(symbol);
+      if (forexPrice && forexPrice._rateLimited) {
+        return {
+          symbol: symbol,
+          name: symbol.length === 6 ? `${symbol.substring(0, 3)}/${symbol.substring(3, 6)}` : `${symbol}/USD`,
+          blockchain: "Forex Market",
+          price: null,
+          currency: symbol.length === 6 ? symbol.substring(3, 6) : "USD",
+          _rateLimited: true,
+          others: [],
+        };
+      }
       if (forexPrice !== null) {
         return {
           symbol: symbol,
@@ -454,7 +465,7 @@ class PriceService {
     const cacheKey = `forex:${pair}`;
     const cached = this.priceCache[cacheKey];
 
-    if (cached && Date.now() - cached.ts < this.interactiveTTL) {
+    if (cached && Date.now() - cached.ts < this.alertTTL) {
       return cached.price;
     }
 
@@ -475,6 +486,10 @@ class PriceService {
         return price;
       }
     } catch (e) {
+      if (e.message && (e.message.includes("429") || e.message.includes("Too Many Requests"))) {
+        console.warn(`⚠️ Forex API Rate Limit (429) hit for ${pair}`);
+        return { _rateLimited: true };
+      }
       const cached2 = this.priceCache[cacheKey];
       if (cached2 && Date.now() - cached2.ts < this.staleTTL) return cached2.price;
     }
