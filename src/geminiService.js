@@ -215,6 +215,7 @@ CRITICAL RULES:
 
 NGX TICKERS: Zenith/ZenithBank→ZENITHBANK, MTN/MTNNigeria→MTNN, Dangote→DANGCEM, GTB/GtBank→GTCO, Access/AccessBank→ACCESSCORP, FirstBank/FBNH→FBNH, UBA→UBA, Airtel→AIRTELAFRI, Fidelity→FIDELITYBK, Sterling→STERLINGBANK
 US TICKERS: Apple→AAPL, Tesla→TSLA, Nvidia→NVDA, Google→GOOGL, Microsoft→MSFT, Amazon→AMZN, Meta→META
+FOREX PAIRS (FULLY SUPPORTED): EURUSD, GBPUSD, USDJPY, EURJPY, GBPJPY, AUDUSD, USDCAD, USDCHF, NZDUSD, EURGBP, USDZAR, USDNGN — Use the exact ticker symbol the user provides. Do NOT say forex is unsupported.
 
 COMMANDS:
 price [a]              → [{"command":"price","args":["BTC"]}]
