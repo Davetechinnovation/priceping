@@ -175,7 +175,10 @@ class PriceService {
     // ============================================
     if (type === 'COMMODITY') {
       const price = await this.getCommodityPrice(symbol);
-      if (price) {
+      if (price && price._rateLimited) {
+        return { symbol, name: symbol, blockchain: "Commodities", price: null, currency: "USD", _rateLimited: true, others: [] };
+      }
+      if (price !== null && price !== undefined) {
         return { symbol, name: symbol, blockchain: "Commodities", price, currency: "USD", others: [] };
       }
     }
@@ -224,7 +227,21 @@ class PriceService {
 
         if (selected) {
           const price = await this.fetchDiaPrice(selected);
-          if (price !== null) {
+          
+          if (price && price._rateLimited) {
+            return {
+              symbol: cryptoSymbol,
+              name: selected.name,
+              blockchain: selected.blockchain,
+              address: selected.address,
+              price: null,
+              currency: "USD",
+              _rateLimited: true,
+              others: [],
+            };
+          }
+
+          if (price !== null && price !== undefined) {
             const rawOthers = options.filter((o) => o.blockchain !== selected.blockchain);
             const uniqueOthers = [];
             const seenChains = new Set();
@@ -346,10 +363,13 @@ class PriceService {
         return price;
       } catch (e) {
         // ============================================
-        // 🛠️ FIX 5: Stale fallback
-        // If API is down or rate-limited, serve last known
-        // price instead of returning null (which breaks alerts)
+        // 🛠️ FIX 5: Stale fallback & Rate Limit Catching
         // ============================================
+        if (e.message && (e.message.includes("429") || e.message.includes("Too Many Requests"))) {
+          console.warn(`⚠️ DIA Crypto API Rate Limit (429) hit for ${asset.blockchain}/${asset.address}`);
+          return { _rateLimited: true };
+        }
+        
         if (cached && Date.now() - cached.ts < this.staleTTL) {
           console.log(`⚠️ API failed for ${asset.blockchain}/${asset.symbol || '?'}, using stale price (${Math.round((Date.now() - cached.ts) / 1000)}s old)`);
           return cached.price;
@@ -382,6 +402,10 @@ class PriceService {
       this.priceCache[cacheKey] = { price, ts: Date.now() };
       return price;
     } catch (e) {
+      if (e.message && (e.message.includes("429") || e.message.includes("Too Many Requests"))) {
+        console.warn(`⚠️ DIA Commodity API Rate Limit (429) hit for ${sym}`);
+        return { _rateLimited: true };
+      }
       const cacheKey = `commodity:${sym}`;
       const cached = this.priceCache[cacheKey];
       if (cached && Date.now() - cached.ts < this.staleTTL) return cached.price;
@@ -462,38 +486,55 @@ class PriceService {
     ]);
     if (FOREX_SKIP.has(pair)) return null;
 
-    const cacheKey = `forex:${pair}`;
-    const cached = this.priceCache[cacheKey];
+    const now = Date.now();
+    const FOREX_TTL = 300000; // 5 minutes cache
 
-    if (cached && Date.now() - cached.ts < this.alertTTL) {
-      return cached.price;
+    // Fetch the entire global forex market once every 5 minutes
+    if (!this.globalForexCache || now - this.globalForexCache.ts > FOREX_TTL) {
+      if (!this.forexInflight) {
+        this.forexInflight = (async () => {
+          try {
+            const res = await this.httpClient.get(this.forexApi);
+            if (res.data && res.data.rates) {
+              this.globalForexCache = { rates: res.data.rates, ts: now };
+              console.log(`🌍 Global Forex Market Cached: ${Object.keys(res.data.rates).length} pairs loaded.`);
+            }
+          } catch (e) {
+            console.warn(`⚠️ Global Forex Fetch Failed:`, e.message);
+          } finally {
+            this.forexInflight = null;
+          }
+        })();
+      }
+      if (this.forexInflight) {
+        await this.forexInflight;
+      }
     }
 
-    try {
-      let base, target;
-      if (pair.length === 6) {
-        base = pair.substring(0, 3);
-        target = pair.substring(3, 6);
-      } else {
-        base = pair;
-        target = "USD";
-      }
-      const url = `${this.forexApi}?base=${base}&currencies=${target}&resolution=1m&amount=1&places=6&format=json`;
-      const res = await this.httpClient.get(url);
-      if (res.data && res.data.rates && res.data.rates[target]) {
-        const price = parseFloat(res.data.rates[target]);
-        this.priceCache[cacheKey] = { price, ts: Date.now() };
-        return price;
-      }
-    } catch (e) {
-      if (e.message && (e.message.includes("429") || e.message.includes("Too Many Requests"))) {
-        console.warn(`⚠️ Forex API Rate Limit (429) hit for ${pair}`);
-        return { _rateLimited: true };
-      }
-      const cached2 = this.priceCache[cacheKey];
-      if (cached2 && Date.now() - cached2.ts < this.staleTTL) return cached2.price;
+    if (!this.globalForexCache) {
+      return { _rateLimited: true };
     }
-    return null;
+
+    const rates = this.globalForexCache.rates;
+    let base, target;
+    
+    if (pair.length === 6) {
+      base = pair.substring(0, 3);
+      target = pair.substring(3, 6);
+    } else {
+      base = pair;
+      target = "USD";
+    }
+
+    // The API uses USD as the base for all returned rates.
+    const baseRate = base === "USD" ? 1 : rates[base];
+    const targetRate = target === "USD" ? 1 : rates[target];
+
+    if (!baseRate || !targetRate) return null;
+
+    // Calculate cross rate locally
+    // Example: EUR/JPY -> rates[JPY] / rates[EUR]
+    return targetRate / baseRate;
   }
 
   async getForexCurrencies() {
