@@ -19,7 +19,15 @@ class AssetClassifier {
       'UBA': 'UBA', 'SEPLAT': 'SEPLAT', 'OANDO': 'OANDO',
       'FIDELITY': 'FIDELITYBK', 'FIDELITY BANK': 'FIDELITYBK',
       'STERLING': 'STERLINGBANK', 'STERLING BANK': 'STERLINGBANK',
-      'GLO': 'GLO'
+      'GLO': 'GLO',
+      // ✅ Exact NGX tickers — map to themselves so they never fall through to DYNAMIC
+      'DANGCEM': 'DANGCEM', 'ZENITHBANK': 'ZENITHBANK', 'MTNN': 'MTNN',
+      'GTCO': 'GTCO', 'ACCESSCORP': 'ACCESSCORP', 'FBNH': 'FBNH',
+      'AIRTELAFRI': 'AIRTELAFRI', 'FIDELITYBK': 'FIDELITYBK',
+      'STERLINGBANK': 'STERLINGBANK', 'TRANSCORP': 'TRANSCORP',
+      'BUACEMENT': 'BUACEMENT', 'NESTLE': 'NESTLE', 'FLOURMILL': 'FLOURMILL',
+      'GUINNESS': 'GUINNESS', 'CADBURY': 'CADBURY', 'WAPCO': 'WAPCO',
+      'CONOIL': 'CONOIL', 'TOTAL': 'TOTAL', 'ETERNA': 'ETERNA',
     };
 
     this.ngxLiveTickers = new Set();
@@ -101,6 +109,17 @@ class AssetClassifier {
     let chain = null;
 
     // ============================================
+    // 0️⃣ NORMALIZE SPACED FOREX PAIRS (e.g. "EUR JPY" → "EURJPY")
+    // Must run before split so "EUR JPY" isn't truncated to "EUR"
+    // ============================================
+    const KNOWN_CURRENCIES = new Set(['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD', 'CNY', 'HKD', 'SGD', 'ZAR', 'NGN', 'MXN', 'INR', 'TRY']);
+    const spacedForex = rawInput.match(/^([A-Z]{3})\s+([A-Z]{3})$/);
+    if (spacedForex && KNOWN_CURRENCIES.has(spacedForex[1]) && KNOWN_CURRENCIES.has(spacedForex[2])) {
+      rawInput = spacedForex[1] + spacedForex[2]; // e.g. 'EUR JPY' → 'EURJPY'
+      symbol = rawInput;
+    }
+
+    // ============================================
     // 1️⃣ PARSE CHAIN SPECIFIER (e.g. "SOL Solana")
     // ============================================
     const parenMatch = rawInput.match(/^([A-Z0-9]+)\s*\((.+)\)$/);
@@ -172,8 +191,7 @@ class AssetClassifier {
       // Verify first 3 and last 3 are valid currency codes
       const base = symbol.substring(0, 3);
       const quote = symbol.substring(3, 6);
-      const currencies = new Set(['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD', 'CNY', 'HKD', 'SGD']);
-      if (currencies.has(base) && currencies.has(quote)) {
+      if (KNOWN_CURRENCIES.has(base) && KNOWN_CURRENCIES.has(quote)) {
         return { type: 'FOREX', symbol, chain: null, confidence: 85 };
       }
     }

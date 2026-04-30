@@ -461,6 +461,11 @@ ${usage.isPro ? "" : "🚀 Want unlimited alerts? Type *Subscribe*\n"}
       return `❌ *Not Found*\n\nI searched high and low for *"${input.toUpperCase()}"* but couldn't find it.\n\n💡 *Try:*\n• \`Price BTC\` — Crypto\n• \`Price Gold\` — Commodity\n• \`Price AAPL\` — US Stock\n• \`Price GBPUSD\` — Forex`;
     }
 
+    // 🚨 Rate Limited by Yahoo Finance
+    if (info._rateLimited) {
+      return `⚠️ *We are receiving too many requests for ${info.symbol} at the moment.*\n\nPlease wait a couple of minutes before checking this specific asset again.`;
+    }
+
     // ✅ Not publicly traded on NGX
     if (info._notListed) {
       return `*${info.symbol} (NGX)*
@@ -778,6 +783,10 @@ Please select specific chain:
       return menu;
     }
 
+    if (info && info._rateLimited) {
+      return `⚠️ *We are receiving too many requests for ${info.symbol} at the moment.*\n\nPlease wait a couple of minutes before setting an alert for this specific asset.`;
+    }
+
     const currentPrice = info ? info.price : null;
     if (currentPrice === null)
       return `❌ I couldn't find a price for ${asset}.`;
@@ -855,6 +864,11 @@ ${u.isPro ? "👑 Pro Plan" : `⏰ Resets in: ${u.resetIn}`}
     if (isNaN(percent)) return "⚠️ Invalid percentage. Example: `Set BTC 5%`";
 
     const info = await priceService.getAssetInfo(asset);
+    
+    if (info && info._rateLimited) {
+      return `⚠️ *We are receiving too many requests for ${info.symbol} at the moment.*\n\nPlease wait a couple of minutes before setting an alert for this specific asset.`;
+    }
+    
     if (!info || !info.price) return `❌ Couldn't get current price for ${asset}.`;
 
     const currentPrice = info.price;

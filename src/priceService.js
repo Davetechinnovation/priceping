@@ -713,8 +713,13 @@ class PriceService {
   async getStockPrice(symbol, rawInput) {
     const cacheKey = `stock:${symbol}`;
     const cached = this.priceCache[cacheKey];
+    
+    // 🛠️ FIX: Use a dedicated longer TTL (2 mins) for Yahoo Finance
+    // to strictly prevent 429 Rate Limits from aggressive polling.
+    const yahooTTL = 120000; 
+
     // Fresh interactive cache hit
-    if (cached && Date.now() - cached.ts < this.interactiveTTL) {
+    if (cached && Date.now() - cached.ts < yahooTTL) {
       return cached.data;
     }
 
@@ -735,6 +740,20 @@ class PriceService {
         return result;
       }
     } catch (e) {
+      // 🚨 Specific Rate Limit Handling
+      if (e.message && (e.message.includes("429") || e.message.includes("Too Many Requests"))) {
+        console.warn(`⚠️ Yahoo Finance Rate Limit (429) hit for ${symbol}`);
+        return {
+          symbol,
+          name: symbol,
+          blockchain: "Stock Market",
+          price: null,
+          currency: "USD",
+          _rateLimited: true,
+          others: [],
+        };
+      }
+
       // Stale fallback for US/global stocks
       if (cached && Date.now() - cached.ts < this.staleTTL) {
         return cached.data;
