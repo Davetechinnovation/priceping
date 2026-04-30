@@ -135,7 +135,12 @@ class CommandParser {
       return args.length === 0;
     }
     if (["price", "p", "analyze", "analysis", "news"].includes(command)) {
-      return args.length >= 1 && args.length <= 3; 
+      if (args.length < 1 || args.length > 3) return false;
+      const conversationalWords = new Set(["am", "me", "my", "an", "a", "the", "it", "that", "this", "one", "them", "those", "for", "please", "now", "is", "what", "how"]);
+      for (const arg of args) {
+        if (conversationalWords.has(arg.toLowerCase().replace(/[^a-z]/g, ""))) return false;
+      }
+      return true;
     }
     if (["del", "delete"].includes(command)) {
       return args.length === 1 && !isNaN(args[0]);

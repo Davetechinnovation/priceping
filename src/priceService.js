@@ -11,12 +11,13 @@ class PriceService {
     this.db = db;
     this.quotedAssetsApi = "https://api.diadata.org/v1/quotedAssets";
     this.diaAssetApi = "https://api.diadata.org/v1/assetQuotation";
-    this.diaCommodityApi = "https://api.diadata.org/v1/commodityQuotation";
+    this.diaCommodityApi = "https://api.diadata.org/v1/rwa/Commodities";
     this.forexApi = "https://api.fxratesapi.com/latest";
     this.ngxApi = "https://doclib.ngxgroup.com/REST/api/statistics/equities/?market=&sector=&orderby=&pageSize=500&pageNo=0";
     this.termiiApi = "https://api.ng.termii.com/api/sms/send";
     this.alphaVantageKey = process.env.ALPHA_VANTAGE_KEY || null;
     this.itickKey = process.env.ITICK_API_KEY || null;
+    this.omkarKey = process.env.OMKAR_API_KEY || null;
 
     this.headers = {
       "User-Agent":
@@ -389,28 +390,34 @@ class PriceService {
   }
 
   async getCommodityPrice(sym) {
+    const cacheKey = `commodity:${sym}`;
+    const cached = this.priceCache[cacheKey];
+    if (cached && Date.now() - cached.ts < this.interactiveTTL) return cached.price;
+
+    const diaSymbols = { 'XAU': 'XAU-USD', 'GOLD': 'XAU-USD', 'XAG': 'XAGG-USD', 'SILVER': 'XAGG-USD', 'COPPER': 'XG-USD', 'XG': 'XG-USD' };
+
+    const s = sym.toUpperCase();
+    let price = null;
+
     try {
-      const cacheKey = `commodity:${sym}`;
-      const cached = this.priceCache[cacheKey];
-      if (cached && Date.now() - cached.ts < this.interactiveTTL) {
-        return cached.price;
+      // 1. Metals (Gold/Silver/Copper) → DIA
+      if (diaSymbols[s]) {
+        const { data } = await axios.get(`https://api.diadata.org/v1/rwa/Commodities/${diaSymbols[s]}`, { timeout: 8000 });
+        price = data?.Price;
       }
-      const res = await this.httpClient.get(
-        `${this.diaCommodityApi}/${sym}-USD`,
-      );
-      const price = res.data.Price;
-      this.priceCache[cacheKey] = { price, ts: Date.now() };
-      return price;
+
+      if (price) {
+        this.priceCache[cacheKey] = { price, ts: Date.now() };
+        return price;
+      }
     } catch (e) {
       if (e.message && (e.message.includes("429") || e.message.includes("Too Many Requests"))) {
-        console.warn(`⚠️ DIA Commodity API Rate Limit (429) hit for ${sym}`);
+        console.warn(`⚠️ Commodity API Rate Limit (429) hit for ${sym}`);
         return { _rateLimited: true };
       }
-      const cacheKey = `commodity:${sym}`;
-      const cached = this.priceCache[cacheKey];
       if (cached && Date.now() - cached.ts < this.staleTTL) return cached.price;
-      return null;
     }
+    return null;
   }
 
   getCurrencySymbol(currencyCode) {
