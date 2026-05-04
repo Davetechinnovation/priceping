@@ -21,6 +21,8 @@ class CommandParser {
       p: this.handleGenericPrice.bind(this),
       analyze: this.handleAnalyze.bind(this),
       analysis: this.handleAnalyze.bind(this),
+      view: this.handleAnalyze.bind(this),
+      opinion: this.handleAnalyze.bind(this),
       news: this.handleNews.bind(this),
 
       // Alerts
@@ -134,7 +136,7 @@ class CommandParser {
     if (["hi", "hello", "halo", "hallo", "hey", "sup", "start", "menu", "status", "subscribe", "upgrade", "help"].includes(command)) {
       return args.length === 0;
     }
-    if (["price", "p", "analyze", "analysis", "news"].includes(command)) {
+    if (["price", "p", "analyze", "analysis", "view", "opinion", "news"].includes(command)) {
       if (args.length < 1 || args.length > 3) return false;
       const conversationalWords = new Set(["am", "me", "my", "an", "a", "the", "it", "that", "this", "one", "them", "those", "for", "please", "now", "is", "what", "how"]);
       for (const arg of args) {

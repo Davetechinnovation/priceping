@@ -35,7 +35,7 @@ class GeminiService {
       { re: /^del(?:ete)?\s+all$/i, cmd: 'del', args: () => ['all'] },
       { re: /^del(?:ete)?\s+([\d\s,and]+)$/i, cmd: 'del', args: m => m[1].match(/\d+/g) || [] },
       { re: /^news\s+(\S+)$/i, cmd: 'news', args: m => [m[1].toUpperCase()] },
-      { re: /^analyze\s+(\S+)$/i, cmd: 'analyze', args: m => [m[1].toUpperCase()] },
+      { re: /^(?:analyze|analysis|view|opinion)\s+(\S+)$/i, cmd: 'analyze', args: m => [m[1].toUpperCase()] },
 
       // ✅ NEW: Structured set commands (zero AI calls for clean alerts)
       {
@@ -214,7 +214,10 @@ CRITICAL RULES:
    STEP 1: If user gives a formula → calculate the final number, then ask ONCE: "I calculated $[X]. Set alert for [ASSET] at $[X]?"
    STEP 2: If context shows you already asked and user replies YES/GO AHEAD/CORRECT/OK/SURE/DO IT/YES PLEASE/THAT'S RIGHT/CONFIRMED → IMMEDIATELY output the set command. Do NOT re-explain or re-calculate. Just set it.
 6. SUPPORT QUESTIONS: If Knowledge Base is present above, use it to answer accurately via "chat" command.
-7. TONE & STYLE (CRITICAL): Act as a highly professional, profoundly knowledgeable financial AI. NEVER repeat the user's question back to them. NEVER apologize unnecessarily. Be confident, direct, and insightful. Keep answers under 40 words.
+7. MARKET VIEWS: If a user asks for a "view", "opinion", "prediction", "analysis", or "what do you think" about an asset, ALWAYS map it to the "analyze" command. Do NOT refuse.
+8. TONE & STYLE (CRITICAL): Act as a highly professional, profoundly knowledgeable financial AI. NEVER repeat the user's question back to them. NEVER apologize unnecessarily. Be confident, direct, and insightful. Keep answers under 40 words.
+9. CONVERSATIONAL FLOW: If the user is frustrated (😒, "Fool", "Stop it"), acknowledge it briefly and professionally. If you've already answered a question and they repeat it or acknowledge it ("I have heard"), do NOT repeat the full explanation. Move the conversation forward or remain silent/brief.
+10. NO REPETITION: Never output the exact same chat response twice in a row. If the user hasn't asked anything new, just acknowledge their previous message or give a very brief follow-up.
 
 NGX TICKERS: Zenith/ZenithBank→ZENITHBANK, MTN/MTNNigeria→MTNN, Dangote→DANGCEM, GTB/GtBank→GTCO, Access/AccessBank→ACCESSCORP, FirstBank/FBNH→FBNH, UBA→UBA, Airtel→AIRTELAFRI, Fidelity→FIDELITYBK, Sterling→STERLINGBANK
 US TICKERS: Apple→AAPL, Tesla→TSLA, Nvidia→NVDA, Google→GOOGL, Microsoft→MSFT, Amazon→AMZN, Meta→META
@@ -245,6 +248,12 @@ EXAMPLES:
 "set an alert for the three of them when they hit an increase of 10% each" (Last assets: ZENITHBANK, MTNN, DANGCEM)
 → [{"command":"set_percent","args":["ZENITHBANK","10"]},{"command":"set_percent","args":["MTNN","10"]},{"command":"set_percent","args":["DANGCEM","10"]}]
 
+"what's your view on GBPUSD?"
+→ [{"command":"analyze","args":["GBPUSD"]}]
+
+"analyze TSLA for me"
+→ [{"command":"analyze","args":["TSLA"]}]
+
 "how does the referral program work?"
 → [{"command":"chat","args":["Get your code with the Invite command! When a friend redeems it, you get +1 free alert slot (up to 3 total bonus slots)."]}]
 
@@ -255,21 +264,29 @@ User says: "Correct do just that" OR "Go ahead" OR "Yes" OR "Ok" OR "Sure"
 ⚠️ DO NOT re-explain or re-calculate when user confirms. Just output the set command immediately.`;
 
     try {
-      const recentCtx = userHist.slice(0, -1).join(" | ");
+      const messages = [
+        { role: "system", content: systemPrompt }
+      ];
+
+      // Add actual history in standard message format
+      for (const entry of userHist.slice(0, -1)) {
+        if (entry.startsWith("U:")) {
+          messages.push({ role: "user", content: entry.slice(2) });
+        } else if (entry.startsWith("A:")) {
+          // Assistant messages might have been truncated in history, but that's okay
+          messages.push({ role: "assistant", content: entry.slice(2) });
+        }
+      }
+
+      // Add the current request
+      messages.push({ role: "user", content: messageText });
+
       const response = await axios.post(
         this.apiUrl,
         {
           model: this.modelName,
-          messages: [
-            { role: "system", content: systemPrompt },
-            {
-              role: "user",
-              content: recentCtx
-                ? `Context: ${recentCtx}\nRequest: ${messageText}`
-                : `Request: ${messageText}`
-            }
-          ],
-          temperature: 0.1,
+          messages: messages,
+          temperature: 0.2, // Slightly higher for more variety
           max_tokens: 280
         },
         {
