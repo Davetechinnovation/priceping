@@ -29,14 +29,13 @@ class TAService {
     const base = asset.toUpperCase().replace(/-PERP$/i, '').replace(/USDT$/, '');
     const symbol = `${base}USDT`;
 
+    // ── 1. Try Binance klines (fastest, but geo-blocked in US) ───
     try {
-      // ✅ PUBLIC — no API key needed
       const { data } = await axios.get('https://api.binance.com/api/v3/klines', {
         params: { symbol, interval: '1h', limit: 200 },
-        timeout: 8000,
+        timeout: 6000,
       });
-
-      // [openTime, open, high, low, close, volume, ...]
+      console.log(`✅ [TA] Binance klines OK for ${symbol}`);
       return data.map(k => ({
         open:   parseFloat(k[1]),
         high:   parseFloat(k[2]),
@@ -45,7 +44,50 @@ class TAService {
         volume: parseFloat(k[5]),
       }));
     } catch (e) {
-      console.warn(`⚠️ [TA] Binance klines failed for ${symbol}: ${e.message}`);
+      console.warn(`⚠️ [TA] Binance klines failed for ${symbol} (${e.code || e.message}), trying CoinGecko...`);
+    }
+
+    // ── 2. CoinGecko OHLC fallback (no auth, US-accessible) ───
+    return await this._fetchCoinGeckoCandles(base);
+  }
+
+  async _fetchCoinGeckoCandles(baseSymbol) {
+    // CoinGecko uses coin IDs not ticker symbols
+    const COINGECKO_IDS = {
+      BTC: 'bitcoin', ETH: 'ethereum', SOL: 'solana', BNB: 'binancecoin',
+      XRP: 'ripple', ADA: 'cardano', DOGE: 'dogecoin', AVAX: 'avalanche-2',
+      MATIC: 'matic-network', DOT: 'polkadot', LINK: 'chainlink',
+      UNI: 'uniswap', ATOM: 'cosmos', LTC: 'litecoin', BCH: 'bitcoin-cash',
+      NEAR: 'near', APT: 'aptos', ARB: 'arbitrum', OP: 'optimism',
+      INJ: 'injective-protocol', SUI: 'sui', TRX: 'tron', TON: 'the-open-network',
+    };
+
+    const coinId = COINGECKO_IDS[baseSymbol.toUpperCase()];
+    if (!coinId) {
+      console.warn(`⚠️ [TA] No CoinGecko ID mapping for ${baseSymbol}`);
+      return null;
+    }
+
+    try {
+      // 90 days of daily candles — free tier max. Enough for RSI/MACD/EMA50/BB.
+      const { data } = await axios.get(
+        `https://api.coingecko.com/api/v3/coins/${coinId}/ohlc`,
+        { params: { vs_currency: 'usd', days: 90 }, timeout: 8000 }
+      );
+
+      if (!data || data.length === 0) return null;
+
+      // CoinGecko format: [timestamp, open, high, low, close]
+      console.log(`✅ [TA] CoinGecko fallback OK for ${coinId} (${data.length} candles)`);
+      return data.map(k => ({
+        open:   parseFloat(k[1]),
+        high:   parseFloat(k[2]),
+        low:    parseFloat(k[3]),
+        close:  parseFloat(k[4]),
+        volume: 0, // CoinGecko OHLC doesn't include volume
+      }));
+    } catch (e) {
+      console.warn(`⚠️ [TA] CoinGecko fallback failed for ${coinId}: ${e.message}`);
       return null;
     }
   }

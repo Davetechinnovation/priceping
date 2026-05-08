@@ -150,6 +150,48 @@ app.get('/test-analysis', async (req, res) => {
   res.json(results);
 });
 
+// ✅ Test Candle Sources (verify which APIs work from Render's US servers)
+// Hit: https://your-app.onrender.com/test-candles
+app.get('/test-candles', async (req, res) => {
+  const axios = require('axios');
+  const results = {};
+
+  // 1. CoinGecko (our new fallback)
+  try {
+    const { data } = await axios.get('https://api.coingecko.com/api/v3/coins/bitcoin/ohlc', {
+      params: { vs_currency: 'usd', days: 90 }, timeout: 8000
+    });
+    results.coingecko = data?.length > 0
+      ? `✅ Works — ${data.length} candles, latest close: $${data[data.length - 1][4]}`
+      : '❌ Empty response';
+  } catch (e) { results.coingecko = `❌ Failed: ${e.message}`; }
+
+  // 2. Kraken OHLC
+  try {
+    const { data } = await axios.get('https://api.kraken.com/0/public/OHLC', {
+      params: { pair: 'XBTUSD', interval: 60 }, timeout: 8000
+    });
+    if (data.error?.length > 0) {
+      results.kraken = `❌ Error: ${data.error[0]}`;
+    } else {
+      const candles = data.result?.XXBTZUSD || data.result?.[Object.keys(data.result).find(k => k !== 'last')];
+      results.kraken = candles?.length > 0
+        ? `✅ Works — ${candles.length} candles, latest close: $${candles[candles.length - 1][4]}`
+        : '❌ Empty candles';
+    }
+  } catch (e) { results.kraken = `❌ Failed: ${e.message}`; }
+
+  // 3. Binance klines (expected to fail — confirming the block)
+  try {
+    const { data } = await axios.get('https://api.binance.com/api/v3/klines', {
+      params: { symbol: 'BTCUSDT', interval: '1h', limit: 5 }, timeout: 6000
+    });
+    results.binance = data?.length > 0 ? `✅ Works — ${data.length} candles` : '❌ Empty';
+  } catch (e) { results.binance = `❌ Blocked (${e.code || e.response?.status}): ${e.message}`; }
+
+  res.json(results);
+});
+
 let botInitialized = false;
 const userState = new Map();
 
