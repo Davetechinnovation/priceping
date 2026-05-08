@@ -468,14 +468,16 @@ class PriceService {
         return price;
       }
     } catch (e) {
-      const is429 = e.response?.status === 429 || e.message?.includes('429');
+      const status = e.response?.status;
+      const is429 = status === 429 || e.message?.includes('429');
+      const isGeoBlocked = status === 451 || status === 403; // 451 = blocked for legal reasons (Render/AWS)
       const isNetworkError = ['ENOTFOUND', 'ETIMEDOUT', 'ECONNABORTED', 'ECONNRESET'].includes(e.code) || e.message?.includes('timeout');
       
-      if (!is429 && !isNetworkError) {
-        // Not rate limited or blocked — symbol just doesn't exist on Binance
+      if (!is429 && !isGeoBlocked && !isNetworkError) {
+        // Not blocked in any way — symbol just doesn't exist on Binance futures
         return null;
       }
-      console.warn(`⚠️ Binance fetch failed (${e.code || '429'}) for ${binanceSymbol}, trying Bybit fallback...`);
+      console.warn(`⚠️ Binance fetch failed (${status || e.code || 'ERR'}) for ${binanceSymbol}, trying Bybit fallback...`);
     }
 
     // ── Bybit fallback (only on Binance 429) ────────────
