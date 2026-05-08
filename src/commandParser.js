@@ -627,10 +627,10 @@ Type *Subscribe* to view plans!`;
       return `❌ *Not Found*\n\nI couldn't find data for *"${input.toUpperCase()}"* to analyze.`;
     }
 
-    // 3. Fetch Fear & Greed (crypto only, best-effort — won't block if it fails)
+    // 3. Fetch Fear & Greed (strictly for Crypto only)
     const fearGreedService = require('./fearGreedService');
     let fearGreed = null;
-    const isCrypto = !info.blockchain || info.blockchain !== 'Stock Market';
+    const isCrypto = info.blockchain !== "Stock Market" && info.blockchain !== "Futures Market" && info.blockchain !== "Forex Market" && !info.blockchain?.includes("Commodity");
     if (isCrypto) {
       try { fearGreed = await fearGreedService.getScore(); } catch (_) {}
     }
