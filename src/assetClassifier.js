@@ -179,7 +179,32 @@ class AssetClassifier {
     }
 
     // ============================================
-    // 2️⃣ CHECK FOR FUTURES/PERP MODIFIERS
+    // 2️⃣ CHECK FOR FOREX QUALIFIER — must run BEFORE futures check
+    // e.g. "gold forex" → XAUUSD, "silver forex" → XAGUSD
+    // ============================================
+    const forexKeywords = ['FOREX', 'FX', 'SPOT'];
+    const hasForexQualifier = forexKeywords.some(kw => rawInput.includes(kw));
+    if (hasForexQualifier) {
+      // Strip the qualifier so we get the base asset
+      let baseForForex = rawInput;
+      forexKeywords.forEach(kw => {
+        baseForForex = baseForForex.replace(new RegExp(`\\b${kw}\\b`, 'g'), '').trim();
+      });
+      const baseToken = baseForForex.split(' ')[0];
+
+      // Map commodity names → their forex spot pairs
+      const COMMODITY_FOREX_MAP = {
+        'GOLD': 'XAUUSD', 'XAU': 'XAUUSD', 'XAUUSD': 'XAUUSD',
+        'SILVER': 'XAGUSD', 'XAG': 'XAGUSD', 'XAGUSD': 'XAGUSD',
+        'OIL': 'USOUSD', 'BRENT': 'UKOUSD',
+      };
+      if (COMMODITY_FOREX_MAP[baseToken]) {
+        return { type: 'FOREX', symbol: COMMODITY_FOREX_MAP[baseToken], chain: null, confidence: 100 };
+      }
+    }
+
+    // ============================================
+    // 3️⃣ CHECK FOR FUTURES/PERP MODIFIERS
     // ============================================
     let isFuture = false;
     const futureKeywords = ['FUTURES', 'FUTURE', 'PERP', 'PERPETUAL'];

@@ -512,7 +512,30 @@ class PriceService {
       console.warn(`⚠️ OKX fallback failed for ${baseSymbol}:`, e3.message);
     }
 
-    // Stale fallback
+    // ── 4. DIA spot proxy (Binance/Bybit/OKX all 451-blocked on Render/AWS) ──
+    try {
+      await this.loadAssetList();
+      const diaSymbol = baseSymbol.toUpperCase();
+      const options = this.assetsBySymbol[diaSymbol];
+      if (options?.length > 0) {
+        const priority = ['Bitcoin', 'Ethereum', 'Solana', 'Binance Smart Chain', 'Tron'];
+        const sorted = [...options].sort((a, b) => {
+          const pA = priority.indexOf(a.blockchain);
+          const pB = priority.indexOf(b.blockchain);
+          return (pA === -1 ? 99 : pA) - (pB === -1 ? 99 : pB);
+        });
+        const price = await this.fetchDiaPrice(sorted[0]);
+        if (price && typeof price === 'number') {
+          console.log(`✅ [Futures] DIA spot proxy for ${diaSymbol}: $${price}`);
+          this.priceCache[cacheKey] = { price, ts: Date.now() };
+          return price;
+        }
+      }
+    } catch (e4) {
+      console.warn(`⚠️ DIA spot fallback failed for ${baseSymbol}:`, e4.message);
+    }
+
+    // Stale cache (last resort)
     if (cached && Date.now() - cached.ts < this.staleTTL) return cached.price;
     return null;
   }

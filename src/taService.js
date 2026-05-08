@@ -29,7 +29,7 @@ class TAService {
     const base = asset.toUpperCase().replace(/-PERP$/i, '').replace(/USDT$/, '');
     const symbol = `${base}USDT`;
 
-    // ── 1. Try Binance klines (fastest, but geo-blocked in US) ───
+    // ── 1. Try Binance (works locally, 451 blocked on Render/AWS) ───
     try {
       const { data } = await axios.get('https://api.binance.com/api/v3/klines', {
         params: { symbol, interval: '1h', limit: 200 },
@@ -44,50 +44,49 @@ class TAService {
         volume: parseFloat(k[5]),
       }));
     } catch (e) {
-      console.warn(`⚠️ [TA] Binance klines failed for ${symbol} (${e.code || e.message}), trying CoinGecko...`);
+      console.warn(`⚠️ [TA] Binance blocked (${e.response?.status || e.code || e.message}), trying Kraken...`);
     }
 
-    // ── 2. CoinGecko OHLC fallback (no auth, US-accessible) ───
-    return await this._fetchCoinGeckoCandles(base);
+    // ── 2. Kraken (confirmed working on Render ✅) ────────────
+    return await this._fetchKrakenCandles(base);
   }
 
-  async _fetchCoinGeckoCandles(baseSymbol) {
-    // CoinGecko uses coin IDs not ticker symbols
-    const COINGECKO_IDS = {
-      BTC: 'bitcoin', ETH: 'ethereum', SOL: 'solana', BNB: 'binancecoin',
-      XRP: 'ripple', ADA: 'cardano', DOGE: 'dogecoin', AVAX: 'avalanche-2',
-      MATIC: 'matic-network', DOT: 'polkadot', LINK: 'chainlink',
-      UNI: 'uniswap', ATOM: 'cosmos', LTC: 'litecoin', BCH: 'bitcoin-cash',
-      NEAR: 'near', APT: 'aptos', ARB: 'arbitrum', OP: 'optimism',
-      INJ: 'injective-protocol', SUI: 'sui', TRX: 'tron', TON: 'the-open-network',
+  async _fetchKrakenCandles(asset) {
+    // Kraken uses non-standard pair naming (XBT not BTC, etc.)
+    const KRAKEN_PAIRS = {
+      BTC:  'XBTUSD', ETH:  'ETHUSD',  SOL:  'SOLUSD',  XRP:  'XRPUSD',
+      ADA:  'ADAUSD', DOGE: 'DOGEUSD', LTC:  'LTCUSD',  LINK: 'LINKUSD',
+      DOT:  'DOTUSD', AVAX: 'AVAXUSD', MATIC:'MATICUSD', UNI:  'UNIUSD',
+      ATOM: 'ATOMUSD', BNB: 'BNBUSD',  SHIB: 'SHIBUSD',  NEAR: 'NEARUSD',
+      ARB:  'ARBUSD',  OP:  'OPUSD',   INJ:  'INJUSD',   TRX:  'TRXUSD',
     };
 
-    const coinId = COINGECKO_IDS[baseSymbol.toUpperCase()];
-    if (!coinId) {
-      console.warn(`⚠️ [TA] No CoinGecko ID mapping for ${baseSymbol}`);
-      return null;
-    }
+    const pair = KRAKEN_PAIRS[asset.toUpperCase()] || `${asset.toUpperCase()}USD`;
 
     try {
-      // 90 days of daily candles — free tier max. Enough for RSI/MACD/EMA50/BB.
-      const { data } = await axios.get(
-        `https://api.coingecko.com/api/v3/coins/${coinId}/ohlc`,
-        { params: { vs_currency: 'usd', days: 90 }, timeout: 8000 }
-      );
+      const { data } = await axios.get('https://api.kraken.com/0/public/OHLC', {
+        params: { pair, interval: 60 }, // 60 = 1h candles, returns 720
+        timeout: 10000,
+      });
 
-      if (!data || data.length === 0) return null;
+      if (data.error?.length > 0) throw new Error(data.error[0]);
 
-      // CoinGecko format: [timestamp, open, high, low, close]
-      console.log(`✅ [TA] CoinGecko fallback OK for ${coinId} (${data.length} candles)`);
-      return data.map(k => ({
+      // Kraken internal key differs from requested pair (e.g. XBTUSD → XXBTZUSD)
+      const resultKey = Object.keys(data.result).find(k => k !== 'last');
+      const candles = data.result[resultKey];
+      if (!candles || candles.length === 0) return null;
+
+      // Kraken format: [time, open, high, low, close, vwap, volume, count]
+      console.log(`✅ [TA] Kraken: ${pair} → ${candles.length} candles`);
+      return candles.map(k => ({
         open:   parseFloat(k[1]),
         high:   parseFloat(k[2]),
         low:    parseFloat(k[3]),
         close:  parseFloat(k[4]),
-        volume: 0, // CoinGecko OHLC doesn't include volume
+        volume: parseFloat(k[6]),
       }));
     } catch (e) {
-      console.warn(`⚠️ [TA] CoinGecko fallback failed for ${coinId}: ${e.message}`);
+      console.warn(`⚠️ [TA] Kraken failed for ${pair}: ${e.message}`);
       return null;
     }
   }
