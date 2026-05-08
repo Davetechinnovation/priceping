@@ -50,7 +50,7 @@
     "nodemon": "^3.1.11"
   },
   "engines": {
-    "node": ">=16.0.0"
+    "node": "20.x"
   },
   "render": {
     "healthCheckPath": "/health"
