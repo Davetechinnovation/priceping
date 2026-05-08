@@ -488,10 +488,18 @@ ${knowledgeBase}`.trim();
         ...warnings.map(w => `⚠️ ${w}`)
       ].join('\n');
 
+      // RSI annotation matches taService thresholds exactly
+      const rsiLabel = ta.rsi >= 75 ? ' ← HEAVILY OVERBOUGHT'
+                     : ta.rsi >= 65 ? ' ← APPROACHING OVERBOUGHT'
+                     : ta.rsi <= 25 ? ' ← HEAVILY OVERSOLD'
+                     : ta.rsi <= 35 ? ' ← OVERSOLD'
+                     : ta.rsi <= 45 ? ' ← APPROACHING OVERSOLD'
+                     : ' ← NEUTRAL';
+
       taSection = `
-TECHNICAL INDICATORS (from ${ta.candleCount} hourly candles — use these exact numbers):
-RSI(14): ${ta.rsi}${ta.rsi >= 70 ? ' ← OVERBOUGHT' : ta.rsi <= 30 ? ' ← OVERSOLD' : ''}
-MACD: Line=${ta.macdLine}, Signal=${ta.macdSignal}, Histogram=${ta.macdHist}${ta.macdHist > 0 ? ' ← Bullish' : ' ← Bearish'}
+TECHNICAL INDICATORS (from ${ta.candleCount} candles — cite these exact numbers):
+RSI(14): ${ta.rsi?.toFixed(1)}${rsiLabel}
+MACD: Line=${ta.macdLine?.toFixed(4)}, Signal=${ta.macdSignal?.toFixed(4)}, Histogram=${ta.macdHist?.toFixed(4)}${ta.macdHist > 0 ? ' ← Bullish' : ' ← Bearish'}
 EMA50: ${currPrefix}${ta.ema50?.toLocaleString()} | EMA200: ${currPrefix}${ta.ema200?.toLocaleString()}
 Bollinger: Upper=${currPrefix}${ta.bbUpper?.toLocaleString()} | Mid=${currPrefix}${ta.bbMiddle?.toLocaleString()} | Lower=${currPrefix}${ta.bbLower?.toLocaleString()}
 ${ta.volRatio != null ? `Volume: ${ta.volRatio}x 20-candle average` : ''}
@@ -519,28 +527,36 @@ ${allSignals}`;
       suppLines.push(`Market cap: ${capStr}`);
     }
     if (extras.fearGreed) {
-      suppLines.push(`Fear & Greed: ${extras.fearGreed.score}/100 — ${extras.fearGreed.classification}`);
+      // Pass EXACT classification — AI must NOT rephrase or exaggerate this
+      suppLines.push(`Fear & Greed Index: ${extras.fearGreed.score}/100 — classification is EXACTLY "${extras.fearGreed.classification}" (do not change this label)`);
     }
     const suppSection = suppLines.length > 0 ? `\nMARKET CONTEXT:\n${suppLines.join('\n')}` : '';
 
     // ── 3. Build the prompt ─────────────────────────────────
     const hasTa = !!ta;
+    const fgInstruction = extras.fearGreed
+      ? `\n4. One sentence citing Fear & Greed at ${extras.fearGreed.score}/100 (${extras.fearGreed.classification}) — use that EXACT label, never say "extreme fear" unless score is below 25.`
+      : '';
+
     const prompt = hasTa
       ? `You are a professional market analyst writing for experienced Nigerian traders on a WhatsApp bot.
 
 Asset: ${asset} | Price: ${currPrefix}${price?.toLocaleString()}${taSection}${suppSection}
 
-Write exactly 3 focused sentences:
-1. What RSI and MACD say about momentum RIGHT NOW
-2. Where price stands vs key EMA levels and Bollinger Bands
-3. The single most important level or signal traders must watch next${extras.fearGreed ? '\n4. One sentence on Fear & Greed and what it means for positioning.' : ''}
+Write exactly 3–4 focused sentences:
+1. What RSI and MACD say about current momentum — use the RSI label above EXACTLY (e.g. "approaching oversold", not "neutral")
+2. Where price stands vs key EMA/Bollinger levels
+3. A specific FORWARD-LOOKING trigger: "Bulls need X level to flip for Y outcome. Failure to hold Z risks a drop to W." Use the real numbers.${fgInstruction}
 
-Rules: Reference the REAL numbers above. Max 80 words. 1–2 emojis. Plain text, no headers or markdown. Be direct — traders hate fluff.`
+Rules:
+- Reference the REAL numbers above. Do NOT invent or round them.
+- Use the EXACT RSI and Fear & Greed labels provided — never reinterpret them.
+- Max 90 words. 1–2 emojis. Plain text, no headers or markdown. Be direct — traders hate fluff.`
       : `You are a sharp market analyst writing for Nigerian traders.
 
 Asset: ${asset} | Price: ${currPrefix}${price?.toLocaleString()}${suppSection}
 
-TA data unavailable. Write 3 concise sentences about price action, 24h momentum, and what to watch. Max 60 words. 1 emoji.`;
+TA data unavailable. Write 3 concise sentences: current price action, 24h momentum, and a specific level to watch next. Max 60 words. 1 emoji.`;
 
     try {
       const response = await axios.post(

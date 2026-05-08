@@ -98,14 +98,14 @@ class AssetClassifier {
     // 📈 Traditional Futures & Forex Futures
     this.traditionalFutures = {
       // ── Index Futures ──────────────────────────────────────
-      'S&P 500': 'ES=F', 'SPX': 'ES=F', 'SP500': 'ES=F', 'ES': 'ES=F',
-      'NASDAQ': 'NQ=F', 'NDX': 'NQ=F', 'NQ': 'NQ=F',
-      'DOW JONES': 'YM=F', 'DOW': 'YM=F', 'YM': 'YM=F',
+      'S&P 500': 'ES=F', 'SPX': 'ES=F', 'SP500': 'ES=F', 'ES': 'ES=F', 'SPX500': 'ES=F', 'US500': 'ES=F',
+      'NASDAQ': 'NQ=F', 'NDX': 'NQ=F', 'NQ': 'NQ=F', 'NAS100': 'NQ=F', 'US100': 'NQ=F',
+      'DOW JONES': 'YM=F', 'DOW': 'YM=F', 'YM': 'YM=F', 'US30': 'YM=F',
       'RUSSELL': 'RTY=F', 'RTY': 'RTY=F',
       'VIX': '^VIX',
-      'NIKKEI': 'NKD=F', 'NKD': 'NKD=F',
-      'FTSE': 'Z=F',
-      'DAX': 'FDAX=F',
+      'NIKKEI': 'NKD=F', 'NKD': 'NKD=F', 'JP225': 'NKD=F',
+      'FTSE': 'Z=F', 'UK100': 'Z=F',
+      'DAX': 'FDAX=F', 'GER40': 'FDAX=F',
 
       // ── Commodity Futures ──────────────────────────────────
       'GOLD': 'GC=F', 'GC': 'GC=F',
@@ -282,12 +282,33 @@ class AssetClassifier {
 
     // 💱 Forex pattern: 6 uppercase letters (EURUSD, GBPJPY)
     if (symbol.length === 6 && /^[A-Z]{6}$/.test(symbol)) {
-      // Verify first 3 and last 3 are valid currency codes
       const base = symbol.substring(0, 3);
       const quote = symbol.substring(3, 6);
       if (KNOWN_CURRENCIES.has(base) && KNOWN_CURRENCIES.has(quote)) {
         return { type: 'FOREX', symbol, chain: null, confidence: 85 };
       }
+    }
+
+    // 📊 CFD-style index pattern: e.g. US30, NAS100, UK100, GER40, JP225, AU200
+    // Pattern: 2-3 letter country/market code + 2-3 digit number
+    const cfdIndexMatch = symbol.match(/^(US|UK|GER|JP|AU|EU|FR|HK|CN|SG|IN)(\d{2,3})$/);
+    if (cfdIndexMatch) {
+      const CFD_INDEX_MAP = {
+        'US30': 'YM=F', 'US100': 'NQ=F', 'US500': 'ES=F',
+        'UK100': 'Z=F',
+        'GER40': 'FDAX=F', 'GER30': 'FDAX=F',
+        'JP225': 'NKD=F',
+        'AU200': '^AXJO',
+        'HK50': '^HSI', 'HK33': '^HSI',
+        'EU50': '^STOXX50E',
+        'FR40': '^FCHI',
+      };
+      const mapped = CFD_INDEX_MAP[symbol];
+      if (mapped) {
+        return { type: 'TRADITIONAL_FUTURE', symbol: mapped, chain: null, confidence: 95 };
+      }
+      // Unknown CFD index — still treat as traditional future, Yahoo will figure it out
+      return { type: 'TRADITIONAL_FUTURE', symbol: `${symbol}=F`, chain: null, confidence: 70 };
     }
 
     // 🇳🇬 Nigerian stock patterns
@@ -297,9 +318,6 @@ class AssetClassifier {
     }
 
     // 💎 Crypto-like patterns
-    // - Very short (2-5 chars) AND not in stock list
-    // - Contains numbers (BTC2, ETH2)
-    // - Ends in common crypto suffixes
     if (symbol.length >= 2 && symbol.length <= 5) {
       if (/\d/.test(symbol) || symbol.endsWith('COIN') || symbol.endsWith('TOKEN')) {
         return { type: 'CRYPTO', symbol, chain, confidence: 60 };
@@ -307,8 +325,6 @@ class AssetClassifier {
     }
 
     // 📈 Stock-like patterns
-    // - 1-5 uppercase letters (most stock tickers)
-    // - NOT a known crypto
     if (symbol.length >= 1 && symbol.length <= 5 && /^[A-Z]+$/.test(symbol)) {
       return { type: 'STOCK', symbol, chain: null, confidence: 50 };
     }
@@ -328,6 +344,63 @@ class AssetClassifier {
    */
   classifyBatch(symbols) {
     return symbols.map(s => this.classify(s));
+  }
+
+  /**
+   * 🔍 Dynamic Yahoo Finance symbol resolution
+   * Called when classify() returns low confidence (<= 60).
+   * Queries Yahoo's free search API to identify the asset type.
+   * Results are cached in-memory to avoid repeated API calls.
+   *
+   * @param {string} symbol - Raw user input symbol
+   * @returns {Promise<{type, symbol, confidence}|null>}
+   */
+  async resolveWithYahoo(symbol) {
+    const key = symbol.toUpperCase().trim();
+
+    // Check in-memory cache first (avoid hammering Yahoo)
+    if (this._yahooCache && this._yahooCache[key]) {
+      return this._yahooCache[key];
+    }
+    if (!this._yahooCache) this._yahooCache = {};
+
+    try {
+      const axios = require('axios');
+      const { data } = await axios.get('https://query2.finance.yahoo.com/v1/finance/search', {
+        params: { q: key, quotesCount: 3, newsCount: 0, listsCount: 0 },
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        timeout: 5000,
+      });
+
+      const hits = data?.quotes || [];
+      if (hits.length === 0) return null;
+
+      const best = hits[0];
+      const quoteType = best.quoteType?.toUpperCase();
+      const resolvedSymbol = best.symbol;
+
+      // Map Yahoo quoteType → our asset types
+      const YAHOO_TYPE_MAP = {
+        'EQUITY':         { type: 'US_STOCK',          confidence: 88 },
+        'INDEX':          { type: 'TRADITIONAL_FUTURE', confidence: 88 },
+        'FUTURE':         { type: 'TRADITIONAL_FUTURE', confidence: 92 },
+        'ETF':            { type: 'US_STOCK',           confidence: 85 },
+        'MUTUALFUND':     { type: 'US_STOCK',           confidence: 80 },
+        'CRYPTOCURRENCY': { type: 'CRYPTO',             confidence: 90 },
+        'CURRENCY':       { type: 'FOREX',              confidence: 90 },
+      };
+
+      const mapped = YAHOO_TYPE_MAP[quoteType];
+      if (!mapped) return null;
+
+      const result = { type: mapped.type, symbol: resolvedSymbol, chain: null, confidence: mapped.confidence };
+      this._yahooCache[key] = result; // Cache for this session
+      console.log(`🔍 [Classifier] Yahoo resolved "${key}" → ${quoteType} → ${resolvedSymbol} (${mapped.confidence}%)`);
+      return result;
+    } catch (e) {
+      // Silent fail — Yahoo search is best-effort
+      return null;
+    }
   }
 
   /**

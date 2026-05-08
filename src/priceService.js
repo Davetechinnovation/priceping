@@ -151,10 +151,21 @@ class PriceService {
   }
 
   async getAssetInfo(input) {
-    const classification = this.classifier.classify(input);
-    const { type, symbol, chain, confidence } = classification;
+    let classification = this.classifier.classify(input);
+    let { type, symbol, chain, confidence } = classification;
+
+    // ── Dynamic upgrade for low-confidence results ─────────────────
+    // If the classifier isn't sure (≤80%), ask Yahoo Finance to identify it
+    if (confidence <= 80) {
+      const upgraded = await this.classifier.resolveWithYahoo(input);
+      if (upgraded && upgraded.confidence > confidence) {
+        classification = upgraded;
+        ({ type, symbol, chain, confidence } = classification);
+      }
+    }
 
     console.log(`🔍 Classified "${input}" as ${type} (${confidence}% confidence) → ${symbol}`);
+
 
     // 🇳🇬 Known Nigerian private companies (not on NGX)
     if (type === 'NGX_PRIVATE') {

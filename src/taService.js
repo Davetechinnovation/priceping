@@ -202,11 +202,12 @@ class TAService {
 
     // RSI
     if (ta.rsi != null) {
-      if      (ta.rsi >= 75) warnings.push(`RSI ${ta.rsi} — heavily overbought, pullback risk`);
-      else if (ta.rsi >= 65) warnings.push(`RSI ${ta.rsi} — approaching overbought`);
-      else if (ta.rsi <= 25) signals.push(`RSI ${ta.rsi} — heavily oversold, bounce possible`);
-      else if (ta.rsi <= 35) signals.push(`RSI ${ta.rsi} — oversold, watch for reversal`);
-      else                   signals.push(`RSI ${ta.rsi} — neutral momentum`);
+      if      (ta.rsi >= 75) warnings.push(`RSI ${ta.rsi.toFixed(1)} — heavily overbought, pullback risk`);
+      else if (ta.rsi >= 65) warnings.push(`RSI ${ta.rsi.toFixed(1)} — approaching overbought`);
+      else if (ta.rsi <= 25) signals.push(`RSI ${ta.rsi.toFixed(1)} — heavily oversold, bounce possible`);
+      else if (ta.rsi <= 35) signals.push(`RSI ${ta.rsi.toFixed(1)} — oversold, watch for reversal`);
+      else if (ta.rsi <= 45) signals.push(`RSI ${ta.rsi.toFixed(1)} — approaching oversold territory`);
+      else                   signals.push(`RSI ${ta.rsi.toFixed(1)} — neutral momentum`);
     }
 
     // MACD
