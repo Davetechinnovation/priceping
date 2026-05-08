@@ -1,5 +1,70 @@
 const axios = require("axios");
 
+const STATIC_SYSTEM_PROMPT = `You are the AI brain of PricePing, a Nigerian financial price bot.
+Output ONLY raw JSON array. No markdown, no text.
+
+CRITICAL RULES:
+1. MULTI-ASSET: If user mentions "all of them", "the three", "both", refer to "Last assets" in your context and create a command for EACH one.
+2. NEVER use these as asset names: me, my, an, a, the, it, that, this, one, them, those, alert, price, stock, crypto, coin, share
+3. No price in "set" command → ask via chat
+4. Asset unclear + lastAssets exists → use most recent
+5. MATH ALERTS — TWO STEPS ONLY:
+   STEP 1: If user gives a formula → calculate the final number, THEN output ONLY this JSON (NO free text, NO explanation outside JSON):
+   [{"command":"chat","args":["I calculated $[X]. Set alert for [ASSET] at $[X]?"]}]
+   STEP 2: If context shows you already asked and user replies YES/GO AHEAD/CORRECT/OK/SURE/DO IT/YES PLEASE/THAT'S RIGHT/CONFIRMED → IMMEDIATELY output the set command. Do NOT re-explain or re-calculate. Just set it.
+   ⚠️ MATH RULE CRITICAL: NEVER return free-text math working. ALWAYS wrap the result in a JSON chat command.
+6. SUPPORT QUESTIONS: If Knowledge Base is provided in context, use it to answer accurately via "chat" command.
+7. MARKET VIEWS: If a user asks for a "view", "opinion", "prediction", "analysis", or "what do you think" about an asset, ALWAYS map it to the "analyze" command. Do NOT refuse.
+8. TONE & STYLE (CRITICAL): Act as a highly professional, profoundly knowledgeable financial AI. You built this system. NEVER repeat the user's question back to them. NEVER apologize unnecessarily. Be confident, direct, and insightful. Keep answers under 40 words.
+9. CONVERSATIONAL FLOW: If the user is frustrated (😒, "Fool", "Stop it"), acknowledge it briefly and professionally. If you've already answered a question and they repeat it or acknowledge it ("I have heard"), do NOT repeat the full explanation. Move the conversation forward or remain silent/brief.
+10. NO REPETITION: Never output the exact same chat response twice in a row. If the user hasn't asked anything new, just acknowledge their previous message or give a very brief follow-up.
+
+NGX TICKERS: Zenith/ZenithBank→ZENITHBANK, MTN/MTNNigeria→MTNN, Dangote→DANGCEM, GTB/GtBank→GTCO, Access/AccessBank→ACCESSCORP, FirstBank/FBNH→FBNH, UBA→UBA, Airtel→AIRTELAFRI, Fidelity→FIDELITYBK, Sterling→STERLINGBANK
+US TICKERS: Apple→AAPL, Tesla→TSLA, Nvidia→NVDA, Google→GOOGL, Microsoft→MSFT, Amazon→AMZN, Meta→META
+FOREX PAIRS (FULLY SUPPORTED): EURUSD, GBPUSD, USDJPY, EURJPY, GBPJPY, AUDUSD, USDCAD, USDCHF, NZDUSD, EURGBP, USDZAR, USDNGN — Use the exact ticker symbol the user provides. Do NOT say forex is unsupported.
+FUTURES & PERPS (FULLY SUPPORTED): Crypto (e.g. "BTC perp", "ETH futures") and Traditional/Forex (e.g. "S&P 500 futures", "Gold futures", "Euro futures"). Include "futures" or "perp" in the asset name if the user mentions it. Do NOT say futures are unsupported.
+
+COMMANDS:
+price [a]              → [{"command":"price","args":["BTC"]}]
+set [a] at [p] [dir]   → [{"command":"set","args":["ETH","at","3000","above"]}]
+alerts                 → [{"command":"alerts","args":[]}]
+del [numbers...]       → [{"command":"del","args":["1","3"]}]
+del all                → [{"command":"del","args":["all"]}]
+analyze [a]            → [{"command":"analyze","args":["TSLA"]}]
+news [a]               → [{"command":"news","args":["AAPL"]}]
+portfolio              → [{"command":"portfolio","args":[]}]
+bought [qty][a] at [p] → [{"command":"bought","args":["5","TSLA","at","200"]}]
+sold [a] at [p]        → [{"command":"sold","args":["BTC","at","70000"]}]
+trades                 → [{"command":"trades","args":[]}]
+status                 → [{"command":"status","args":[]}]
+subscribe              → [{"command":"subscribe","args":[]}]
+upgrade                → [{"command":"upgrade","args":[]}]
+features               → [{"command":"features","args":[]}]
+chat                   → [{"command":"chat","args":["reply under 40 words"]}]
+
+EXAMPLES:
+"I would like to know their prices" (Last assets: ZENITHBANK, MTNN)
+→ [{"command":"price","args":["ZENITHBANK"]},{"command":"price","args":["MTNN"]}]
+
+"set an alert for the three of them when they hit an increase of 10% each" (Last assets: ZENITHBANK, MTNN, DANGCEM)
+→ [{"command":"set_percent","args":["ZENITHBANK","10"]},{"command":"set_percent","args":["MTNN","10"]},{"command":"set_percent","args":["DANGCEM","10"]}]
+
+"what's your view on GBPUSD?"
+→ [{"command":"analyze","args":["GBPUSD"]}]
+
+"analyze TSLA for me"
+→ [{"command":"analyze","args":["TSLA"]}]
+
+"how does the referral program work?"
+→ [{"command":"chat","args":["Get your code with the Invite command! When a friend redeems it, you get +1 free alert slot (up to 3 total bonus slots)."]}]
+
+MATH CONFIRMATION EXAMPLE (CRITICAL — follow this exactly):
+Context: "I already calculated BTC target at $144,903.52. Set alert for BTC at $144,903.52?"
+User says: "Correct do just that" OR "Go ahead" OR "Yes" OR "Ok" OR "Sure"
+→ [{"command":"set","args":["BTC","at","144903.52","above"]}]
+⚠️ DO NOT re-explain or re-calculate when user confirms. Just output the set command immediately.`;
+const TAService = require('./taService');
+
 class GeminiService {
   constructor(db = null) {
     this.db = db;
@@ -10,6 +75,14 @@ class GeminiService {
 
     // ✅ Unified cache
     this.cache = new Map();
+
+    // ✅ TA Service (lazy init)
+    this._taService = null;
+  }
+
+  get taService() {
+    if (!this._taService) this._taService = new TAService();
+    return this._taService;
   }
 
   isConfigured() {
@@ -201,71 +274,15 @@ class GeminiService {
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ` : '';
 
-    const systemPrompt = `PricePing WhatsApp bot. Output ONLY raw JSON array. No markdown, no text.
+    const dynamicContext = `CONTEXT FOR THIS REQUEST:
 User: ${userName} | Plan: ${tier} | Last assets: ${lastAssetsString}
-${knowledgeBase}
-
-CRITICAL RULES:
-1. MULTI-ASSET: If user mentions "all of them", "the three", "both", refer to "Last assets" and create a command for EACH one.
-2. NEVER use these as asset names: me, my, an, a, the, it, that, this, one, them, those, alert, price, stock, crypto, coin, share
-3. No price in "set" command → ask via chat
-4. Asset unclear + lastAssets exists → use most recent
-5. MATH ALERTS — TWO STEPS ONLY:
-   STEP 1: If user gives a formula → calculate the final number, then ask ONCE: "I calculated $[X]. Set alert for [ASSET] at $[X]?"
-   STEP 2: If context shows you already asked and user replies YES/GO AHEAD/CORRECT/OK/SURE/DO IT/YES PLEASE/THAT'S RIGHT/CONFIRMED → IMMEDIATELY output the set command. Do NOT re-explain or re-calculate. Just set it.
-6. SUPPORT QUESTIONS: If Knowledge Base is present above, use it to answer accurately via "chat" command.
-7. MARKET VIEWS: If a user asks for a "view", "opinion", "prediction", "analysis", or "what do you think" about an asset, ALWAYS map it to the "analyze" command. Do NOT refuse.
-8. TONE & STYLE (CRITICAL): Act as a highly professional, profoundly knowledgeable financial AI. NEVER repeat the user's question back to them. NEVER apologize unnecessarily. Be confident, direct, and insightful. Keep answers under 40 words.
-9. CONVERSATIONAL FLOW: If the user is frustrated (😒, "Fool", "Stop it"), acknowledge it briefly and professionally. If you've already answered a question and they repeat it or acknowledge it ("I have heard"), do NOT repeat the full explanation. Move the conversation forward or remain silent/brief.
-10. NO REPETITION: Never output the exact same chat response twice in a row. If the user hasn't asked anything new, just acknowledge their previous message or give a very brief follow-up.
-
-NGX TICKERS: Zenith/ZenithBank→ZENITHBANK, MTN/MTNNigeria→MTNN, Dangote→DANGCEM, GTB/GtBank→GTCO, Access/AccessBank→ACCESSCORP, FirstBank/FBNH→FBNH, UBA→UBA, Airtel→AIRTELAFRI, Fidelity→FIDELITYBK, Sterling→STERLINGBANK
-US TICKERS: Apple→AAPL, Tesla→TSLA, Nvidia→NVDA, Google→GOOGL, Microsoft→MSFT, Amazon→AMZN, Meta→META
-FOREX PAIRS (FULLY SUPPORTED): EURUSD, GBPUSD, USDJPY, EURJPY, GBPJPY, AUDUSD, USDCAD, USDCHF, NZDUSD, EURGBP, USDZAR, USDNGN — Use the exact ticker symbol the user provides. Do NOT say forex is unsupported.
-
-COMMANDS:
-price [a]              → [{"command":"price","args":["BTC"]}]
-set [a] at [p] [dir]   → [{"command":"set","args":["ETH","at","3000","above"]}]
-alerts                 → [{"command":"alerts","args":[]}]
-del [numbers...]       → [{"command":"del","args":["1","3"]}]
-del all                → [{"command":"del","args":["all"]}]
-analyze [a]            → [{"command":"analyze","args":["TSLA"]}]
-news [a]               → [{"command":"news","args":["AAPL"]}]
-portfolio              → [{"command":"portfolio","args":[]}]
-bought [qty][a] at [p] → [{"command":"bought","args":["5","TSLA","at","200"]}]
-sold [a] at [p]        → [{"command":"sold","args":["BTC","at","70000"]}]
-trades                 → [{"command":"trades","args":[]}]
-status                 → [{"command":"status","args":[]}]
-subscribe              → [{"command":"subscribe","args":[]}]
-upgrade                → [{"command":"upgrade","args":[]}]
-features               → [{"command":"features","args":[]}]
-chat                   → [{"command":"chat","args":["reply under 40 words"]}]
-
-EXAMPLES:
-"I would like to know their prices" (Last assets: ZENITHBANK, MTNN)
-→ [{"command":"price","args":["ZENITHBANK"]},{"command":"price","args":["MTNN"]}]
-
-"set an alert for the three of them when they hit an increase of 10% each" (Last assets: ZENITHBANK, MTNN, DANGCEM)
-→ [{"command":"set_percent","args":["ZENITHBANK","10"]},{"command":"set_percent","args":["MTNN","10"]},{"command":"set_percent","args":["DANGCEM","10"]}]
-
-"what's your view on GBPUSD?"
-→ [{"command":"analyze","args":["GBPUSD"]}]
-
-"analyze TSLA for me"
-→ [{"command":"analyze","args":["TSLA"]}]
-
-"how does the referral program work?"
-→ [{"command":"chat","args":["Get your code with the Invite command! When a friend redeems it, you get +1 free alert slot (up to 3 total bonus slots)."]}]
-
-MATH CONFIRMATION EXAMPLE (CRITICAL — follow this exactly):
-Context: "I already calculated BTC target at $144,903.52. Set alert for BTC at $144,903.52?"
-User says: "Correct do just that" OR "Go ahead" OR "Yes" OR "Ok" OR "Sure"
-→ [{"command":"set","args":["BTC","at","144903.52","above"]}]
-⚠️ DO NOT re-explain or re-calculate when user confirms. Just output the set command immediately.`;
+${knowledgeBase}`.trim();
 
     try {
       const messages = [
-        { role: "system", content: systemPrompt }
+        { role: "system", content: STATIC_SYSTEM_PROMPT },
+        { role: "user", content: dynamicContext },
+        { role: "assistant", content: "Understood. I will use this context for the user's request." }
       ];
 
       // Add actual history in standard message format
@@ -310,7 +327,34 @@ User says: "Correct do just that" OR "Go ahead" OR "Yes" OR "Ok" OR "Sure"
         parsed = JSON.parse(jsonStr);
       } catch (e) {
         console.error("Failed to parse JSON from AI:", text);
-        return [{ command: "chat", args: ["I'm having trouble analyzing that. Try keeping it simple!"] }];
+
+        // ── 🛟 SALVAGE: Did the AI return a math calculation as free text? ──
+        // If the response contains a calculated dollar/number figure, extract it
+        // and turn it into a proper confirmation chat message.
+        const calcMatch = text.match(/[\$]?([\d,]+(?:\.\d{1,2})?)(?:\s*(?:is|=|→|->|\.|,)\s*(?:the\s+)?(?:target|result|answer|total|final))?/i);
+        // More specifically, look for the last mentioned dollar amount in the response
+        const allAmounts = [...text.matchAll(/\$([\d,]+(?:\.\d{1,2})?)/g)];
+        if (allAmounts.length > 0) {
+          // The last dollar amount mentioned is usually the final answer
+          const finalAmount = allAmounts[allAmounts.length - 1][1].replace(/,/g, '');
+          const finalNum = parseFloat(finalAmount);
+          // Priority 1: Use lastAssets from context (most reliable)
+          // Priority 2: Find a ticker-like word in the AI text (2-10 uppercase letters)
+          // Priority 3: safe fallback
+          let assetHint = lastAssets.length > 0 ? lastAssets[0] : null;
+          if (!assetHint) {
+            const tickerMatch = text.match(/\b([A-Z]{2,10})\b/);
+            assetHint = tickerMatch ? tickerMatch[1] : 'the asset';
+          }
+
+          if (!isNaN(finalNum) && finalNum > 0) {
+            console.log(`🛟 [Math Salvage] Extracted final value $${finalNum} from free-text AI response`);
+            const confirmMsg = `I calculated $${finalNum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}. Set alert for ${assetHint} at $${finalNum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}?`;
+            return [{ command: "chat", args: [confirmMsg] }];
+          }
+        }
+
+        return [{ command: "chat", args: ["I'm having trouble with that request. Could you rephrase it? (e.g. \"Set BTC alert at 50000\")"] }];
       }
 
       if (!Array.isArray(parsed)) {
@@ -423,7 +467,7 @@ User says: "Correct do just that" OR "Go ahead" OR "Yes" OR "Ok" OR "Sure"
     return symbolMap[currencyCode?.toUpperCase()] || (currencyCode ? `${currencyCode} ` : "$");
   }
 
-  async analyzeMarket(asset, price, percentChange24h = null, currency = "USD") {
+  async analyzeMarket(asset, price, percentChange24h = null, currency = "USD", extras = {}) {
     if (!this.apiKey) return null;
 
     const cacheKey = `market:${asset}`;
@@ -432,13 +476,71 @@ User says: "Correct do just that" OR "Go ahead" OR "Yes" OR "Ok" OR "Sure"
     if (cached && now - cached.ts < 900000) return cached.text; // 15 min cache
 
     const currPrefix = this.getCurrencySymbol(currency);
-    let priceStr = `Current price: ${currPrefix}${price}.`;
-    if (percentChange24h) priceStr += ` 24h change: ${percentChange24h}%.`;
 
-    const prompt = `You are a friendly, premium market analyst. 
-Write a short 3-sentence market analysis for ${asset}. 
-${priceStr} 
-Explain it in simple, easy-to-understand terms that a beginner would grasp, while remaining professional. Use 1 or 2 appropriate emojis. Do not use markdown headers, just plain text. Never give financial advice.`;
+    // ── 1. Fetch local TA indicators (free, no API key) ─────────
+    const ta = await this.taService.getIndicators(asset);
+    let taSection = '';
+
+    if (ta) {
+      const { signals, warnings } = this.taService.interpretIndicators(ta, price);
+      const allSignals = [
+        ...signals.map(s => `✅ ${s}`),
+        ...warnings.map(w => `⚠️ ${w}`)
+      ].join('\n');
+
+      taSection = `
+TECHNICAL INDICATORS (from ${ta.candleCount} hourly candles — use these exact numbers):
+RSI(14): ${ta.rsi}${ta.rsi >= 70 ? ' ← OVERBOUGHT' : ta.rsi <= 30 ? ' ← OVERSOLD' : ''}
+MACD: Line=${ta.macdLine}, Signal=${ta.macdSignal}, Histogram=${ta.macdHist}${ta.macdHist > 0 ? ' ← Bullish' : ' ← Bearish'}
+EMA50: ${currPrefix}${ta.ema50?.toLocaleString()} | EMA200: ${currPrefix}${ta.ema200?.toLocaleString()}
+Bollinger: Upper=${currPrefix}${ta.bbUpper?.toLocaleString()} | Mid=${currPrefix}${ta.bbMiddle?.toLocaleString()} | Lower=${currPrefix}${ta.bbLower?.toLocaleString()}
+${ta.volRatio != null ? `Volume: ${ta.volRatio}x 20-candle average` : ''}
+
+SIGNAL SUMMARY:
+${allSignals}`;
+    }
+
+    // ── 2. Build supplementary context (Fear & Greed, 52wk range, etc.) ──
+    const suppLines = [];
+    if (percentChange24h != null) {
+      const dir = percentChange24h >= 0 ? '▲' : '▼';
+      suppLines.push(`24h change: ${dir} ${Math.abs(percentChange24h).toFixed(2)}%`);
+    }
+    if (extras.high52 && extras.low52) {
+      const pctFromHigh = (((extras.high52 - price) / extras.high52) * 100).toFixed(1);
+      suppLines.push(`52-week range: ${currPrefix}${extras.low52.toLocaleString()} – ${currPrefix}${extras.high52.toLocaleString()} (${pctFromHigh}% below yearly high)`);
+    }
+    if (extras.marketCap) {
+      const capStr = extras.marketCap >= 1e12
+        ? `$${(extras.marketCap / 1e12).toFixed(2)}T`
+        : extras.marketCap >= 1e9
+        ? `$${(extras.marketCap / 1e9).toFixed(1)}B`
+        : `$${(extras.marketCap / 1e6).toFixed(0)}M`;
+      suppLines.push(`Market cap: ${capStr}`);
+    }
+    if (extras.fearGreed) {
+      suppLines.push(`Fear & Greed: ${extras.fearGreed.score}/100 — ${extras.fearGreed.classification}`);
+    }
+    const suppSection = suppLines.length > 0 ? `\nMARKET CONTEXT:\n${suppLines.join('\n')}` : '';
+
+    // ── 3. Build the prompt ─────────────────────────────────
+    const hasTa = !!ta;
+    const prompt = hasTa
+      ? `You are a professional market analyst writing for experienced Nigerian traders on a WhatsApp bot.
+
+Asset: ${asset} | Price: ${currPrefix}${price?.toLocaleString()}${taSection}${suppSection}
+
+Write exactly 3 focused sentences:
+1. What RSI and MACD say about momentum RIGHT NOW
+2. Where price stands vs key EMA levels and Bollinger Bands
+3. The single most important level or signal traders must watch next${extras.fearGreed ? '\n4. One sentence on Fear & Greed and what it means for positioning.' : ''}
+
+Rules: Reference the REAL numbers above. Max 80 words. 1–2 emojis. Plain text, no headers or markdown. Be direct — traders hate fluff.`
+      : `You are a sharp market analyst writing for Nigerian traders.
+
+Asset: ${asset} | Price: ${currPrefix}${price?.toLocaleString()}${suppSection}
+
+TA data unavailable. Write 3 concise sentences about price action, 24h momentum, and what to watch. Max 60 words. 1 emoji.`;
 
     try {
       const response = await axios.post(
@@ -446,10 +548,10 @@ Explain it in simple, easy-to-understand terms that a beginner would grasp, whil
         {
           model: this.modelName,
           messages: [{ role: "user", content: prompt }],
-          temperature: 0.3,
-          max_tokens: 150
+          temperature: 0.2,
+          max_tokens: 200
         },
-        { headers: { Authorization: `Bearer ${this.apiKey}` }, timeout: 8000 }
+        { headers: { Authorization: `Bearer ${this.apiKey}` }, timeout: 10000 }
       );
 
       const text = response.data?.choices?.[0]?.message?.content?.trim();

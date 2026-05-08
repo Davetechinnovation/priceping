@@ -71,6 +71,85 @@ app.get('/api-docs.json', (req, res) => {
   res.send(swaggerSpecs);
 });
 
+// ✅ Test Futures Route (Cloud Testing)
+app.get('/test-futures', async (req, res) => {
+  if (!global.priceService) {
+    return res.status(503).json({ error: "Price service not initialized yet" });
+  }
+  
+  const tests = [
+    'BTC perp', 
+    'ETH futures', 
+    'SOL perp',
+    'S&P 500 futures',
+    'Cocoa futures',
+    'Euro futures'
+  ];
+  const results = {};
+  
+  for (const t of tests) {
+    try {
+      const info = await global.priceService.getAssetInfo(t);
+      results[t] = info?.price ?? 'failed';
+    } catch (e) {
+      results[t] = `error: ${e.message}`;
+    }
+  }
+  
+  res.json(results);
+});
+
+// ✅ Test AI Analysis Route (Cloud Testing)
+// Hit: https://your-app.onrender.com/test-analysis
+app.get('/test-analysis', async (req, res) => {
+  if (!global.geminiService || !global.priceService) {
+    return res.status(503).json({ error: "Services not initialized yet. Wait ~30s and retry." });
+  }
+
+  const results = {};
+  const GeminiService = global.geminiService;
+  const TAService = require('./src/taService');
+  const ta = new TAService();
+
+  const tests = [
+    { symbol: 'BTC',  currency: 'USD' },
+    { symbol: 'AAPL', currency: 'USD' },
+  ];
+
+  for (const { symbol, currency } of tests) {
+    try {
+      // 1. Get live price
+      const info = await global.priceService.getAssetInfo(symbol);
+      const price = info?.price ?? null;
+
+      // 2. Get TA indicators
+      const indicators = await ta.getIndicators(symbol);
+
+      // 3. Get AI analysis
+      const analysis = await GeminiService.analyzeMarket(symbol, price ?? 100, info?.change24h ?? null, currency);
+
+      results[symbol] = {
+        price,
+        change24h: info?.change24h ?? null,
+        indicators: indicators ? {
+          rsi: indicators.rsi,
+          macdHist: indicators.macdHist,
+          ema50: indicators.ema50,
+          ema200: indicators.ema200,
+          bbUpper: indicators.bbUpper,
+          bbLower: indicators.bbLower,
+          candleCount: indicators.candleCount,
+        } : 'failed (ISP block or no data)',
+        analysis: analysis ?? 'failed (check GROQ_API_KEY)',
+      };
+    } catch (e) {
+      results[symbol] = { error: e.message };
+    }
+  }
+
+  res.json(results);
+});
+
 let botInitialized = false;
 const userState = new Map();
 

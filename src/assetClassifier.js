@@ -94,6 +94,47 @@ class AssetClassifier {
     // 🏆 Commodities
     this.commodities = new Set(['GOLD', 'XAU', 'SILVER', 'XAG', 'OIL', 'WTI', 'BRENT']);
     this.commodityAliases = { 'GOLD': 'XAU', 'SILVER': 'XAG', 'OIL': 'WTI' };
+
+    // 📈 Traditional Futures & Forex Futures
+    this.traditionalFutures = {
+      // ── Index Futures ──────────────────────────────────────
+      'S&P 500': 'ES=F', 'SPX': 'ES=F', 'SP500': 'ES=F', 'ES': 'ES=F',
+      'NASDAQ': 'NQ=F', 'NDX': 'NQ=F', 'NQ': 'NQ=F',
+      'DOW JONES': 'YM=F', 'DOW': 'YM=F', 'YM': 'YM=F',
+      'RUSSELL': 'RTY=F', 'RTY': 'RTY=F',
+      'VIX': '^VIX',
+      'NIKKEI': 'NKD=F', 'NKD': 'NKD=F',
+      'FTSE': 'Z=F',
+      'DAX': 'FDAX=F',
+
+      // ── Commodity Futures ──────────────────────────────────
+      'GOLD': 'GC=F', 'GC': 'GC=F',
+      'SILVER': 'SI=F', 'SI': 'SI=F',
+      'OIL': 'CL=F', 'CRUDE OIL': 'CL=F', 'CL': 'CL=F',
+      'BRENT': 'BZ=F', 'BZ': 'BZ=F',
+      'NATURAL GAS': 'NG=F', 'NG': 'NG=F',
+      'COPPER': 'HG=F', 'HG': 'HG=F',
+      'WHEAT': 'ZW=F', 'ZW': 'ZW=F',
+      'CORN': 'ZC=F', 'ZC': 'ZC=F',
+      'SOYBEAN': 'ZS=F', 'ZS': 'ZS=F',
+      'COCOA': 'CC=F', 'CC': 'CC=F',
+
+      // ── Forex Futures (CME) ────────────────────────────────
+      'EURO': '6E=F', 'EUR': '6E=F', '6E': '6E=F',
+      'POUND': '6B=F', 'GBP': '6B=F', '6B': '6B=F',
+      'YEN': '6J=F', 'JPY': '6J=F', '6J': '6J=F',
+      'AUSSIE': '6A=F', 'AUD': '6A=F', '6A': '6A=F',
+      'CAD FUTURE': '6C=F', '6C': '6C=F',
+      'SWISS': '6S=F', 'CHF': '6S=F', '6S': '6S=F',
+
+      // ── Crypto CME Futures ────────────────────────────────
+      'BITCOIN CME': 'BTC=F', 'BTC CME': 'BTC=F',
+      'ETHEREUM CME': 'ETH=F', 'ETH CME': 'ETH=F',
+
+      // ── Rates & Bonds ─────────────────────────────────────
+      'TREASURY': 'ZN=F', 'T-NOTE': 'ZN=F',
+      'T-BOND': 'ZB=F', 'ZB': 'ZB=F',
+    };
   }
 
   /**
@@ -138,8 +179,27 @@ class AssetClassifier {
     }
 
     // ============================================
-    // 2️⃣ HIGH-CONFIDENCE EXACT MATCHES
+    // 2️⃣ CHECK FOR FUTURES/PERP MODIFIERS
     // ============================================
+    let isFuture = false;
+    const futureKeywords = ['FUTURES', 'FUTURE', 'PERP', 'PERPETUAL'];
+    if (futureKeywords.some(kw => rawInput.includes(kw))) {
+      isFuture = true;
+      // Strip out the keyword so the base symbol can be matched
+      futureKeywords.forEach(kw => {
+        rawInput = rawInput.replace(new RegExp(`\\b${kw}\\b`, 'g'), '').trim();
+      });
+      symbol = rawInput.split(" ")[0] || rawInput;
+    }
+
+    // ============================================
+    // 3️⃣ HIGH-CONFIDENCE EXACT MATCHES
+    // ============================================
+
+    // 📈 Traditional Futures (if matched by explicitly mapped alias)
+    if (this.traditionalFutures[rawInput] || this.traditionalFutures[symbol]) {
+      return { type: 'TRADITIONAL_FUTURE', symbol: this.traditionalFutures[rawInput] || this.traditionalFutures[symbol], chain: null, confidence: 100 };
+    }
 
     // 🏆 Commodities (always first — "GOLD" shouldn't match stocks)
     if (this.commodities.has(symbol) || this.commodityAliases[symbol]) {
@@ -153,9 +213,11 @@ class AssetClassifier {
 
     // 💎 Top 50 Cryptos
     if (this.topCryptos.has(symbol)) {
+      if (isFuture) return { type: 'CRYPTO_FUTURE', symbol, chain, confidence: 100 };
       return { type: 'CRYPTO', symbol, chain, confidence: 100 };
     }
     if (this.cryptoAliases[symbol]) {
+      if (isFuture) return { type: 'CRYPTO_FUTURE', symbol: this.cryptoAliases[symbol], chain, confidence: 95 };
       return { type: 'CRYPTO', symbol: this.cryptoAliases[symbol], chain, confidence: 95 };
     }
 
@@ -182,8 +244,15 @@ class AssetClassifier {
       return { type: 'FOREX', symbol: this.forexAliases[symbol] || symbol, chain: null, confidence: 100 };
     }
 
+    // Catch-all for "Something Futures" if it wasn't a crypto or explicit traditional future
+    if (isFuture) {
+      // e.g. a user typed "TSLA futures" -> just return TRADITIONAL_FUTURE so Yahoo tries its =F format
+      // Or maybe it's an altcoin perp. We'll default to CRYPTO_FUTURE.
+      return { type: 'CRYPTO_FUTURE', symbol, chain, confidence: 80 };
+    }
+
     // ============================================
-    // 3️⃣ PATTERN-BASED HEURISTICS
+    // 4️⃣ PATTERN-BASED HEURISTICS
     // ============================================
 
     // 💱 Forex pattern: 6 uppercase letters (EURUSD, GBPJPY)
@@ -220,7 +289,7 @@ class AssetClassifier {
     }
 
     // ============================================
-    // 4️⃣ DYNAMIC FALLBACK
+    // 5️⃣ DYNAMIC FALLBACK
     // Let PriceService try multiple APIs in order:
     // 1. Check if it's in crypto list (DIA API has 10,000+ assets)
     // 2. Try Yahoo Finance (covers global stocks)

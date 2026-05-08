@@ -172,6 +172,31 @@ class PriceService {
     }
 
     // ============================================
+    // 🚀 CRYPTO FUTURES (Binance Perpetuals)
+    // ============================================
+    if (type === 'CRYPTO_FUTURE') {
+      const futuresPrice = await this.getBinanceFuturesPrice(symbol);
+      if (futuresPrice && futuresPrice._rateLimited) {
+        return { symbol: `${symbol}-PERP`, name: `${symbol} Perpetual`, blockchain: "Crypto Futures", price: null, currency: "USD", _rateLimited: true, others: [] };
+      }
+      if (futuresPrice !== null) {
+        return { symbol: `${symbol}-PERP`, name: `${symbol} Perpetual`, blockchain: "Crypto Futures", price: futuresPrice, currency: "USD", others: [] };
+      }
+    }
+
+    // ============================================
+    // 📈 TRADITIONAL FUTURES (Yahoo Finance)
+    // ============================================
+    if (type === 'TRADITIONAL_FUTURE') {
+      const futureInfo = await this.getStockPrice(symbol, input);
+      if (futureInfo !== null) {
+        // Override blockchain label to be more accurate
+        futureInfo.blockchain = "Futures Market";
+        return futureInfo;
+      }
+    }
+
+    // ============================================
     // 🏆 COMMODITIES
     // ============================================
     if (type === 'COMMODITY') {
@@ -206,7 +231,7 @@ class PriceService {
         }
 
         if (!selected) {
-          const priority = ["Bitcoin", "Ethereum", "Solana", "Binance Smart Chain", "Polygon", "The Open Network"];
+          const priority = ["Bitcoin", "Ethereum", "Solana", "Binance Smart Chain", "Tron", "Arbitrum", "Avalanche", "Optimism", "Base", "Polygon", "The Open Network"];
           options.sort((a, b) => {
             let pA = priority.indexOf(a.blockchain);
             let pB = priority.indexOf(b.blockchain);
@@ -417,6 +442,78 @@ class PriceService {
       }
       if (cached && Date.now() - cached.ts < this.staleTTL) return cached.price;
     }
+    return null;
+  }
+
+  // ============================================
+  // 🚀 BINANCE FUTURES (Crypto Perpetuals)
+  // ============================================
+  async getBinanceFuturesPrice(sym) {
+    const cacheKey = `binance_future:${sym}`;
+    const cached = this.priceCache[cacheKey];
+    if (cached && Date.now() - cached.ts < this.interactiveTTL) return cached.price;
+
+    const baseSymbol = sym.toUpperCase().replace(/USDT$/, '').replace(/USD$/, '');
+    const binanceSymbol = `${baseSymbol}USDT`;
+
+    // ── Try Binance first ────────────────────────────────
+    try {
+      const { data } = await axios.get(
+        `https://fapi.binance.com/fapi/v1/ticker/price?symbol=${binanceSymbol}`,
+        { timeout: 8000 }
+      );
+      if (data?.price) {
+        const price = parseFloat(data.price);
+        this.priceCache[cacheKey] = { price, ts: Date.now() };
+        return price;
+      }
+    } catch (e) {
+      const is429 = e.response?.status === 429 || e.message?.includes('429');
+      const isNetworkError = ['ENOTFOUND', 'ETIMEDOUT', 'ECONNABORTED', 'ECONNRESET'].includes(e.code) || e.message?.includes('timeout');
+      
+      if (!is429 && !isNetworkError) {
+        // Not rate limited or blocked — symbol just doesn't exist on Binance
+        return null;
+      }
+      console.warn(`⚠️ Binance fetch failed (${e.code || '429'}) for ${binanceSymbol}, trying Bybit fallback...`);
+    }
+
+    // ── Bybit fallback (only on Binance 429) ────────────
+    try {
+      const { data } = await axios.get(
+        `https://api.bybit.com/v5/market/tickers?category=linear&symbol=${binanceSymbol}`,
+        { timeout: 8000 }
+      );
+      const ticker = data?.result?.list?.[0];
+      if (ticker?.lastPrice) {
+        const price = parseFloat(ticker.lastPrice);
+        this.priceCache[cacheKey] = { price, ts: Date.now() };
+        return price;
+      }
+    } catch (e2) {
+      console.warn(`⚠️ Bybit fallback also failed for ${binanceSymbol}:`, e2.message);
+    }
+
+    // ── 3. Try OKX (best regional availability) ──────────
+    try {
+      const okxSymbol = `${baseSymbol}-USDT-SWAP`; // OKX perp format
+      const { data } = await axios.get(
+        `https://www.okx.com/api/v5/market/ticker?instId=${okxSymbol}`,
+        { timeout: 8000 }
+      );
+      const ticker = data?.data?.[0];
+      if (ticker?.last) {
+        const price = parseFloat(ticker.last);
+        this.priceCache[cacheKey] = { price, ts: Date.now() };
+        console.log(`✅ OKX fallback success for ${okxSymbol}`);
+        return price;
+      }
+    } catch (e3) {
+      console.warn(`⚠️ OKX fallback failed for ${baseSymbol}:`, e3.message);
+    }
+
+    // Stale fallback
+    if (cached && Date.now() - cached.ts < this.staleTTL) return cached.price;
     return null;
   }
 
@@ -797,6 +894,10 @@ class PriceService {
           price: quote.regularMarketPrice,
           currency: quote.currency || "USD",
           change24h: quote.regularMarketChangePercent,
+          high52: quote.fiftyTwoWeekHigh || null,
+          low52: quote.fiftyTwoWeekLow || null,
+          volume: quote.regularMarketVolume || null,
+          marketCap: quote.marketCap || null,
           others: [],
         };
         this.priceCache[cacheKey] = { data: result, ts: Date.now() };
@@ -876,6 +977,19 @@ class PriceService {
     console.log(`🔍 [Alert Monitor] ${sym} → ${type}`);
 
     // ── Step 2: Route to correct API based on type ──────────────────────
+
+    // 🚀 Crypto Perpetuals (Binance / Bybit)
+    if (type === 'CRYPTO_FUTURE') {
+      const baseSymbol = classification.symbol;
+      return await this.getBinanceFuturesPrice(baseSymbol);
+    }
+
+    // 📈 Traditional Futures (Yahoo Finance ES=F, NQ=F, GC=F etc)
+    if (type === 'TRADITIONAL_FUTURE') {
+      const futureSymbol = classification.symbol; // already mapped e.g. "ES=F"
+      const result = await this.getStockPrice(futureSymbol, sym);
+      return result?.price ?? null;
+    }
 
     // 💎 CRYPTO — DIA API (existing, fast)
     if (type === "CRYPTO") {

@@ -627,20 +627,41 @@ Type *Subscribe* to view plans!`;
       return `❌ *Not Found*\n\nI couldn't find data for *"${input.toUpperCase()}"* to analyze.`;
     }
 
-    // 3. Call Groq
+    // 3. Fetch Fear & Greed (crypto only, best-effort — won't block if it fails)
+    const fearGreedService = require('./fearGreedService');
+    let fearGreed = null;
+    const isCrypto = !info.blockchain || info.blockchain !== 'Stock Market';
+    if (isCrypto) {
+      try { fearGreed = await fearGreedService.getScore(); } catch (_) {}
+    }
+
+    // 4. Build extra market context from Yahoo/DIA fields
+    const extras = {
+      high52: info.high52 || null,
+      low52: info.low52 || null,
+      volume: info.volume || null,
+      marketCap: info.marketCap || null,
+      fearGreed,
+    };
+
+    // 5. Call Groq with enriched context
     const currencyStr = info.blockchain === "Stock Market" ? (info.currency || "USD") : "USD";
-    const analysis = await this.geminiService.analyzeMarket(info.symbol, info.price, info.change24h, currencyStr);
+    const analysis = await this.geminiService.analyzeMarket(info.symbol, info.price, info.change24h, currencyStr, extras);
     
     if (!analysis) {
       return `⚠️ *System Error*\nThe AI is currently resting. Please try again in a moment!`;
     }
 
-    // 4. Build response
+    // 6. Build response
     const fPrice = priceService.formatPrice(info.price, info.symbol, info.currency);
+    const changeLine = info.change24h != null
+      ? `\n📊 *24h Change:* ${info.change24h >= 0 ? '+' : ''}${info.change24h.toFixed(2)}%`
+      : '';
+    const fgLine = fearGreed ? `\n${fearGreed.formatted}` : '';
 
     return `🧠 *AI Market Intel: ${info.symbol}*
 ━━━━━━━━━━━━━━━━━
-💰 *Current Price:* ${fPrice}
+💰 *Current Price:* ${fPrice}${changeLine}${fgLine}
 
 🤖 *Analysis:*
 ${analysis}
@@ -755,40 +776,7 @@ or *Upgrade* to get started now!
 
     const info = await priceService.getAssetInfo(asset);
 
-    if (info && info.others && info.others.length > 0 && args.length < 4) {
-      const optionsToDisplay = [
-        {
-          blockchain: info.blockchain,
-          price: info.price,
-          address: info.address || null,
-        },
-        ...info.others.slice(0, 5).map((other) => ({
-          blockchain: other.blockchain,
-          price: other.price || null,
-          address: other.address || null,
-        })),
-      ];
 
-      userState.set(phoneNumber, {
-        type: "SELECT_CHAIN_ALERT",
-        symbol: info.symbol,
-        targetPrice: targetPrice,
-        direction: direction,
-        options: optionsToDisplay,
-      });
-
-      let menu = `⚖️ *Which ${info.symbol} chain?*
-━━━━━━━━━━━━━━━━━
-You are setting an alert at *${targetPrice}*.
-Please select specific chain:
-`;
-      optionsToDisplay.forEach((opt, i) => {
-        menu += `\n*${i + 1}.* ${opt.blockchain}`;
-      });
-
-      menu += `\n\n👇 *Reply with number (e.g., 1 or 2)*`;
-      return menu;
-    }
 
     if (info && info._rateLimited) {
       return `⚠️ *We are receiving too many requests for ${info.symbol} at the moment.*\n\nPlease wait a couple of minutes before setting an alert for this specific asset.`;
