@@ -38,7 +38,8 @@ class AssetClassifier {
       'SHIB', 'LTC', 'LINK', 'UNI', 'ATOM', 'ETC', 'XLM', 'NEAR', 'ALGO', 'VET',
       'ICP', 'FIL', 'APT', 'HBAR', 'QNT', 'ARB', 'OP', 'MKR', 'AAVE', 'GRT',
       'USDT', 'USDC', 'BUSD', 'DAI', 'PEPE', 'WIF', 'BONK', 'FLOKI', 'TON',
-      'TRX', 'BCH', 'CAKE', 'SAND', 'MANA', 'AXS', 'FTM', 'GALA', 'ENJ', 'INJ', 'SEI'
+      'TRX', 'BCH', 'CAKE', 'SAND', 'MANA', 'AXS', 'FTM', 'GALA', 'ENJ', 'INJ', 'SEI',
+      'STETH', 'WSTETH', 'RETH', 'CBETH', 'LDO', 'PENDLE', 'ENA', 'ETHFI'
     ]);
 
     this.cryptoAliases = {
@@ -92,8 +93,8 @@ class AssetClassifier {
     };
 
     // 🏆 Commodities
-    this.commodities = new Set(['GOLD', 'XAU', 'SILVER', 'XAG', 'OIL', 'WTI', 'BRENT']);
-    this.commodityAliases = { 'GOLD': 'XAU', 'SILVER': 'XAG', 'OIL': 'WTI' };
+    this.commodities = new Set(['GOLD', 'XAU', 'SILVER', 'XAG', 'OIL', 'WTI', 'BRENT', 'XTI', 'XBR']);
+    this.commodityAliases = { 'GOLD': 'XAU', 'SILVER': 'XAG', 'OIL': 'WTI', 'XTI': 'WTI', 'XBR': 'BRENT' };
 
     // 📈 Traditional Futures & Forex Futures
     this.traditionalFutures = {
@@ -351,9 +352,10 @@ class AssetClassifier {
     }
 
     // 💎 Crypto-like patterns
-    if (symbol.length >= 2 && symbol.length <= 5) {
-      if (/\d/.test(symbol) || symbol.endsWith('COIN') || symbol.endsWith('TOKEN')) {
-        return { type: 'CRYPTO', symbol, chain, confidence: 60 };
+    if (symbol.length >= 2 && symbol.length <= 8) {
+      // If it has lowercase (stETH) or common crypto markers (digits, COIN/TOKEN)
+      if (/[a-z]/.test(rawInput) || /\d/.test(symbol) || symbol.endsWith('COIN') || symbol.endsWith('TOKEN')) {
+        return { type: 'CRYPTO', symbol, chain, confidence: 65 };
       }
     }
 
