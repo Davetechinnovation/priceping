@@ -101,17 +101,19 @@ class AssetClassifier {
       'S&P 500': 'ES=F', 'SPX': 'ES=F', 'SP500': 'ES=F', 'ES': 'ES=F', 'SPX500': 'ES=F', 'US500': 'ES=F',
       'NASDAQ': 'NQ=F', 'NDX': 'NQ=F', 'NQ': 'NQ=F', 'NAS100': 'NQ=F', 'US100': 'NQ=F',
       'DOW JONES': 'YM=F', 'DOW': 'YM=F', 'YM': 'YM=F', 'US30': 'YM=F',
-      'RUSSELL': 'RTY=F', 'RTY': 'RTY=F',
+      'RUSSELL': 'RTY=F', 'RTY': 'RTY=F', 'US2000': 'RTY=F',
       'VIX': '^VIX',
-      'NIKKEI': 'NKD=F', 'NKD': 'NKD=F', 'JP225': 'NKD=F',
+      'NIKKEI': 'NKD=F', 'NKD': 'NKD=F', 'JP225': 'NKD=F', 'JPN225': 'NKD=F', 'JPN': 'NKD=F', 'NIKKEI225': 'NKD=F',
       'FTSE': 'Z=F', 'UK100': 'Z=F',
       'DAX': 'FDAX=F', 'GER40': 'FDAX=F',
+      'SPX': 'ES=F', 'USTEC': 'NQ=F',
+      'AUS200': '^AXJO',
 
       // ── Commodity Futures ──────────────────────────────────
       'GOLD': 'GC=F', 'GC': 'GC=F',
       'SILVER': 'SI=F', 'SI': 'SI=F',
-      'OIL': 'CL=F', 'CRUDE OIL': 'CL=F', 'CL': 'CL=F',
-      'BRENT': 'BZ=F', 'BZ': 'BZ=F',
+      'OIL': 'CL=F', 'CRUDE OIL': 'CL=F', 'CL': 'CL=F', 'USOIL': 'CL=F', 'XTIUSD': 'CL=F', 'WTIUSD': 'CL=F',
+      'BRENT': 'BZ=F', 'BZ': 'BZ=F', 'UKOIL': 'BZ=F', 'XBRUSD': 'BZ=F',
       'NATURAL GAS': 'NG=F', 'NG': 'NG=F',
       'COPPER': 'HG=F', 'HG': 'HG=F',
       'WHEAT': 'ZW=F', 'ZW': 'ZW=F',
@@ -280,6 +282,31 @@ class AssetClassifier {
     // 4️⃣ PATTERN-BASED HEURISTICS
     // ============================================
 
+    // 🎲 SYNTHETIC INDICES (Deriv)
+    const boomCrashMatch = rawInput.match(/^(BOOM|CRASH)\s*(\d+)$/i);
+    if (boomCrashMatch) {
+      return { type: 'SYNTHETIC_INDEX', symbol: `${boomCrashMatch[1].toUpperCase()}${boomCrashMatch[2]}`, chain: null, confidence: 100 };
+    }
+    const volMatch = rawInput.match(/^(VOLATILITY|V|VOL)\s*(\d+)\s*(1S)?$/i);
+    if (volMatch) {
+      if (volMatch[3]) {
+        return { type: 'SYNTHETIC_INDEX', symbol: `1HZ${volMatch[2]}V`, chain: null, confidence: 100 };
+      }
+      return { type: 'SYNTHETIC_INDEX', symbol: `R_${volMatch[2]}`, chain: null, confidence: 100 };
+    }
+    const stepMatch = rawInput.match(/^STEP\s*(INDEX)?$/i);
+    if (stepMatch) {
+      return { type: 'SYNTHETIC_INDEX', symbol: 'stpRNG', chain: null, confidence: 100 };
+    }
+    const jumpMatch = rawInput.match(/^(JUMP|JD)\s*(\d+)$/i);
+    if (jumpMatch) {
+      return { type: 'SYNTHETIC_INDEX', symbol: `JD${jumpMatch[2]}`, chain: null, confidence: 100 };
+    }
+    const rangeMatch = rawInput.match(/^(RANGE\s*BREAK|RB)\s*(\d+)$/i);
+    if (rangeMatch) {
+      return { type: 'SYNTHETIC_INDEX', symbol: `RB${rangeMatch[2]}`, chain: null, confidence: 100 };
+    }
+
     // 💱 Forex pattern: 6 uppercase letters (EURUSD, GBPJPY)
     if (symbol.length === 6 && /^[A-Z]{6}$/.test(symbol)) {
       const base = symbol.substring(0, 3);
@@ -291,17 +318,23 @@ class AssetClassifier {
 
     // 📊 CFD-style index pattern: e.g. US30, NAS100, UK100, GER40, JP225, AU200
     // Pattern: 2-3 letter country/market code + 2-3 digit number
-    const cfdIndexMatch = symbol.match(/^(US|UK|GER|JP|AU|EU|FR|HK|CN|SG|IN)(\d{2,3})$/);
+    const cfdIndexMatch = symbol.match(/^(US|UK|GER|JP|JPN|NAS|AU|EU|FR|HK|CN|SG|IN|SPA|ITA|SUI)(\d{2,5})$/);
     if (cfdIndexMatch) {
       const CFD_INDEX_MAP = {
         'US30': 'YM=F', 'US100': 'NQ=F', 'US500': 'ES=F',
         'UK100': 'Z=F',
         'GER40': 'FDAX=F', 'GER30': 'FDAX=F',
-        'JP225': 'NKD=F',
-        'AU200': '^AXJO',
+        'JPN225': 'NKD=F', 'JP225': 'NKD=F',
+        'NAS100': 'NQ=F', 'NAS': 'NQ=F',
+        'AU200':  '^AXJO',
+        'AUS200': '^AXJO',
+        'CN50':   '000016.SS',
+        'SING30': '^STI',
         'HK50': '^HSI', 'HK33': '^HSI',
         'EU50': '^STOXX50E',
         'FR40': '^FCHI',
+        'SUI20': '^SSMI',
+        'SPA35': '^IBEX',
       };
       const mapped = CFD_INDEX_MAP[symbol];
       if (mapped) {

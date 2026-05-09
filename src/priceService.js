@@ -5,6 +5,7 @@ const https = require("https");
 const YahooFinance = require('yahoo-finance2').default;
 const yf = new YahooFinance({ suppressNotices: ['yahooSurvey'] });
 const AssetClassifier = require('./assetClassifier');
+const derivService = require('./derivService');
 
 class PriceService {
   constructor(db = null) {
@@ -155,8 +156,8 @@ class PriceService {
     let { type, symbol, chain, confidence } = classification;
 
     // ── Dynamic upgrade for low-confidence results ─────────────────
-    // If the classifier isn't sure (≤80%), ask Yahoo Finance to identify it
-    if (confidence <= 80) {
+    // If the classifier isn't sure (<50%), ask Yahoo Finance to identify it
+    if (confidence < 50) {
       const upgraded = await this.classifier.resolveWithYahoo(input);
       if (upgraded && upgraded.confidence > confidence) {
         classification = upgraded;
@@ -180,6 +181,28 @@ class PriceService {
         _privateNote: info.note,
         others: [],
       };
+    }
+
+    // ============================================
+    // 🎲 SYNTHETIC INDICES (Deriv)
+    // ============================================
+    if (type === 'SYNTHETIC_INDEX') {
+      // Check cache first (30s)
+      const cacheKey = `deriv_${symbol}`;
+      if (this.priceCache && this.priceCache[cacheKey] && (Date.now() - this.priceCache[cacheKey].time < 30000)) {
+        return { symbol, name: symbol, blockchain: "Synthetic Market", price: this.priceCache[cacheKey].price, currency: "USD", others: [] };
+      }
+
+      try {
+        const price = await derivService.fetchTick(symbol);
+        if (price !== null) {
+          if (!this.priceCache) this.priceCache = {};
+          this.priceCache[cacheKey] = { price, time: Date.now() };
+          return { symbol, name: symbol, blockchain: "Synthetic Market", price, currency: "USD", others: [] };
+        }
+      } catch (e) {
+        console.error(`❌ [PriceService] Deriv Error for ${symbol}:`, e.message);
+      }
     }
 
     // ============================================
@@ -363,6 +386,59 @@ class PriceService {
       if (stockInfo !== null) return stockInfo;
     }
 
+    // ============================================
+    // 🌐 FINAL DYNAMIC FALLBACK — tries Yahoo with
+    // multiple formats: exact, =F suffix, ^ prefix
+    // Catches any futures/index/stock not in our maps
+    // ============================================
+    const dynamicYahoo = await this._tryYahooFormats(input);
+    if (dynamicYahoo) return dynamicYahoo;
+
+    return null;
+  }
+
+  /**
+   * 🔄 Multi-format Yahoo Fallback
+   * Tries symbol directly, then with =F suffix, then ^ prefix.
+   * This is the "magic" that makes the bot infinite for traditional markets.
+   */
+  async _tryYahooFormats(rawInput) {
+    const symbol = rawInput.toUpperCase().trim()
+      .replace(/\s*(FUTURES?|PERP(ETUAL)?)\s*/gi, '').trim();
+
+    if (!symbol) return null;
+
+    const formats = [
+      symbol,         // exact: AAPL, ES=F, ^GSPC
+      `${symbol}=F`,  // futures: YM=F, NQ=F, GC=F
+      `^${symbol}`,   // index: ^DJI, ^GSPC, ^N225
+    ];
+
+    for (const fmt of formats) {
+      try {
+        const quote = await yf.quote(fmt);
+        if (!quote || (!quote.regularMarketPrice && !quote.preMarketPrice)) continue;
+
+        const quoteType = quote.quoteType?.toUpperCase();
+        const isFutures = ['FUTURE', 'INDEX'].includes(quoteType);
+
+        console.log(`✅ [Dynamic] Yahoo matched "${rawInput}" → ${fmt} (${quoteType})`);
+
+        return {
+          symbol:    quote.symbol,
+          name:      quote.shortName || quote.longName || quote.symbol,
+          blockchain: isFutures ? 'Futures Market' : 'Stock Market',
+          price:     quote.regularMarketPrice || quote.preMarketPrice,
+          currency:  quote.currency || 'USD',
+          change24h: quote.regularMarketChangePercent || 0,
+          high52:    quote.fiftyTwoWeekHigh || null,
+          low52:     quote.fiftyTwoWeekLow || null,
+          others: [],
+        };
+      } catch (e) {
+        continue; // try next format
+      }
+    }
     return null;
   }
 
