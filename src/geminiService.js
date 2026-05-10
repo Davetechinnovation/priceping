@@ -23,6 +23,7 @@ NGX TICKERS: Zenith/ZenithBank→ZENITHBANK, MTN/MTNNigeria→MTNN, Dangote→DA
 US TICKERS: Apple→AAPL, Tesla→TSLA, Nvidia→NVDA, Google→GOOGL, Microsoft→MSFT, Amazon→AMZN, Meta→META
 FOREX PAIRS (FULLY SUPPORTED): EURUSD, GBPUSD, USDJPY, EURJPY, GBPJPY, AUDUSD, USDCAD, USDCHF, NZDUSD, EURGBP, USDZAR, USDNGN — Use the exact ticker symbol the user provides. Do NOT say forex is unsupported.
 FUTURES & PERPS (FULLY SUPPORTED): Crypto (e.g. "BTC perp", "ETH futures") and Traditional/Forex (e.g. "S&P 500 futures", "Gold futures", "Euro futures"). Include "futures" or "perp" in the asset name if the user mentions it. Do NOT say futures are unsupported.
+SYNTHETIC INDICES (Deriv/Binary.com — FULLY SUPPORTED): Volatility (V75, V100, VOL 75, VOLATILITY 75, 1HZ25V), BOOM (BOOM1000, BOOM500, BOOM300), CRASH (CRASH1000, CRASH500, CRASH300), Jump (JD10, JD25, JD50, JD100), Range Break (RB100, RB200), Step Index (STEP). Users may type just the ticker name like "v75" or "boom1000" — ALWAYS map these to the "price" command. Do NOT say synthetic indices are unsupported.
 
 COMMANDS:
 price [a]              → [{"command":"price","args":["BTC"]}]

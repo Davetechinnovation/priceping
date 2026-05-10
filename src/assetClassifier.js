@@ -1,5 +1,10 @@
 class AssetClassifier {
   constructor() {
+    /** @type {import('./derivService') | null} Will be injected after construction */
+    this.derivService = null;
+    /** @type {Set<string>} Live synthetic index symbols from Deriv API */
+    this.derivSyntheticSymbols = new Set();
+
     // ============================================
     // 🔑 KNOWN HIGH-CONFIDENCE MAPPINGS
     // Only the most common 50-100 tickers to speed up classification
@@ -93,10 +98,17 @@ class AssetClassifier {
     };
 
     // 🏆 Commodities
-    this.commodities = new Set(['GOLD', 'XAU', 'SILVER', 'XAG', 'OIL', 'WTI', 'BRENT', 'XTI', 'XBR']);
+    // Note: PLATINUM and PALLADIUM are included here so they get classified as
+    // COMMODITY rather than matching Deriv synthetic indices (frxXPTUSD, frxXPDUSD).
+    // The actual price is resolved via Yahoo futures at runtime (PL=F, PA=F).
+    this.commodities = new Set(['GOLD', 'XAU', 'SILVER', 'XAG', 'OIL', 'WTI', 'BRENT', 'XTI', 'XBR', 'PLATINUM', 'PALLADIUM', 'COPPER']);
     this.commodityAliases = { 'GOLD': 'XAU', 'SILVER': 'XAG', 'OIL': 'WTI', 'XTI': 'WTI', 'XBR': 'BRENT' };
 
     // 📈 Traditional Futures & Forex Futures
+    // Only index/forex/crypto CME futures are pre-mapped since their Yahoo tickers
+    // are non-obvious (e.g. FDAX=F for DAX, 6E=F for Euro). Commodity futures
+    // like SUGAR→SB=F, PLATINUM→PL=F are resolved dynamically via Yahoo search
+    // at runtime — no hardcoding needed.
     this.traditionalFutures = {
       // ── Index Futures ──────────────────────────────────────
       'S&P 500': 'ES=F', 'SPX': 'ES=F', 'SP500': 'ES=F', 'ES': 'ES=F', 'SPX500': 'ES=F', 'US500': 'ES=F',
@@ -110,18 +122,6 @@ class AssetClassifier {
       'SPX': 'ES=F', 'USTEC': 'NQ=F',
       'AUS200': '^AXJO',
 
-      // ── Commodity Futures ──────────────────────────────────
-      'GOLD': 'GC=F', 'GC': 'GC=F',
-      'SILVER': 'SI=F', 'SI': 'SI=F',
-      'OIL': 'CL=F', 'CRUDE OIL': 'CL=F', 'CL': 'CL=F', 'USOIL': 'CL=F', 'XTIUSD': 'CL=F', 'WTIUSD': 'CL=F',
-      'BRENT': 'BZ=F', 'BZ': 'BZ=F', 'UKOIL': 'BZ=F', 'XBRUSD': 'BZ=F',
-      'NATURAL GAS': 'NG=F', 'NG': 'NG=F',
-      'COPPER': 'HG=F', 'HG': 'HG=F',
-      'WHEAT': 'ZW=F', 'ZW': 'ZW=F',
-      'CORN': 'ZC=F', 'ZC': 'ZC=F',
-      'SOYBEAN': 'ZS=F', 'ZS': 'ZS=F',
-      'COCOA': 'CC=F', 'CC': 'CC=F',
-
       // ── Forex Futures (CME) ────────────────────────────────
       'EURO': '6E=F', 'EUR': '6E=F', '6E': '6E=F',
       'POUND': '6B=F', 'GBP': '6B=F', '6B': '6B=F',
@@ -133,6 +133,15 @@ class AssetClassifier {
       // ── Crypto CME Futures ────────────────────────────────
       'BITCOIN CME': 'BTC=F', 'BTC CME': 'BTC=F',
       'ETHEREUM CME': 'ETH=F', 'ETH CME': 'ETH=F',
+
+      // ── Precious Metal Futures ───────────────────────────
+      // These are major CME/NYMEX futures. Even though PLATINUM and PALLADIUM
+      // are caught by the commodities set, we also add them here so that when
+      // users say "platinum futures" or if the Yahoo search fails, the direct
+      // Yahoo =F lookup works (PL=F, PA=F).
+      'PLATINUM': 'PL=F', 'PLATINUM FUTURES': 'PL=F', 'PL': 'PL=F',
+      'PALLADIUM': 'PA=F', 'PALLADIUM FUTURES': 'PA=F', 'PA': 'PA=F',
+      'COPPER': 'HG=F', 'COPPER FUTURES': 'HG=F', 'HG': 'HG=F',
 
       // ── Rates & Bonds ─────────────────────────────────────
       'TREASURY': 'ZN=F', 'T-NOTE': 'ZN=F',
@@ -272,18 +281,42 @@ class AssetClassifier {
       return { type: 'FOREX', symbol: this.forexAliases[symbol] || symbol, chain: null, confidence: 100 };
     }
 
-    // Catch-all for "Something Futures" if it wasn't a crypto or explicit traditional future
+    // ============================================
+    // 3️⃣.5️⃣ CATCH-ALL FOR "Something Futures"
+    // If user explicitly said "futures" and it wasn't a crypto or hardcoded
+    // traditional future, route it to TRADITIONAL_FUTURE so the dynamic
+    // Yahoo resolver can try =F suffix, Yahoo search, etc.
+    // ============================================
     if (isFuture) {
-      // e.g. a user typed "TSLA futures" -> just return TRADITIONAL_FUTURE so Yahoo tries its =F format
-      // Or maybe it's an altcoin perp. We'll default to CRYPTO_FUTURE.
-      return { type: 'CRYPTO_FUTURE', symbol, chain, confidence: 80 };
+      // User explicitly asked for futures — route as TRADITIONAL_FUTURE
+      // with a flag indicating it needs Yahoo resolution.
+      // PriceService.getTraditionalFuturesPrice() will handle the dynamic lookup.
+      return { type: 'TRADITIONAL_FUTURE', symbol, chain: null, confidence: 70, needsYahooResolve: true };
+    }
+
+    // ============================================
+    // 3.5️⃣ LIVE DERIV SYMBOL CHECK (supplementary)
+    // If derivService is seeded, check if the raw symbol (or symbol) exists
+    // as an active Deriv instrument. This catches ANY synthetic index, including
+    // new ones that get added to Deriv's platform.
+    // ============================================
+    if (this.derivService && this.derivService.activeSymbolSet.size > 0) {
+      // Direct exact match on raw input
+      if (this.derivService.isSynthetic(symbol) || this.derivService.hasSymbol(symbol)) {
+        return { type: 'SYNTHETIC_INDEX', symbol, chain: null, confidence: 98 };
+      }
+      // Check display name match (e.g. "volatility 75" → "Volatility 75 Index" → "R_75")
+      const searchResults = this.derivService.searchSymbols(symbol);
+      if (searchResults.length > 0) {
+        return { type: 'SYNTHETIC_INDEX', symbol: searchResults[0].symbol, chain: null, confidence: 90 };
+      }
     }
 
     // ============================================
     // 4️⃣ PATTERN-BASED HEURISTICS
     // ============================================
 
-    // 🎲 SYNTHETIC INDICES (Deriv)
+    // 🎲 SYNTHETIC INDICES (Deriv) — Hardcoded aliases for common known patterns
     const boomCrashMatch = rawInput.match(/^(BOOM|CRASH)\s*(\d+)$/i);
     if (boomCrashMatch) {
       return { type: 'SYNTHETIC_INDEX', symbol: `${boomCrashMatch[1].toUpperCase()}${boomCrashMatch[2]}`, chain: null, confidence: 100 };
@@ -370,6 +403,7 @@ class AssetClassifier {
     // 1. Check if it's in crypto list (DIA API has 10,000+ assets)
     // 2. Try Yahoo Finance (covers global stocks)
     // 3. Try NGX dynamic lookup (Kwayisi scraper)
+    // 4. Try Yahoo as futures (={sym}=F, ^{sym})
     // ============================================
     return { type: 'DYNAMIC', symbol, chain, confidence: 30 };
   }
@@ -434,6 +468,73 @@ class AssetClassifier {
       return result;
     } catch (e) {
       // Silent fail — Yahoo search is best-effort
+      return null;
+    }
+  }
+
+  /**
+   * 🔍 Targeted Yahoo futures symbol resolution
+   * Queries Yahoo search specifically looking for futures-type results.
+   * If Yahoo returns a FUTURE or INDEX quoteType, returns the resolved symbol.
+   * This is called when user types e.g. "SUGAR", "COFFEE", "PLATINUM", etc.
+   * and we need to find the corresponding Yahoo futures symbol.
+   *
+   * @param {string} symbol - Raw user input (e.g. "SUGAR", "PLATINUM", "FEEDER CATTLE")
+   * @returns {Promise<{type: string, symbol: string, confidence: number}|null>}
+   */
+  async resolveFuturesWithYahoo(symbol) {
+    const key = symbol.toUpperCase().trim();
+    if (!key) return null;
+
+    // Cache check using futures-specific prefix
+    const cacheKey = `futures_${key}`;
+    if (this._yahooCache && this._yahooCache[cacheKey]) {
+      return this._yahooCache[cacheKey];
+    }
+    if (!this._yahooCache) this._yahooCache = {};
+
+    try {
+      const axios = require('axios');
+
+      // Strategy 1: Search Yahoo with "futures" appended to bias results
+      const searchQuery = `${key} futures`;
+      const { data } = await axios.get('https://query2.finance.yahoo.com/v1/finance/search', {
+        params: { q: searchQuery, quotesCount: 5, newsCount: 0, listsCount: 0 },
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        timeout: 5000,
+      });
+
+      const hits = data?.quotes || [];
+      if (hits.length > 0) {
+        // Find the first FUTURE or INDEX quote type
+        const futureHit = hits.find(h => {
+          const qt = h.quoteType?.toUpperCase();
+          return qt === 'FUTURE' || qt === 'INDEX';
+        });
+
+        if (futureHit) {
+          const resolvedSymbol = futureHit.symbol;
+          const result = { type: 'TRADITIONAL_FUTURE', symbol: resolvedSymbol, chain: null, confidence: 92 };
+          this._yahooCache[cacheKey] = result;
+          console.log(`🔍 [Classifier] Yahoo resolved futures "${key}" → ${resolvedSymbol}`);
+          return result;
+        }
+
+        // If no FUTURE/INDEX found but we got a hit, check if it's a commodity
+        // Yahoo sometimes returns COMMODITY type for things like gold, silver
+        const firstHit = hits[0];
+        if (firstHit.quoteType?.toUpperCase() === 'COMMODITY') {
+          // Try appending =F to the search symbol — many commodities work with =F suffix
+          const result = { type: 'TRADITIONAL_FUTURE', symbol: `${key}=F`, chain: null, confidence: 75 };
+          this._yahooCache[cacheKey] = result;
+          return result;
+        }
+      }
+
+      // Strategy 2: Try the =F suffix directly (works for many: SUGAR→SB=F, COFFEE→KC=F, etc.)
+      // But we don't know the prefix, so this is a last resort.
+      return null;
+    } catch (e) {
       return null;
     }
   }

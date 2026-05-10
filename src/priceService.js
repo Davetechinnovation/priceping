@@ -73,6 +73,37 @@ class PriceService {
     this.ngxTTL = 300000; // 5 mins cache for all NGX
 
     this.classifier = new AssetClassifier();
+    this.classifier.derivService = derivService;
+
+    // 🎲 Bootstrap Deriv active symbols in background
+    this._bootstrapDerivSymbols();
+  }
+
+  /**
+   * Background-load Deriv active symbols so the classifier can match them.
+   * Non-blocking — if it fails we retry next time someone asks for a dynamic asset.
+   */
+  async _bootstrapDerivSymbols() {
+    try {
+      await derivService.loadActiveSymbols();
+    } catch (e) {
+      console.warn('⚠️ [PriceService] Deriv bootstrap failed (will retry lazily):', e.message);
+    }
+  }
+
+  /**
+   * Lazily ensures Deriv symbols are loaded. Call this before any Deriv-dependent
+   * resolution. If background bootstrap failed or hasn't run, this will trigger a load.
+   */
+  async _ensureDerivSymbols() {
+    if (derivService.activeSymbolSet.size > 0) return; // already loaded
+    try {
+      console.log('📥 Lazy-loading Deriv active symbols...');
+      await derivService.loadActiveSymbols();
+      console.log(`✅ Deriv symbols loaded: ${derivService.activeSymbols.length} total, ${derivService.syntheticSymbols.size} synthetics`);
+    } catch (e) {
+      console.warn('⚠️ [PriceService] Lazy Deriv load failed:', e.message);
+    }
   }
 
   // ============================================
@@ -156,8 +187,10 @@ class PriceService {
     let { type, symbol, chain, confidence } = classification;
 
     // ── Dynamic upgrade for low-confidence results ─────────────────
-    // If the classifier isn't sure (<50%), ask Yahoo Finance to identify it
-    if (confidence < 50) {
+    // If the classifier isn't sure (≤60%), ask Yahoo Finance to identify it.
+    // This catches stuff like SUGAR (classified as STOCK at 50% because it's
+    // 5 upper-case letters). Yahoo search knows it's a futures product.
+    if (confidence <= 60) {
       const upgraded = await this.classifier.resolveWithYahoo(input);
       if (upgraded && upgraded.confidence > confidence) {
         classification = upgraded;
@@ -219,14 +252,20 @@ class PriceService {
     }
 
     // ============================================
-    // 📈 TRADITIONAL FUTURES (Yahoo Finance)
+    // 📈 TRADITIONAL FUTURES (Yahoo Finance + Dynamic)
     // ============================================
     if (type === 'TRADITIONAL_FUTURE') {
-      const futureInfo = await this.getStockPrice(symbol, input);
-      if (futureInfo !== null) {
-        // Override blockchain label to be more accurate
-        futureInfo.blockchain = "Futures Market";
-        return futureInfo;
+      // Check if we need dynamic Yahoo resolution (classification was uncertain)
+      if (classification.needsYahooResolve) {
+        const futureInfo = await this.getTraditionalFuturesPrice(symbol, input);
+        if (futureInfo !== null) return futureInfo;
+      } else {
+        // Fast lane: symbol is already a known Yahoo format (e.g. "ES=F", "GC=F")
+        const futureInfo = await this.getStockPrice(symbol, input);
+        if (futureInfo !== null) {
+          futureInfo.blockchain = "Futures Market";
+          return futureInfo;
+        }
       }
     }
 
@@ -240,6 +279,14 @@ class PriceService {
       }
       if (price !== null && price !== undefined) {
         return { symbol, name: symbol, blockchain: "Commodities", price, currency: "USD", others: [] };
+      }
+
+      // Fallback: Try Yahoo futures for commodities not covered by DIA
+      // (PLATINUM→PL=F, PALLADIUM→PA=F, COPPER→HG=F, etc.)
+      const futuresResult = await this.classifier.resolveFuturesWithYahoo(symbol);
+      if (futuresResult) {
+        const futurePrice = await this.getTraditionalFuturesPrice(futuresResult.symbol, symbol);
+        if (futurePrice) return futurePrice;
       }
     }
 
@@ -379,6 +426,21 @@ class PriceService {
     }
 
     // ============================================
+    // 📈 DYNAMIC FUTURES RESOLUTION (before stocks)
+    // For low-confidence STOCK matches (e.g. SUGAR, COFFEE, PLATINUM)
+    // we try Yahoo's futures search first. If it resolves, use it.
+    // This makes the bot support ANY futures product (SUGAR→SB=F,
+    // PLATINUM→PL=F, WHEAT→ZW=F, etc.) without hardcoding.
+    // ============================================
+    if (type === 'STOCK' && confidence <= 60 && symbol.length >= 3) {
+      const futuresResult = await this.classifier.resolveFuturesWithYahoo(symbol);
+      if (futuresResult) {
+        const futurePrice = await this.getTraditionalFuturesPrice(futuresResult.symbol, symbol);
+        if (futurePrice) return futurePrice;
+      }
+    }
+
+    // ============================================
     // 📈 US & GLOBAL STOCKS — last resort for DYNAMIC
     // ============================================
     if (type === 'US_STOCK' || type === 'STOCK' || type === 'DYNAMIC') {
@@ -391,6 +453,21 @@ class PriceService {
     // multiple formats: exact, =F suffix, ^ prefix
     // Catches any futures/index/stock not in our maps
     // ============================================
+
+    // If still unknown and Deriv symbols not loaded, try lazy loading them
+    if (derivService.activeSymbolSet.size === 0) {
+      await this._ensureDerivSymbols();
+      if (derivService.isSynthetic(symbol) || derivService.hasSymbol(symbol)) {
+        const price = await derivService.fetchTick(symbol);
+        if (price !== null) {
+          const cacheKey = `deriv_${symbol}`;
+          if (!this.priceCache) this.priceCache = {};
+          this.priceCache[cacheKey] = { price, time: Date.now() };
+          return { symbol, name: symbol, blockchain: "Synthetic Market", price, currency: "USD", others: [] };
+        }
+      }
+    }
+
     const dynamicYahoo = await this._tryYahooFormats(input);
     if (dynamicYahoo) return dynamicYahoo;
 
@@ -1040,6 +1117,60 @@ class PriceService {
   }
 
   // ============================================
+  // 📈 TRADITIONAL FUTURES — DYNAMIC YAHOO RESOLUTION
+  // Handles ANY futures product from Yahoo Finance.
+  // Tries multiple symbol formats: direct, =F suffix, ^ prefix, Yahoo search
+  // ============================================
+  async getTraditionalFuturesPrice(symbol, rawInput) {
+    const cacheKey = `future_dynamic:${symbol}`;
+    const cached = this.priceCache[cacheKey];
+    if (cached && Date.now() - cached.ts < this.interactiveTTL) {
+      return cached.data;
+    }
+
+    // Step 1: Try Yahoo futures resolution via the classifier
+    const futuresResult = await this.classifier.resolveFuturesWithYahoo(symbol);
+    if (futuresResult) {
+      const yahooSymbol = futuresResult.symbol;
+      console.log(`🔍 [Futures] Resolved "${symbol}" → Yahoo symbol "${yahooSymbol}"`);
+
+      // Now fetch the price using that Yahoo symbol
+      const quote = await this._tryYahooFormats(yahooSymbol);
+      if (quote) {
+        quote.blockchain = "Futures Market";
+        this.priceCache[cacheKey] = { data: quote, ts: Date.now() };
+        return quote;
+      }
+    }
+
+    // Step 2: Try the =F suffix directly for the raw input symbol
+    // This handles cases like "SUGAR" → try "SUGAR=F"
+    const yahooResult = await this._tryYahooFormats(symbol);
+    if (yahooResult) {
+      yahooResult.blockchain = "Futures Market";
+      this.priceCache[cacheKey] = { data: yahooResult, ts: Date.now() };
+      return yahooResult;
+    }
+
+    // Step 3: Try using the input raw text as a search query to Yahoo
+    if (rawInput && rawInput !== symbol) {
+      const rawResult = await this._tryYahooFormats(rawInput);
+      if (rawResult) {
+        rawResult.blockchain = "Futures Market";
+        this.priceCache[cacheKey] = { data: rawResult, ts: Date.now() };
+        return rawResult;
+      }
+    }
+
+    // Stale fallback
+    if (cached && Date.now() - cached.ts < this.staleTTL) {
+      return cached.data;
+    }
+
+    return null;
+  }
+
+  // ============================================
   // 🛠️ FIX 6: Alert-optimized batch fetching
   // Uses longer cache TTL + concurrency control
   // ============================================
@@ -1116,6 +1247,17 @@ class PriceService {
     // 🏆 COMMODITY — DIA Commodity API (existing)
     if (type === "COMMODITY") {
       return await this.getCommodityPrice(sym);
+    }
+
+    // 🎲 SYNTHETIC INDEX — Deriv Tick API
+    if (type === 'SYNTHETIC_INDEX') {
+      try {
+        const price = await derivService.fetchTick(classification.symbol);
+        return price;
+      } catch (e) {
+        console.warn(`⚠️ [Alert Monitor] Deriv fetch failed for ${classification.symbol}:`, e.message);
+        return null;
+      }
     }
 
     // 🇳🇬 NGX STOCK — NGX cache (refreshes every 5min)

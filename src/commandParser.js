@@ -184,7 +184,7 @@ class CommandParser {
     } else if (user.whatsapp_number !== jid && jid.includes('@')) {
       try {
         await db.db.collection("users").updateOne(
-          { phone_number: cleanPhone }, 
+          { phone_number: cleanPhone },
           { $set: { whatsapp_number: jid } }
         );
         user.whatsapp_number = jid;
@@ -198,7 +198,7 @@ class CommandParser {
       try {
         await db.updateUserName(cleanPhone, pushName);
         user.name = pushName;
-      } catch (e) {}
+      } catch (e) { }
     }
 
     // 🚫 CHECK IF USER IS BLOCKED
@@ -249,7 +249,7 @@ _soon as possible._`;
     }
 
     let handler = this.commands[command];
-    
+
     // FIX: Only use the zero-cost fast-path if the message strictly structurally matches a command.
     // If it's a natural English sentence starting with a command word (e.g. "Price is moving fast"),
     // pass it safely to Gemini for context processing.
@@ -258,20 +258,41 @@ _soon as possible._`;
     }
 
     if (!handler) {
+      // 🎯 DYNAMIC TICKER DETECTION — route any unqualified ticker-like input to price
+      // This is fully dynamic: V75, BOOM1000, CRASH500, JD10, RB100, 1HZ25V, VOL 75, etc.
+      // Pattern: 1+ uppercase letters with optional digits (e.g. V75) OR spaced (e.g. VOL 75)
+      const originalText = message.trim();
+      const tickerPattern = /^[A-Z]{1,8}\d*$/i;           // "V75", "BOOM1000", "JD10"
+      const spacedTickerPattern = /^[A-Z]{1,8}\s+\d{1,6}$/i; // "VOL 75", "BOOM 1000"
+      const anyTicker = /^[A-Z]{1,2}HZ?\d/               // "1HZ25V" 
+      
+      // Only auto-route if there's no space (single word) or it matches spaced ticker pattern,
+      // and it doesn't match known greeting/conversational words
+      const conversationalWords = new Set(["bot", "test", "morning", "gm", "evening", "afternoon", "hey", "hello", "hi"]);
+      const isSingleWord = !originalText.includes(' ');
+      const isLikelyTicker = (isSingleWord && tickerPattern.test(command)) ||
+                             spacedTickerPattern.test(originalText) ||
+                             anyTicker.test(command);
+      
+      if (isLikelyTicker && !conversationalWords.has(command)) {
+        console.log(`🎯 Dynamic ticker detection: "${originalText}" → routing to price command`);
+        return this.handleGenericPrice([originalText.toUpperCase()], cleanPhone, db, priceService, pushName, userState);
+      }
+
       const greetings = ["bot", "test", "morning", "gm", "evening", "afternoon"];
       if (greetings.includes(command) && args.length === 0) {
         return this.handleGreeting([], cleanPhone, db, priceService, pushName);
       }
-        
+
       if (this.geminiService && this.geminiService.isConfigured()) {
         try {
           const usage = await db.getAlertUsage(cleanPhone);
           const isPro = usage ? usage.isPro : false;
           const displayName = this.getDisplayName(user, pushName);
           let refinedArray = await this.geminiService.refinePrompt(message, isPro, cleanPhone, displayName);
-          
+
           if (refinedArray && !Array.isArray(refinedArray)) {
-             refinedArray = [refinedArray];
+            refinedArray = [refinedArray];
           }
 
           if (refinedArray && refinedArray.length > 0) {
@@ -415,8 +436,8 @@ Try: \`Price BTC\`
     const name = this.getDisplayName(user, pushName);
     const usage = await db.getAlertUsage(phoneNumber);
 
-    const streak = user?.streak?.current > 1 
-      ? `🔥 *${user.streak.current} Day Streak!* Keep it going!\n\n` 
+    const streak = user?.streak?.current > 1
+      ? `🔥 *${user.streak.current} Day Streak!* Keep it going!\n\n`
       : "";
 
     return `${this.getHeader("PricePing Terminal")}
@@ -456,12 +477,12 @@ ${usage.isPro ? "" : "🚀 Want unlimited alerts? Type *Subscribe*\n"}
   ) {
     const input = args.join(" ").replace(/[^a-zA-Z0-9\s-]/g, "").trim();
     if (!input) return "⚠️ Please specify a valid asset to check. (e.g., Price SOL)";
-    
+
     // Track interest for Move Detector
     if (global.trackUserInterest) {
       global.trackUserInterest(input.toUpperCase(), phoneNumber);
     }
-    
+
     const info = await priceService.getAssetInfo(input);
 
     if (!info) {
@@ -515,6 +536,13 @@ The Nigerian stock data feed is currently offline. This is a known issue — ple
     if (info.blockchain === "Commodities") {
       icon = "🏆";
       label = "Commodity";
+    } else if (info.blockchain === "Futures Market") {
+      icon = "📊";
+      label = "Futures Contract";
+      if (info.change24h != null) {
+        const arrow = info.change24h >= 0 ? "🟢" : "🔴";
+        changeLine = `\n${arrow} *Daily Change:* ${info.change24h >= 0 ? "+" : ""}${info.change24h.toFixed(2)}%`;
+      }
     } else if (info.blockchain === "Forex Market") {
       icon = "💱";
       label = "Foreign Exchange";
@@ -542,7 +570,7 @@ The Nigerian stock data feed is currently offline. This is a known issue — ple
 ⏰ *Time:* ${time}`;
 
     // Only show Fear & Greed for Crypto
-    if (info.blockchain !== "Stock Market" && info.blockchain !== "Forex Market" && info.blockchain !== "Commodities") {
+    if (info.blockchain !== "Stock Market" && info.blockchain !== "Forex Market" && info.blockchain !== "Commodities" && info.blockchain !== "Futures Market") {
       const mood = await fearGreedService.getScore();
       if (mood) {
         response += `\n${mood.formatted}`;
@@ -557,7 +585,7 @@ The Nigerian stock data feed is currently offline. This is a known issue — ple
         const aiSuggestion = await this.geminiService.suggestAlertLevels(info.symbol, info.price);
         if (aiSuggestion) {
           hasAiSuggestions = true;
-          
+
           const formatSuggestion = (val) => priceService.formatPrice(val, info.symbol, info.currency);
 
           response += `
@@ -608,7 +636,7 @@ Reply "Set ${info.symbol} at ${info.price.toFixed(2)}"`;
 
     const input = args.join(" ").replace(/[^a-zA-Z0-9\s-]/g, "").trim();
     if (!input) return "⚠️ Please specify a valid coin name to analyze. (e.g., Analyze SOL)";
-    
+
     // 1. Check if user is Pro
     const usage = await db.getAlertUsage(phoneNumber);
     if (!usage || !usage.isPro) {
@@ -632,7 +660,7 @@ Type *Subscribe* to view plans!`;
     let fearGreed = null;
     const isCrypto = info.blockchain !== "Stock Market" && info.blockchain !== "Futures Market" && info.blockchain !== "Forex Market" && !info.blockchain?.includes("Commodity");
     if (isCrypto) {
-      try { fearGreed = await fearGreedService.getScore(); } catch (_) {}
+      try { fearGreed = await fearGreedService.getScore(); } catch (_) { }
     }
 
     // 4. Build extra market context from Yahoo/DIA fields
@@ -647,7 +675,7 @@ Type *Subscribe* to view plans!`;
     // 5. Call Groq with enriched context
     const currencyStr = info.blockchain === "Stock Market" ? (info.currency || "USD") : "USD";
     const analysis = await this.geminiService.analyzeMarket(info.symbol, info.price, info.change24h, currencyStr, extras);
-    
+
     if (!analysis) {
       return `⚠️ *System Error*\nThe AI is currently resting. Please try again in a moment!`;
     }
@@ -678,7 +706,7 @@ ${analysis}
 
     const input = args.join(" ").replace(/[^a-zA-Z0-9\s-]/g, "").trim().toUpperCase();
     if (!input) return "⚠️ Please specify a valid asset for news. (e.g., News BTC)";
-    
+
     // 1. Check if user is Pro
     const usage = await db.getAlertUsage(phoneNumber);
     if (!usage || !usage.isPro) {
@@ -698,7 +726,7 @@ Type *Subscribe* to view plans!`;
 
     // 3. Call Groq
     const analysis = await this.geminiService.analyzeNewsHeadlines(input, headlines);
-    
+
     if (!analysis) {
       return `⚠️ *System Error*\nThe AI is currently resting. Please try again in a moment!`;
     }
@@ -733,9 +761,9 @@ ${analysis}
     if (args.includes("above")) direction = "above";
 
     // Try to find a numeric or formula-based price argument
-    const possiblePriceArg = args.find(a => 
-      !['at', 'above', 'below', asset].includes(a.toLowerCase()) && 
-      ( /^\d+(\.\d+)?$/.test(a.replace(/,/g, "")) || /[\+\-\*\/\(\)]/.test(a) )
+    const possiblePriceArg = args.find(a =>
+      !['at', 'above', 'below', asset].includes(a.toLowerCase()) &&
+      (/^\d+(\.\d+)?$/.test(a.replace(/,/g, "")) || /[\+\-\*\/\(\)]/.test(a))
     );
 
     if (possiblePriceArg) {
@@ -743,7 +771,7 @@ ${analysis}
         // Use mathjs to evaluate (handles raw numbers and complex formulas)
         const cleaned = possiblePriceArg.replace(/,/g, "");
         targetPrice = evaluate(cleaned);
-        
+
         if (typeof targetPrice !== 'number' || isNaN(targetPrice)) {
           targetPrice = null;
         }
@@ -793,7 +821,7 @@ or *Upgrade* to get started now!
     const existingAlerts = await db.getUserAlerts(phoneNumber);
     const duplicateAlert = existingAlerts.find(
       (alert) =>
-        alert.asset.toUpperCase() === asset && 
+        alert.asset.toUpperCase() === asset &&
         alert.status === "active" &&
         alert.targetPrice === targetPrice
     );
@@ -859,11 +887,11 @@ ${u.isPro ? "👑 Pro Plan" : `⏰ Resets in: ${u.resetIn}`}
     if (isNaN(percent)) return "⚠️ Invalid percentage. Example: `Set BTC 5%`";
 
     const info = await priceService.getAssetInfo(asset);
-    
+
     if (info && info._rateLimited) {
       return `⚠️ *We are receiving too many requests for ${info.symbol} at the moment.*\n\nPlease wait a couple of minutes before setting an alert for this specific asset.`;
     }
-    
+
     if (!info || !info.price) return `❌ Couldn't get current price for ${asset}.`;
 
     const currentPrice = info.price;
@@ -872,7 +900,7 @@ ${u.isPro ? "👑 Pro Plan" : `⏰ Resets in: ${u.resetIn}`}
     if (isTwoWay) {
       const upperTarget = currentPrice * (1 + Math.abs(percent) / 100);
       const lowerTarget = currentPrice * (1 - Math.abs(percent) / 100);
-      
+
       // Check quota for 2 slots
       const usage = await db.getAlertUsage(phoneNumber);
       if (usage.remaining < 2 && !usage.isPro) {
@@ -894,7 +922,7 @@ _I'll notify you if it moves ${Math.abs(percent)}% in either direction!_`;
       // Single direction alert (default to above if positive, below if negative)
       const targetPrice = currentPrice * (1 + percent / 100);
       const direction = percent >= 0 ? 'above' : 'below';
-      
+
       const newArgs = [asset, 'at', targetPrice.toFixed(4), direction];
       return this.handleSetAlert(newArgs, phoneNumber, db, priceService, pushName, userState);
     }
@@ -907,16 +935,16 @@ _I'll notify you if it moves ${Math.abs(percent)}% in either direction!_`;
   async handleWatch(args, phoneNumber, db, priceService) {
     if (args.length === 0) return "⚠️ *Usage:* `Watch [Asset]`\nExample: `Watch BTC` or `Watch TSLA`";
     const asset = args[0].toUpperCase();
-    
+
     const watchlist = await db.getWatchlist(phoneNumber);
     if (watchlist.length >= 10) {
       const usage = await db.getAlertUsage(phoneNumber);
       if (!usage.isPro) return "🚫 *Limit Reached!* Free users can watch up to 10 assets. Type *Upgrade* for unlimited slots!";
     }
-    
+
     await db.addToWatchlist(phoneNumber, asset);
     const info = await priceService.getAssetInfo(asset);
-    
+
     // Complete onboarding step 1 if they are in the tour
     const isNew = await db.isNewUser(phoneNumber);
     let onboardingHint = "";
@@ -933,9 +961,9 @@ Current price: ${priceService.formatPrice(info.price, asset)}
   async handleWatchlist(args, phoneNumber, db, priceService) {
     const watchlist = await db.getWatchlist(phoneNumber);
     if (watchlist.length === 0) return "📂 *Your watchlist is empty.* Try: `Watch BTC` to start tracking!";
-    
+
     let msg = `👀 *Your Watchlist*\n━━━━━━━━━━━━━━━━━\n`;
-    
+
     for (const asset of watchlist) {
       try {
         const info = await priceService.getAssetInfo(asset);
@@ -949,7 +977,7 @@ Current price: ${priceService.formatPrice(info.price, asset)}
         msg += `\n• *${asset}:* Error fetching price`;
       }
     }
-    
+
     msg += `\n\n━━━━━━━━━━━━━━━━━\n💡 To remove: \`Unwatch BTC\``;
     return msg;
   }
@@ -968,14 +996,14 @@ Current price: ${priceService.formatPrice(info.price, asset)}
   async handleInvite(args, phoneNumber, db) {
     const user = await db.getUserByPhoneNumber(phoneNumber);
     let code = user.referral_code;
-    
+
     if (!code) {
       code = await db.generateReferralCode(phoneNumber);
     }
-    
+
     const referralCount = user.referrals?.length || 0;
     const bonusSlots = user.bonus_alert_slots || 0;
-    
+
     return `🎁 *Invite Friends, Get More Alerts!*
 ━━━━━━━━━━━━━━━━━
 Your unique code: *${code}*
@@ -996,14 +1024,14 @@ _wa.me/?text=Get%20real-time%20crypto%20alerts%20with%20PricePing!%20Use%20my%20
 
   async handleRedeem(args, phoneNumber, db) {
     if (args.length === 0) return "⚠️ *Usage:* `Redeem [Code]`";
-    
+
     const code = args[0].toUpperCase();
     const result = await db.useReferralCode(phoneNumber, code);
-    
+
     if (!result.success) {
       return `❌ *Error:* ${result.error || "Invalid referral code."} Ask your friend for their 6-digit code!`;
     }
-    
+
     return `🎉 *Referral Applied!*
 ━━━━━━━━━━━━━━━━━
 *${result.referrerName}* just earned +1 bonus alert slot! 
@@ -1132,7 +1160,7 @@ ${usage.isPro ? "👑 *Pro Tier:* Unlimited alerts!" : `⏰ Resets every 12 hour
     if (args[0].toLowerCase() === 'all') {
       // Set pending confirmation state
       userState.set(phoneNumber, { type: 'CONFIRM_DELETE_ALL' });
-      
+
       const alerts = await db.getUserAlerts(phoneNumber);
       if (alerts.length === 0) {
         return `📂 You have no active alerts to delete.`;
@@ -1143,9 +1171,9 @@ ${usage.isPro ? "👑 *Pro Tier:* Unlimited alerts!" : `⏰ Resets every 12 hour
 You are about to delete *all ${alerts.length} alert(s)*:
 
 ${alerts.map(a => {
-  const icon = a.direction === 'above' ? '📈' : '📉';
-  return `• #${a.alert_number} ${a.asset} ${icon} ${a.targetPrice}`;
-}).join('\n')}
+        const icon = a.direction === 'above' ? '📈' : '📉';
+        return `• #${a.alert_number} ${a.asset} ${icon} ${a.targetPrice}`;
+      }).join('\n')}
 
 ━━━━━━━━━━━━━━━━━
 Reply *YES* to confirm deletion
@@ -1165,7 +1193,7 @@ Reply *NO* to cancel`;
     }
 
     const alerts = await db.getUserAlerts(phoneNumber);
-    
+
     if (alerts.length === 0) {
       return `📂 You have no active alerts to delete.`;
     }
@@ -1203,7 +1231,7 @@ Reply *NO* to cancel`;
   // ==========================================
   async handleSetName(args, phoneNumber, db) {
     const name = args.join(" ").trim();
-    
+
     // Block generic placeholders or invalid names
     if (!name || name.toLowerCase() === "newname" || name.length < 2) {
       return "⚠️ Please provide a valid name. Example: `Name Sarah`";
@@ -1406,7 +1434,7 @@ Type *Upgrade* to view Pro pricing, or just type any ticker to get started!`;
 // ==========================================
 // 💼 PORTFOLIO TRACKER (Pro Only)
 // ==========================================
-CommandParser.prototype.handlePortfolio = async function(args, phoneNumber, db, priceService) {
+CommandParser.prototype.handlePortfolio = async function (args, phoneNumber, db, priceService) {
   const usage = await db.getAlertUsage(phoneNumber);
   if (!usage?.isPro) return `🔒 *Portfolio Tracker is Pro Only*\nType *Upgrade* to unlock!`;
 
@@ -1450,7 +1478,7 @@ ${lines.join('\n')}
   return msg;
 };
 
-CommandParser.prototype.handleClearPortfolio = async function(args, phoneNumber, db) {
+CommandParser.prototype.handleClearPortfolio = async function (args, phoneNumber, db) {
   const usage = await db.getAlertUsage(phoneNumber);
   if (!usage?.isPro) return `🔒 *Pro Only!* Type *Upgrade* to unlock Portfolio Tracker.`;
   await db.clearPortfolio(phoneNumber);
@@ -1460,7 +1488,7 @@ CommandParser.prototype.handleClearPortfolio = async function(args, phoneNumber,
 // ==========================================
 // 📝 TRADE JOURNAL (Pro Only)
 // ==========================================
-CommandParser.prototype.handleBought = async function(args, phoneNumber, db, priceService) {
+CommandParser.prototype.handleBought = async function (args, phoneNumber, db, priceService) {
   const usage = await db.getAlertUsage(phoneNumber);
   if (!usage?.isPro) return `🔒 *Trade Journal is Pro Only*\nType *Upgrade* to unlock!`;
 
@@ -1468,11 +1496,11 @@ CommandParser.prototype.handleBought = async function(args, phoneNumber, db, pri
   // Groq will normalise args to [asset, quantity, price] or similar
   const text = args.join(' ');
   const m = text.match(/(\d+\.?\d*)\s+([A-Z]+)\s+(?:at\s+)?(\d+\.?\d*)/i) ||
-             text.match(/([A-Z]+)\s+(\d+\.?\d*)\s+(?:at\s+)?(\d+\.?\d*)/i);
+    text.match(/([A-Z]+)\s+(\d+\.?\d*)\s+(?:at\s+)?(\d+\.?\d*)/i);
   if (!m) return `⚠️ *Format:* "Bought 2 ETH at 2600"`;
 
   const isNumFirst = /^\d/.test(text.trim());
-  const qty   = isNumFirst ? parseFloat(m[1]) : parseFloat(m[2]);
+  const qty = isNumFirst ? parseFloat(m[1]) : parseFloat(m[2]);
   const asset = isNumFirst ? m[2].toUpperCase() : m[1].toUpperCase();
   const price = parseFloat(m[3]);
 
@@ -1490,7 +1518,7 @@ Current: ${priceService.formatPrice(currentPrice, asset)} ${ue} (${unrealised >=
 _Reply "Sold ${asset}" to close this trade._`;
 };
 
-CommandParser.prototype.handleSold = async function(args, phoneNumber, db, priceService) {
+CommandParser.prototype.handleSold = async function (args, phoneNumber, db, priceService) {
   const usage = await db.getAlertUsage(phoneNumber);
   if (!usage?.isPro) return `🔒 *Trade Journal is Pro Only*\nType *Upgrade* to unlock!`;
 
@@ -1531,7 +1559,7 @@ ${profitEmoji} *P&L:* ${priceService.formatPrice(Math.abs(profit), 'USD')} (${pr
 ${aiQuip ? `\n🤖 ${aiQuip}` : ''}`;
 };
 
-CommandParser.prototype.handleTrades = async function(args, phoneNumber, db, priceService) {
+CommandParser.prototype.handleTrades = async function (args, phoneNumber, db, priceService) {
   const usage = await db.getAlertUsage(phoneNumber);
   if (!usage?.isPro) return `🔒 *Trade Journal is Pro Only*\nType *Upgrade* to unlock!`;
 
