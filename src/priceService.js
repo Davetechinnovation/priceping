@@ -229,6 +229,24 @@ class PriceService {
   }
 
   // ════════════════════════════════════════════════════════════
+  // YAHOO RATE-LIMIT DETECTION
+  // Returns true if any of the common Yahoo formats for the
+  // given symbol are currently in 429 cooldown.
+  // ════════════════════════════════════════════════════════════
+  _isYahooRateLimited(symbol) {
+    const now = Date.now();
+    const formats = [symbol, `${symbol}=F`, `^${symbol}`];
+    for (const fmt of formats) {
+      const key = `yahoo:${fmt.toUpperCase()}`;
+      const cached = this.yahooUnifiedCache[key];
+      if (cached && cached.result === 'COOLDOWN' && now - cached.ts < this.yahooCooldown) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // ════════════════════════════════════════════════════════════
   // TWELVE DATA FETCHER (US stocks only)
   // Free: 8 req/min, 800/day. Offloads Yahoo for US stocks.
   // ════════════════════════════════════════════════════════════
@@ -539,6 +557,11 @@ class PriceService {
       return null;
     }
 
+    // 🚦 Yahoo rate-limited? Return friendly message instead of "Not Found"
+    const inputUpper = typeof input === 'string' ? input.toUpperCase() : '';
+    if (inputUpper && this._isYahooRateLimited(inputUpper)) {
+      return { _rateLimited: true, symbol: inputUpper };
+    }
     return null;
   }
 
