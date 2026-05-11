@@ -177,14 +177,15 @@ class DerivService {
           console.warn(`⚠️ [Deriv] Fetch timed out for ${symbol}`);
           reject(new Error(`Deriv fetch timed out for ${symbol}`));
         }
-      }, 5000);
+      }, 15000);
 
       try {
         ws = new WebSocket(this.wsUrl);
 
         ws.on('open', () => {
           ws.send(JSON.stringify({
-            ticks: symbol
+            ticks: symbol,
+            subscribe: 1
           }));
         });
 

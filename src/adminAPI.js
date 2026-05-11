@@ -331,9 +331,7 @@ function createAdminAPI(app, memoryMonitor) {
         checkApiHealth("News API (Google)", "https://news.google.com/rss"),
 
         // 8. Termii SMS - Use their health check endpoint with API key
-        checkApiHealth("SMS API (Termii)", "https://api.ng.termii.com/api/check/balance", {
-          params: { 'api_key': termiiService.apiKey }
-        })
+        checkApiHealth("SMS API (Termii)", `https://api.ng.termii.com/api/get-balance?api_key=${termiiService.apiKey}`, {})
       ];
 
       const results = await Promise.all(checks);

@@ -416,31 +416,43 @@ class PriceService {
     // COMMODITIES
     // ════════════════════════════════════════════════════════
     if (type === "COMMODITY") {
-      if (
-        ["XAU", "GOLD", "XAG", "SILVER", "OIL", "WTI", "BRENT",
-         "PLATINUM", "PL", "PALLADIUM", "PA", "COPPER", "HG"].includes(symbol)
-      ) {
-        const yahooResult = await this._tryYahooFormats(symbol);
+      // 🏆 COMMODITY → Yahoo futures resolution (primary)
+      // Map common commodity names and broker shorthands to Yahoo futures symbols.
+      // This covers: GOLD→GC=F, SILVER→SI=F, USOIL→CL=F, UKOIL→BZ=F, etc.
+      const COMMODITY_YAHOO_MAP = {
+        // Precious metals
+        'XAU': 'GC=F', 'GOLD': 'GC=F',
+        'XAG': 'SI=F', 'SILVER': 'SI=F',
+        'PLATINUM': 'PL=F', 'PL': 'PL=F',
+        'PALLADIUM': 'PA=F', 'PA': 'PA=F',
+        // Base metals
+        'COPPER': 'HG=F', 'HG': 'HG=F',
+        // Crude oil & products
+        'OIL': 'CL=F', 'WTI': 'CL=F', 'USOIL': 'CL=F',
+        'BRENT': 'BZ=F', 'UKOIL': 'BZ=F',
+        // Natural gas
+        'NATURAL GAS': 'NG=F', 'NATGAS': 'NG=F', 'GAS': 'NG=F',
+      };
+
+      // Try direct Yahoo futures mapping first
+      const yahooFuturesSymbol = COMMODITY_YAHOO_MAP[symbol];
+      if (yahooFuturesSymbol) {
+        console.log(`🔄 [Commodity] "${symbol}" mapped to Yahoo futures ${yahooFuturesSymbol}`);
+        const yahooResult = await this._yahooFetch(yahooFuturesSymbol);
         if (yahooResult && yahooResult.price) {
-          yahooResult.blockchain = "Commodity (Yahoo)";
+          yahooResult.blockchain = "Commodity (Yahoo Futures)";
           return yahooResult;
         }
-
-        const diaPrice = await this._resolveCommodityPrice(symbol);
-        if (diaPrice) {
-          return {
-            symbol,
-            name: symbol,
-            blockchain: "Commodity Market",
-            price: diaPrice,
-            currency: "USD",
-            change24h: null,
-            others: [],
-          };
-        }
-        return null;
       }
 
+      // Fallback: try =F suffix via _tryYahooFormats (covers any unlisted commodities)
+      const yahooResult = await this._tryYahooFormats(symbol);
+      if (yahooResult && yahooResult.price) {
+        yahooResult.blockchain = "Commodity (Yahoo)";
+        return yahooResult;
+      }
+
+      // Last resort: DIA Commodities API (may be deprecated/broken)
       const diaPrice = await this._resolveCommodityPrice(symbol);
       if (diaPrice) {
         return {
@@ -628,7 +640,9 @@ class PriceService {
       return "NGN";
     }
 
-    if (["XAU", "GOLD", "XAG", "SILVER", "OIL", "WTI", "BRENT"].includes(s)) return "USD";
+    if (["XAU", "GOLD", "XAG", "SILVER", "OIL", "WTI", "BRENT", "USOIL", "UKOIL",
+         "PLATINUM", "PL", "PALLADIUM", "PA", "COPPER", "HG",
+         "NATURAL GAS", "NATGAS", "GAS"].includes(s)) return "USD";
 
     if (s.length === 6) {
       return s.substring(3, 6).toUpperCase();
@@ -1114,8 +1128,23 @@ class PriceService {
 
   async _resolveCommodityPrice(symbol) {
     try {
+      // DIA Commodities API expects symbol as path parameter
+      // Available: XAU-USD (Gold), XAGG-USD (Silver), XG-USD (Copper)
+      const DIA_SYMBOL_MAP = {
+        'XAU': 'XAU-USD',
+        'GOLD': 'XAU-USD',
+        'XAG': 'XAGG-USD',
+        'SILVER': 'XAGG-USD',
+        'COPPER': 'XG-USD',
+        'HG': 'XG-USD',
+      };
+      const mappedSymbol = DIA_SYMBOL_MAP[symbol];
+      if (!mappedSymbol) {
+        console.warn(`⚠️ Commodity symbol "${symbol}" has no DIA mapping`);
+        return null;
+      }
       const res = await this.httpClient.get(
-        `${this.diaCommodityApi}?symbol=${symbol}`,
+        `${this.diaCommodityApi}/${mappedSymbol}`,
         { timeout: 8000 },
       );
       if (res.data && res.data.Price > 0) {

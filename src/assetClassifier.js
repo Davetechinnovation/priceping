@@ -101,8 +101,22 @@ class AssetClassifier {
     // Note: PLATINUM and PALLADIUM are included here so they get classified as
     // COMMODITY rather than matching Deriv synthetic indices (frxXPTUSD, frxXPDUSD).
     // The actual price is resolved via Yahoo futures at runtime (PL=F, PA=F).
-    this.commodities = new Set(['GOLD', 'XAU', 'SILVER', 'XAG', 'OIL', 'WTI', 'BRENT', 'XTI', 'XBR', 'PLATINUM', 'PALLADIUM', 'COPPER']);
-    this.commodityAliases = { 'GOLD': 'XAU', 'SILVER': 'XAG', 'OIL': 'WTI', 'XTI': 'WTI', 'XBR': 'BRENT' };
+    // 🏆 Commodities — hardcoded names and aliases
+    // Note: The actual price for most of these is resolved via Yahoo futures at runtime
+    // (e.g. GOLD→GC=F, SILVER→SI=F, OIL→CL=F, NATURAL GAS→NG=F, COPPER→HG=F).
+    // We also include common broker/CFD shorthands like "USOIL" (=CL=F), "UKOIL" (=BZ=F).
+    this.commodities = new Set([
+      'GOLD', 'XAU', 'SILVER', 'XAG',
+      'OIL', 'WTI', 'BRENT', 'XTI', 'XBR', 'USOIL', 'UKOIL',
+      'NATURAL GAS', 'NATGAS', 'GAS',
+      'PLATINUM', 'PALLADIUM', 'COPPER',
+    ]);
+    this.commodityAliases = {
+      'GOLD': 'XAU', 'SILVER': 'XAG',
+      'OIL': 'WTI', 'XTI': 'WTI', 'XBR': 'BRENT',
+      'USOIL': 'USOIL', 'UKOIL': 'UKOIL',
+      'NATGAS': 'NATURAL GAS', 'GAS': 'NATURAL GAS',
+    };
 
     // 📈 Traditional Futures & Forex Futures
     // Only index/forex/crypto CME futures are pre-mapped since their Yahoo tickers
