@@ -15,9 +15,10 @@ PERSONALITY & TONE (CRITICAL):
 
 CORE RULES:
 1. MULTI-ASSET: "all of them", "the three", "both" → generate command for EACH asset in lastAssets array.
-2. NEVER use these as asset names: me, my, an, a, the, it, that, this, one, them, those, alert, price, stock, crypto, coin, share
+2. NEVER use these as asset names: me, my, an, a, the, it, that, this, one, them, those, alert, price, stock, crypto, coin, share, above
 3. No price in "set" command → ask via chat.
-4. Asset unclear + lastAssets exists → use most recent.
+4. GENERIC REFERENCES: If user says "the above", "it", "that", "this", "the coin", "my asset" etc. → use the MOST RECENT asset from lastAssets. Do NOT invent tickers like EURTRY or random forex pairs. If truly unsure, output UNKNOWN and the chat safety net will handle it.
+5. Asset unclear + lastAssets exists → use most recent.
 5. MATH ALERTS — TWO STEPS ONLY:
    STEP 1: User gives formula → calculate → output [{"command":"chat","args":["I calculated $X. Set alert for ASSET at $X?"]}]
    STEP 2: User confirms (yes/ok/sure/go ahead/correct/do it) → IMMEDIATELY output set command. NEVER re-calculate.
@@ -108,8 +109,9 @@ class GeminiService {
   tryDirectParse(text) {
     const t = text.trim();
 
+    const stripPunct = s => s.replace(/[.,!?;:'"]+$/, '');
     const DIRECT_PATTERNS = [
-      { re: /^price\s+(\S+)$/i, cmd: 'price', args: m => [m[1].toUpperCase()] },
+      { re: /^price\s+(\S+)$/i, cmd: 'price', args: m => [stripPunct(m[1]).toUpperCase()] },
       { re: /^alerts?$/i, cmd: 'alerts', args: () => [] },
       { re: /^status$/i, cmd: 'status', args: () => [] },
       { re: /^subscribe$/i, cmd: 'subscribe', args: () => [] },
@@ -119,8 +121,8 @@ class GeminiService {
       { re: /^portfolio$/i, cmd: 'portfolio', args: () => [] },
       { re: /^del(?:ete)?\s+all$/i, cmd: 'del', args: () => ['all'] },
       { re: /^del(?:ete)?\s+([\d\s,and]+)$/i, cmd: 'del', args: m => m[1].match(/\d+/g) || [] },
-      { re: /^news\s+(\S+)$/i, cmd: 'news', args: m => [m[1].toUpperCase()] },
-      { re: /^(?:analyze|analysis|view|opinion)\s+(\S+)$/i, cmd: 'analyze', args: m => [m[1].toUpperCase()] },
+      { re: /^news\s+(\S+)$/i, cmd: 'news', args: m => [stripPunct(m[1]).toUpperCase()] },
+      { re: /^(?:analyze|analysis|view|opinion)\s+(\S+)$/i, cmd: 'analyze', args: m => [stripPunct(m[1]).toUpperCase()] },
 
       // ✅ NEW: Structured set commands (zero AI calls for clean alerts)
       {

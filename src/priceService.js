@@ -61,10 +61,10 @@ class PriceService {
     this.yahooIndexTTL    = 180000;  // 3 min for indices
     this.yahooCooldown    = 60000;   // 1 min cooldown after 429
 
-    // 🚦 GLOBAL Yahoo 429 cooldown
-    // When ANY Yahoo symbol returns 429, ALL Yahoo requests are blocked for cooldown duration.
-    // This prevents the DYNAMIC cascade from wasting 6+ requests on different symbol formats.
-    this.yahooGlobalCooldownUntil = 0; // timestamp — 0 means no cooldown
+    // 🚦 Per-symbol Yahoo 429 cooldown
+    // Only the specific symbol that got 429'd is blocked.
+    // Other symbols (e.g. CL=F vs GC=F) are NOT affected.
+    this.yahooCooldownMap = new Map(); // symbol → timestamp (millis when cooldown expires)
 
     // Twelve Data cache (US stocks only, offloads Yahoo)
     this.twelveDataCache  = {};           // key → { result, ts }
@@ -149,11 +149,12 @@ class PriceService {
     if (symbol.includes('=F'))  ttl = this.yahooFuturesTTL;
     if (symbol.startsWith('^')) ttl = this.yahooIndexTTL;
 
-    // 🚦 0a. GLOBAL Yahoo cooldown check
-    // If ANY Yahoo symbol got 429'd recently, block ALL Yahoo requests
-    if (this.yahooGlobalCooldownUntil > now) {
-      const remaining = Math.round((this.yahooGlobalCooldownUntil - now) / 1000);
-      console.warn(`⏳ [Yahoo] GLOBAL cooldown (${remaining}s left) — skipping ${symbol}`);
+    // 🚦 0a. Per-symbol Yahoo cooldown check
+    // Only the specific symbol that got 429'd is blocked.
+    const cooldownUntil = this.yahooCooldownMap.get(symbol.toUpperCase());
+    if (cooldownUntil && now < cooldownUntil) {
+      const remaining = Math.round((cooldownUntil - now) / 1000);
+      console.warn(`⏳ [Yahoo] ${symbol} in per-symbol cooldown (${remaining}s left)`);
       return null;
     }
 
@@ -212,11 +213,11 @@ class PriceService {
         const is429 = e.message?.includes('429') || e.message?.includes('Too Many Requests');
 
         if (is429) {
-          // 🔥 GLOBAL cooldown — block ALL Yahoo requests for 60s
-          this.yahooGlobalCooldownUntil = Date.now() + this.yahooCooldown;
-          console.warn(`⚠️ [Yahoo] 429 on ${symbol} — entering GLOBAL cooldown (60s)`);
+          // 🔥 Per-symbol cooldown — only THIS symbol is blocked for 60s
+          this.yahooCooldownMap.set(symbol.toUpperCase(), Date.now() + this.yahooCooldown);
+          console.warn(`⚠️ [Yahoo] 429 on ${symbol} — entering per-symbol cooldown (60s)`);
 
-          // Also mark THIS symbol in per-symbol cache
+          // Also mark in cache
           this.yahooUnifiedCache[key] = { result: 'COOLDOWN', ts: Date.now() };
           return null;
         }
@@ -254,8 +255,9 @@ class PriceService {
   // ════════════════════════════════════════════════════════════
   _isYahooRateLimited(symbol) {
     const now = Date.now();
-    // First check global cooldown
-    if (this.yahooGlobalCooldownUntil > now) {
+    // Check if this specific symbol is in per-symbol cooldown
+    const cooldownUntil = this.yahooCooldownMap.get(symbol.toUpperCase());
+    if (cooldownUntil && now < cooldownUntil) {
       return true;
     }
     const formats = [symbol, `${symbol}=F`, `^${symbol}`];
@@ -1285,9 +1287,17 @@ class PriceService {
       }
     }
 
-    // Also clear global cooldown if it's expired
-    if (this.yahooGlobalCooldownUntil > 0 && now > this.yahooGlobalCooldownUntil) {
-      this.yahooGlobalCooldownUntil = 0;
+    // Clean up expired per-symbol cooldowns
+    let cooldownsCleaned = 0;
+    for (const [sym, expiry] of this.yahooCooldownMap) {
+      if (now > expiry) {
+        this.yahooCooldownMap.delete(sym);
+        cooldownsCleaned++;
+      }
+    }
+
+    if (cooldownsCleaned > 0) {
+      console.log(`🧹 Cleaned ${cooldownsCleaned} expired Yahoo cooldowns`);
     }
 
     if (cleaned > 0) {

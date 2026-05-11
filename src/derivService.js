@@ -184,8 +184,7 @@ class DerivService {
 
         ws.on('open', () => {
           ws.send(JSON.stringify({
-            ticks: symbol,
-            subscribe: 1
+            ticks: symbol
           }));
         });
 
