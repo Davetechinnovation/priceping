@@ -117,7 +117,7 @@ class AssetClassifier {
       'RUSSELL': 'RTY=F', 'RTY': 'RTY=F', 'US2000': 'RTY=F',
       'VIX': '^VIX',
       'NIKKEI': 'NKD=F', 'NKD': 'NKD=F', 'JP225': 'NKD=F', 'JPN225': 'NKD=F', 'JPN': 'NKD=F', 'NIKKEI225': 'NKD=F',
-      'FTSE': 'Z=F', 'UK100': 'Z=F',
+      'FTSE': '^FTSE', 'UK100': '^FTSE',
       'DAX': 'FDAX=F', 'GER40': 'FDAX=F',
       'SPX': 'ES=F', 'USTEC': 'NQ=F',
       'AUS200': '^AXJO',
@@ -356,7 +356,7 @@ class AssetClassifier {
     if (cfdIndexMatch) {
       const CFD_INDEX_MAP = {
         'US30': 'YM=F', 'US100': 'NQ=F', 'US500': 'ES=F',
-        'UK100': 'Z=F',
+        'UK100': '^FTSE',
         'GER40': 'FDAX=F', 'GER30': 'FDAX=F',
         'JPN225': 'NKD=F', 'JP225': 'NKD=F',
         'NAS100': 'NQ=F', 'NAS': 'NQ=F',

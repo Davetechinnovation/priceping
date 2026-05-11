@@ -496,7 +496,14 @@ class PriceService {
     }
 
     // ════════════════════════════════════════════════════════
-    // FUTURES
+    // TRADITIONAL FUTURES (e.g. US30 → YM=F, UK100 → Z=F)
+    // ════════════════════════════════════════════════════════
+    if (type === "TRADITIONAL_FUTURE") {
+      return await this.getTraditionalFuturesPrice(symbol, input);
+    }
+
+    // ════════════════════════════════════════════════════════
+    // FUTURES (crypto futures like BTC-FUTURES)
     // ════════════════════════════════════════════════════════
     if (type === "FUTURE") {
       return await this.getTraditionalFuturesPrice(symbol, input);

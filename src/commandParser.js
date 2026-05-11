@@ -269,12 +269,14 @@ _soon as possible._`;
       // Only auto-route if there's no space (single word) or it matches spaced ticker pattern,
       // and it doesn't match known greeting/conversational words
       const conversationalWords = new Set(["bot", "test", "morning", "gm", "evening", "afternoon", "hey", "hello", "hi"]);
+      // 🔴 BLOCKLIST: Known command words that should NEVER be treated as tickers
+      const commandWordBlocklist = new Set(["analyze", "analysis", "opinion", "view", "news", "portfolio", "holdings", "trades", "features", "status", "subscribe", "upgrade", "invite", "redeem", "watchlist", "watch", "unwatch", "menu", "help", "journal"]);
       const isSingleWord = !originalText.includes(' ');
       const isLikelyTicker = (isSingleWord && tickerPattern.test(command)) ||
                              spacedTickerPattern.test(originalText) ||
                              anyTicker.test(command);
       
-      if (isLikelyTicker && !conversationalWords.has(command)) {
+      if (isLikelyTicker && !conversationalWords.has(command) && !commandWordBlocklist.has(command)) {
         console.log(`🎯 Dynamic ticker detection: "${originalText}" → routing to price command`);
         return this.handleGenericPrice([originalText.toUpperCase()], cleanPhone, db, priceService, pushName, userState);
       }

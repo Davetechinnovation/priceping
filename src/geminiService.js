@@ -379,37 +379,45 @@ ${knowledgeBase}`.trim();
 
       let parsed;
       try {
-        parsed = JSON.parse(jsonStr);
-      } catch (e) {
-        console.error("Failed to parse JSON from AI:", text);
+      parsed = JSON.parse(jsonStr);
+    } catch (e) {
+      console.error("Failed to parse JSON from AI:", text);
 
-        // ── 🛟 SALVAGE: Did the AI return a math calculation as free text? ──
-        // If the response contains a calculated dollar/number figure, extract it
-        // and turn it into a proper confirmation chat message.
-        const calcMatch = text.match(/[\$]?([\d,]+(?:\.\d{1,2})?)(?:\s*(?:is|=|→|->|\.|,)\s*(?:the\s+)?(?:target|result|answer|total|final))?/i);
-        // More specifically, look for the last mentioned dollar amount in the response
-        const allAmounts = [...text.matchAll(/\$([\d,]+(?:\.\d{1,2})?)/g)];
-        if (allAmounts.length > 0) {
-          // The last dollar amount mentioned is usually the final answer
-          const finalAmount = allAmounts[allAmounts.length - 1][1].replace(/,/g, '');
-          const finalNum = parseFloat(finalAmount);
-          // Priority 1: Use lastAssets from context (most reliable)
-          // Priority 2: Find a ticker-like word in the AI text (2-10 uppercase letters)
-          // Priority 3: safe fallback
-          let assetHint = lastAssets.length > 0 ? lastAssets[0] : null;
-          if (!assetHint) {
-            const tickerMatch = text.match(/\b([A-Z]{2,10})\b/);
-            assetHint = tickerMatch ? tickerMatch[1] : 'the asset';
-          }
-
-          if (!isNaN(finalNum) && finalNum > 0) {
-            console.log(`🛟 [Math Salvage] Extracted final value $${finalNum} from free-text AI response`);
-            const confirmMsg = `I calculated $${finalNum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}. Set alert for ${assetHint} at $${finalNum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}?`;
-            return [{ command: "chat", args: [confirmMsg] }];
-          }
+      // ── 🛟 SALVAGE: Did the AI return a math calculation as free text? ──
+      // If the response contains a calculated dollar/number figure, extract it
+      // and turn it into a proper confirmation chat message.
+      const calcMatch = text.match(/[\$]?([\d,]+(?:\.\d{1,2})?)(?:\s*(?:is|=|→|->|\.|,)\s*(?:the\s+)?(?:target|result|answer|total|final))?/i);
+      // More specifically, look for the last mentioned dollar amount in the response
+      const allAmounts = [...text.matchAll(/\$([\d,]+(?:\.\d{1,2})?)/g)];
+      if (allAmounts.length > 0) {
+        // The last dollar amount mentioned is usually the final answer
+        const finalAmount = allAmounts[allAmounts.length - 1][1].replace(/,/g, '');
+        const finalNum = parseFloat(finalAmount);
+        // Priority 1: Use lastAssets from context (most reliable)
+        // Priority 2: Find a ticker-like word in the AI text (2-10 uppercase letters)
+        // Priority 3: safe fallback
+        let assetHint = lastAssets.length > 0 ? lastAssets[0] : null;
+        if (!assetHint) {
+          const tickerMatch = text.match(/\b([A-Z]{2,10})\b/);
+          assetHint = tickerMatch ? tickerMatch[1] : 'the asset';
         }
 
-        return [{ command: "chat", args: ["I'm having trouble with that request. Could you rephrase it? (e.g. \"Set BTC alert at 50000\")"] }];
+        if (!isNaN(finalNum) && finalNum > 0) {
+          console.log(`🛟 [Math Salvage] Extracted final value $${finalNum} from free-text AI response`);
+          const confirmMsg = `I calculated $${finalNum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}. Set alert for ${assetHint} at $${finalNum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}?`;
+          return [{ command: "chat", args: [confirmMsg] }];
+        }
+      }
+
+      // ── 🛟 SALVAGE 2: Conversational fallback — AI returned plain text chat
+      // Strip common prefixes like "Yes,", "No,", "I", "You", etc.
+      const cleanText = text.trim().replace(/^["'“”]|["'”]$/g, '').trim();
+      if (cleanText.length > 0 && cleanText.length < 500) {
+        console.log(`🛟 [Chat Salvage] Converted free-text AI response to chat command`);
+        return [{ command: "chat", args: [cleanText] }];
+      }
+
+      return [{ command: "chat", args: ["I'm having trouble with that request. Could you rephrase it? (e.g. \"Set BTC alert at 50000\")"] }];
       }
 
       if (!Array.isArray(parsed)) {
