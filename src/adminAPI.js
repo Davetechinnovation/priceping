@@ -687,6 +687,7 @@ Exchange: ${priceInfo.blockchain}
       const database = global.database;
       const alertMonitor = global.alertMonitor;
       const whatsappService = global.whatsappService;
+      const priceService = global.priceService;
 
       const cpuPercent = getRealCpuPercent();
       const rss = mem.current?.rss || 0;
@@ -734,7 +735,10 @@ Exchange: ${priceInfo.blockchain}
           },
         },
         health,
-        priceService: priceService?.getStats() || {},
+        priceService: priceService ? {
+          cacheSize: Object.keys(priceService.priceCache || {}).length,
+          ngxCacheSize: Object.keys(priceService.ngxCache?.data || {}).length,
+        } : {},
         alertMonitor: {
           running: !!alertMonitor?.isRunning,
           checking: !!alertMonitor?.isChecking,
