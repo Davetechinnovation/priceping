@@ -61,6 +61,11 @@ class PriceService {
     this.yahooIndexTTL    = 180000;  // 3 min for indices
     this.yahooCooldown    = 60000;   // 1 min cooldown after 429
 
+    // 🚦 GLOBAL Yahoo 429 cooldown
+    // When ANY Yahoo symbol returns 429, ALL Yahoo requests are blocked for cooldown duration.
+    // This prevents the DYNAMIC cascade from wasting 6+ requests on different symbol formats.
+    this.yahooGlobalCooldownUntil = 0; // timestamp — 0 means no cooldown
+
     // Twelve Data cache (US stocks only, offloads Yahoo)
     this.twelveDataCache  = {};           // key → { result, ts }
     this.twelveDataTTL    = 300000;  // 5 min cache
@@ -132,8 +137,9 @@ class PriceService {
   //   1. Single cache (no stock: vs yahoo: collision)
   //   2. In-flight dedup (alert + user share one promise)
   //   3. Per-type TTL (stocks 5min, futures 2min, indices 3min)
-  //   4. 60s cooldown after 429
-  //   5. Stale fallback on error
+  //   4. GLOBAL 60s cooldown after ANY 429 (prevents cascade waste)
+  //   5. Per-symbol cooldown as fallback
+  //   6. Stale fallback on error
   // ════════════════════════════════════════════════════════════
   async _yahooFetch(symbol) {
     const key = `yahoo:${symbol.toUpperCase()}`;
@@ -143,6 +149,14 @@ class PriceService {
     if (symbol.includes('=F'))  ttl = this.yahooFuturesTTL;
     if (symbol.startsWith('^')) ttl = this.yahooIndexTTL;
 
+    // 🚦 0a. GLOBAL Yahoo cooldown check
+    // If ANY Yahoo symbol got 429'd recently, block ALL Yahoo requests
+    if (this.yahooGlobalCooldownUntil > now) {
+      const remaining = Math.round((this.yahooGlobalCooldownUntil - now) / 1000);
+      console.warn(`⏳ [Yahoo] GLOBAL cooldown (${remaining}s left) — skipping ${symbol}`);
+      return null;
+    }
+
     // 1. Fresh cache hit
     const cached = this.yahooUnifiedCache[key];
     if (cached) {
@@ -150,7 +164,7 @@ class PriceService {
         return cached.result;
       }
       if (cached.result === 'COOLDOWN' && now - cached.ts < this.yahooCooldown) {
-        console.warn(`⏳ [Yahoo] ${symbol} in cooldown (${Math.round((this.yahooCooldown - (now - cached.ts)) / 1000)}s left)`);
+        console.warn(`⏳ [Yahoo] ${symbol} in per-symbol cooldown (${Math.round((this.yahooCooldown - (now - cached.ts)) / 1000)}s left)`);
         return null;
       }
     }
@@ -198,7 +212,11 @@ class PriceService {
         const is429 = e.message?.includes('429') || e.message?.includes('Too Many Requests');
 
         if (is429) {
-          console.warn(`⚠️ [Yahoo] 429 on ${symbol} — entering 60s cooldown`);
+          // 🔥 GLOBAL cooldown — block ALL Yahoo requests for 60s
+          this.yahooGlobalCooldownUntil = Date.now() + this.yahooCooldown;
+          console.warn(`⚠️ [Yahoo] 429 on ${symbol} — entering GLOBAL cooldown (60s)`);
+
+          // Also mark THIS symbol in per-symbol cache
           this.yahooUnifiedCache[key] = { result: 'COOLDOWN', ts: Date.now() };
           return null;
         }
@@ -232,9 +250,14 @@ class PriceService {
   // YAHOO RATE-LIMIT DETECTION
   // Returns true if any of the common Yahoo formats for the
   // given symbol are currently in 429 cooldown.
+  // Also checks GLOBAL cooldown.
   // ════════════════════════════════════════════════════════════
   _isYahooRateLimited(symbol) {
     const now = Date.now();
+    // First check global cooldown
+    if (this.yahooGlobalCooldownUntil > now) {
+      return true;
+    }
     const formats = [symbol, `${symbol}=F`, `^${symbol}`];
     for (const fmt of formats) {
       const key = `yahoo:${fmt.toUpperCase()}`;
@@ -364,22 +387,27 @@ class PriceService {
     // When STOCK with ≤60% confidence, check Yahoo futures
     // ════════════════════════════════════════════════════════
     if (type === 'STOCK' && confidence <= 60) {
-      console.log(`🔄 [Dynamic] "${input}" classified as STOCK (${confidence}%) — checking Yahoo futures...`);
-      const futuresResult = await this.classifier.resolveFuturesWithYahoo(symbol);
-      if (futuresResult) {
-        const yahooSymbol = futuresResult.symbol;
-        const quote = await this._yahooFetch(yahooSymbol);
-        if (quote && quote.price) {
-          quote.blockchain = "Futures Market";
-          console.log(`✅ [Dynamic] "${input}" resolved as futures → ${yahooSymbol}`);
-          return quote;
+      // 🚦 Check global Yahoo cooldown BEFORE trying futures
+      if (this._isYahooRateLimited(symbol)) {
+        console.warn(`⏳ [Dynamic] "${input}" SKIPPING Yahoo futures — GLOBAL cooldown active`);
+      } else {
+        console.log(`🔄 [Dynamic] "${input}" classified as STOCK (${confidence}%) — checking Yahoo futures...`);
+        const futuresResult = await this.classifier.resolveFuturesWithYahoo(symbol);
+        if (futuresResult) {
+          const yahooSymbol = futuresResult.symbol;
+          const quote = await this._yahooFetch(yahooSymbol);
+          if (quote && quote.price) {
+            quote.blockchain = "Futures Market";
+            console.log(`✅ [Dynamic] "${input}" resolved as futures → ${yahooSymbol}`);
+            return quote;
+          }
         }
-      }
-      const yahooResult = await this._tryYahooFormats(symbol);
-      if (yahooResult && yahooResult.price) {
-        yahooResult.blockchain = yahooResult.blockchain || "Futures Market";
-        console.log(`✅ [Dynamic] "${input}" resolved via Yahoo formats`);
-        return yahooResult;
+        const yahooResult = await this._tryYahooFormats(symbol);
+        if (yahooResult && yahooResult.price) {
+          yahooResult.blockchain = yahooResult.blockchain || "Futures Market";
+          console.log(`✅ [Dynamic] "${input}" resolved via Yahoo formats`);
+          return yahooResult;
+        }
       }
       console.log(`❌ [Dynamic] "${input}" not a futures product, falling back to STOCK`);
     }
@@ -432,6 +460,12 @@ class PriceService {
     // SYNTHETIC INDICES (Deriv) — e.g. R_100, 1HZ75V, BOOM500
     // ════════════════════════════════════════════════════════
     if (type === "SYNTHETIC_INDEX") {
+      // ✅ Validate the symbol against Deriv's active symbol set BEFORE opening a WebSocket
+      await this._ensureDerivSymbols();
+      if (!derivService.hasSymbol(symbol)) {
+        console.warn(`⚠️ [Deriv] Symbol "${symbol}" is invalid — not in active Deriv symbols list`);
+        return null;
+      }
       const price = await derivService.fetchTick(symbol);
       if (price !== null && price !== undefined) {
         return {
@@ -451,6 +485,12 @@ class PriceService {
     // DERIV ASSETS
     // ════════════════════════════════════════════════════════
     if (type === "DERIV_ASSET") {
+      // ✅ Validate symbol before creating WebSocket
+      await this._ensureDerivSymbols();
+      if (!derivService.hasSymbol(symbol)) {
+        console.warn(`⚠️ [Deriv] Symbol "${symbol}" is invalid — not in active Deriv symbols list`);
+        return null;
+      }
       const price = await derivService.fetchTick(symbol);
       if (price !== null && price !== undefined) {
         return {
@@ -548,11 +588,16 @@ class PriceService {
       if (forexPrice !== null) return forexPrice;
 
       // 🔄 Try Yahoo futures resolution for any unknown asset
-      const futuresPrice = await this._resolveDynamicFutures(sym, input);
-      if (futuresPrice !== null) return futuresPrice;
+      // 🚦 Skip if global cooldown is active
+      if (!this._isYahooRateLimited(sym)) {
+        const futuresPrice = await this._resolveDynamicFutures(sym, input);
+        if (futuresPrice !== null) return futuresPrice;
 
-      const stockPrice = await this._resolveStockPrice(sym);
-      if (stockPrice !== null) return stockPrice;
+        const stockPrice = await this._resolveStockPrice(sym);
+        if (stockPrice !== null) return stockPrice;
+      } else {
+        console.warn(`⏳ [Dynamic] "${sym}" SKIPPING Yahoo in DYNAMIC cascade — GLOBAL cooldown active`);
+      }
 
       return null;
     }
@@ -812,7 +857,8 @@ class PriceService {
     for (const page of [1, 2]) {
       try {
         const url = page === 1 ? "https://afx.kwayisi.org/ngx/" : `https://afx.kwayisi.org/ngx/?page=${page}`;
-        const { data } = await axios.get(url, { family: 4, timeout: 40000, headers: browserHeaders });
+        // 🕐 Reduced timeout from 40s to 15s so we fail fast and serve stale cache instead of burning 80s
+        const { data } = await axios.get(url, { family: 4, timeout: 15000, headers: browserHeaders });
         this._parseKwayisiPage(data, stocks);
         if (page === 1) await new Promise((r) => setTimeout(r, 2000));
       } catch (err) {
@@ -863,18 +909,31 @@ class PriceService {
       return cached.data;
     }
 
+    // ✅ Try the mapped Yahoo symbol first (e.g., YM=F for US30)
+    // This is the DIRECT path — no format guessing needed
     const futuresResult = await this.classifier.resolveFuturesWithYahoo(symbol);
     if (futuresResult) {
       const yahooSymbol = futuresResult.symbol;
       console.log(`🔍 [Futures] Resolved "${symbol}" → Yahoo symbol "${yahooSymbol}"`);
-      const quote = await this._tryYahooFormats(yahooSymbol);
+      const quote = await this._yahooFetch(yahooSymbol);
       if (quote) {
         quote.blockchain = "Futures Market";
         this.priceCache[cacheKey] = { data: quote, ts: Date.now() };
         return quote;
       }
+      // 🚦 If the mapped symbol failed (e.g., 429 cooldown), check global cooldown
+      // before falling through to format guessing. If Yahoo is globally rate-limited,
+      // skip the wasteful format cascade.
+      if (this._isYahooRateLimited(symbol)) {
+        console.warn(`⏳ [Futures] "${symbol}" — Yahoo in cooldown, skipping format cascade`);
+        if (cached && Date.now() - cached.ts < this.staleTTL) {
+          return cached.data;
+        }
+        return null;
+      }
     }
 
+    // 💥 Format guessing cascade — only reached if no global cooldown
     const yahooResult = await this._tryYahooFormats(symbol);
     if (yahooResult) {
       yahooResult.blockchain = "Futures Market";
@@ -1002,6 +1061,11 @@ class PriceService {
    */
   async _resolveDynamicFutures(symbol, rawInput) {
     console.log(`🔄 [Dynamic] "${rawInput}" in DYNAMIC cascade — checking Yahoo futures...`);
+    // 🚦 Check global cooldown before making requests
+    if (this._isYahooRateLimited(symbol)) {
+      console.warn(`⏳ [Dynamic] SKIPPING "${rawInput}" — Yahoo in GLOBAL cooldown`);
+      return null;
+    }
     const futuresResult = await this.classifier.resolveFuturesWithYahoo(symbol);
     if (futuresResult) {
       const yahooSymbol = futuresResult.symbol;
@@ -1029,6 +1093,12 @@ class PriceService {
       .replace(/\s*(FUTURES?|PERP(ETUAL)?)\s*/gi, '').trim();
 
     if (!symbol) return null;
+
+    // 🚦 Check global cooldown before trying formats
+    if (this._isYahooRateLimited(symbol)) {
+      console.warn(`⏳ [Yahoo] SKIPPING format cascade for "${symbol}" — GLOBAL cooldown active`);
+      return null;
+    }
 
     const formats = [symbol, `${symbol}=F`, `^${symbol}`];
 
@@ -1184,6 +1254,11 @@ class PriceService {
         delete this.twelveDataCache[key];
         cleaned++;
       }
+    }
+
+    // Also clear global cooldown if it's expired
+    if (this.yahooGlobalCooldownUntil > 0 && now > this.yahooGlobalCooldownUntil) {
+      this.yahooGlobalCooldownUntil = 0;
     }
 
     if (cleaned > 0) {
