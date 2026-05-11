@@ -145,9 +145,19 @@ class GeminiService {
       },
     ];
 
+    const GENERIC_ASSET_WORDS = new Set(['IT', 'AM', 'THAT', 'THAR', 'THIS', 'THEM', 'THOSE', 'ALL', 'ME', 'MY', 'AN', 'A', 'HIM', 'THE', 'ONE']);
+
     for (const { re, cmd, args } of DIRECT_PATTERNS) {
       const m = t.match(re);
       if (m) {
+        // 🧠 Generic word check — let AI handle "analyze it", "price that", "analyze am", etc.
+        // The AI has conversation context (lastAssets) to resolve these correctly.
+        if (['price', 'analyze', 'news', 'set'].includes(cmd)) {
+          const asset = args(m)[0]?.toUpperCase();
+          if (asset && GENERIC_ASSET_WORDS.has(asset)) {
+            return null; // Fall through to AI with context
+          }
+        }
         console.log(`⚡ [Regex Gate] Matched "${cmd}" locally (zero tokens)`);
         return [{ command: cmd, args: args(m) }];
       }
