@@ -582,6 +582,7 @@ The Nigerian stock data feed is currently offline. This is a known issue — ple
     try {
       const usage = await db.getAlertUsage(phoneNumber);
       if (usage && usage.isPro) {
+        
         const aiSuggestion = await this.geminiService.suggestAlertLevels(info.symbol, info.price);
         if (aiSuggestion) {
           hasAiSuggestions = true;
