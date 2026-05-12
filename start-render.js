@@ -150,6 +150,92 @@ app.get('/test-analysis', async (req, res) => {
   res.json(results);
 });
 
+// ✅ Test NGX Source (verify Kwayisi / doclib work from Render)
+// Hit: https://your-app.onrender.com/test-ngx
+app.get('/test-ngx', async (req, res) => {
+  const axios = require('axios');
+  const cheerio = require('cheerio');
+  const results = {};
+
+  // 1️⃣ Test NGX doclib API
+  results.doclib = { status: 'testing' };
+  try {
+    const { data } = await axios.get(
+      'https://doclib.ngxgroup.com/REST/api/statistics/equities/?market=&sector=&orderby=&pageSize=500&pageNo=0',
+      { timeout: 30000, family: 4 }
+    );
+    const recordCount = data?.records?.length || 0;
+    results.doclib = {
+      status: recordCount > 0 ? '✅ OK' : '⚠️ Empty (no records)',
+      records: recordCount,
+      sample: recordCount > 0 ? data.records.slice(0, 3).map(r => ({
+        symbol: r.symbol || r.ticker,
+        price: r.lastTradedPrice || r.closingPrice || r.price,
+        name: r.description || r.name,
+      })) : null,
+    };
+  } catch (e) {
+    results.doclib = {
+      status: '❌ Failed',
+      error: e.message,
+      code: e.code || null,
+    };
+  }
+
+  // 2️⃣ Test Kwayisi scrape (same request the bot makes)
+  results.kwayisi = { status: 'testing' };
+  try {
+    const browserHeaders = {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "en-NG,en;q=0.9",
+      Referer: "https://afx.kwayisi.org/",
+    };
+
+    const start = Date.now();
+    const { data } = await axios.get('https://afx.kwayisi.org/ngx/', {
+      family: 4, timeout: 30000, headers: browserHeaders,
+    });
+    const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+
+    const $ = cheerio.load(data);
+    const rows = $('table tbody tr');
+    const stocks = [];
+    rows.each((i, el) => {
+      const cells = $(el).find('td');
+      if (cells.length >= 4) {
+        const ticker = $(cells[0]).text().trim();
+        const name = $(cells[1]).text().trim();
+        const price = parseFloat($(cells[3]).text().trim().replace(/,/g, ''));
+        if (ticker && !isNaN(price)) {
+          stocks.push({ ticker, name, price });
+        }
+      }
+    });
+
+    results.kwayisi = {
+      status: stocks.length > 0 ? '✅ OK' : '⚠️ Parsed but no stocks',
+      elapsed: `${elapsed}s`,
+      totalStocks: stocks.length,
+      sample: stocks.slice(0, 5),
+    };
+  } catch (e) {
+    results.kwayisi = {
+      status: '❌ Failed',
+      error: e.message,
+      code: e.code || null,
+    };
+  }
+
+  res.json({
+    timestamp: new Date().toISOString(),
+    results,
+    verdict: results.doclib.status === '✅ OK' || results.kwayisi.status === '✅ OK'
+      ? '✅ At least one NGX source is working'
+      : '❌ Both NGX sources failed — may be blocked from Render',
+  });
+});
+
 // ✅ Test Candle Sources (verify which APIs work from Render's US servers)
 // Hit: https://your-app.onrender.com/test-candles
 app.get('/test-candles', async (req, res) => {

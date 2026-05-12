@@ -755,17 +755,36 @@ ${analysis}
     if (args.length < 2)
       return "⚠️ *Usage:* `Set [Coin] at [Price]`\nExample: `Set SOL at 150`";
 
-    const asset = args[0].toUpperCase();
-
     let targetPrice = null;
     let direction = null;
 
     if (args.includes("below")) direction = "below";
     if (args.includes("above")) direction = "above";
 
-    // Try to find a numeric or formula-based price argument
-    const possiblePriceArg = args.find(a =>
-      !['at', 'above', 'below', asset].includes(a.toLowerCase()) &&
+    // 🔧 Reconstruct multi-word asset names (e.g. "Volatility 25", "Natural Gas")
+    // Split args at "at" / "above" / "below" delimiter — everything before is the
+    // asset name, everything after is the price.
+    const stopWords = new Set(['at', 'above', 'below']);
+    let assetTokens = [];
+    let priceTokens = [];
+    let foundDelimiter = false;
+
+    for (const arg of args) {
+      if (stopWords.has(arg.toLowerCase())) {
+        foundDelimiter = true;
+        continue;
+      }
+      if (foundDelimiter) {
+        priceTokens.push(arg);
+      } else {
+        assetTokens.push(arg);
+      }
+    }
+
+    const asset = assetTokens.join(' ').toUpperCase();
+
+    // Try to find a numeric or formula-based price argument in the price token section
+    const possiblePriceArg = priceTokens.find(a =>
       (/^\d+(\.\d+)?$/.test(a.replace(/,/g, "")) || /[\+\-\*\/\(\)]/.test(a))
     );
 

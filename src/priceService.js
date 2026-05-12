@@ -873,8 +873,8 @@ class PriceService {
     for (const page of [1, 2]) {
       try {
         const url = page === 1 ? "https://afx.kwayisi.org/ngx/" : `https://afx.kwayisi.org/ngx/?page=${page}`;
-        // 🕐 Reduced timeout from 40s to 15s so we fail fast and serve stale cache instead of burning 80s
-        const { data } = await axios.get(url, { family: 4, timeout: 15000, headers: browserHeaders });
+        // 🕐 Timeout 30s — Kwayisi is reliable but slow; stale cache fallback handles failures gracefully
+        const { data } = await axios.get(url, { family: 4, timeout: 30000, headers: browserHeaders });
         this._parseKwayisiPage(data, stocks);
         if (page === 1) await new Promise((r) => setTimeout(r, 2000));
       } catch (err) {
