@@ -236,6 +236,118 @@ app.get('/test-ngx', async (req, res) => {
   });
 });
 
+// ✅ Test Alternative NGX Sources (find one that works from Render)
+// Hit: https://your-app.onrender.com/test-ngx-sources
+app.get('/test-ngx-sources', async (req, res) => {
+  const axios = require('axios');
+  const cheerio = require('cheerio');
+  const results = {};
+
+  const browserHeaders = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-NG,en;q=0.9",
+  };
+
+  const sources = [
+    { name: 'Kwayisi (retry)', url: 'https://afx.kwayisi.org/ngx/', timeout: 30000, parse: 'kwayisi' },
+    { name: 'Nairametrics', url: 'https://www.nairametrics.com/ngx-stock-prices/', timeout: 15000, parse: 'table' },
+    { name: 'Proshare', url: 'https://proshare.co/market/stock-market', timeout: 15000, parse: 'table' },
+    { name: 'TheCable NGX', url: 'https://www.thecable.ng/stock-market', timeout: 15000, parse: 'table' },
+    { name: 'NGX Exchange Rates', url: 'https://www.ngxgroup.com/exchange-rate', timeout: 15000, parse: 'none' },
+    { name: 'Security Exchange (SEC NG)', url: 'https://sec.gov.ng/market-data/', timeout: 15000, parse: 'none' },
+    { name: 'Bloomberg Nigeria', url: 'https://www.bloomberg.com/markets/stocks/nigeria', timeout: 15000, parse: 'none' },
+    { name: 'TradingView NGX', url: 'https://www.tradingview.com/symbols/NGX-MTNN/', timeout: 15000, parse: 'none' },
+    { name: 'Google Finance NGX', url: 'https://www.google.com/finance/quote/MTNN:NGX', timeout: 15000, parse: 'none' },
+    { name: 'Investing.com Nigeria', url: 'https://www.investing.com/equities/nigeria', timeout: 15000, parse: 'none' },
+  ];
+
+  for (const source of sources) {
+    const start = Date.now();
+    try {
+      const { data } = await axios.get(source.url, {
+        timeout: source.timeout,
+        family: 4,
+        headers: { ...browserHeaders, Referer: source.url },
+      });
+      const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+      const sizeKB = (Buffer.byteLength(data, 'utf8') / 1024).toFixed(1);
+
+      if (source.parse === 'table') {
+        const $ = cheerio.load(data);
+        const stocks = [];
+        $('table').each((ti, table) => {
+          $(table).find('tr').each((i, row) => {
+            const cells = $(row).find('td');
+            if (cells.length >= 3) {
+              const ticker = $(cells[0]).text().trim();
+              const price = parseFloat($(cells[1]).text().trim().replace(/,/g, ''));
+              if (ticker && !isNaN(price) && ticker.length <= 15) {
+                stocks.push({ ticker, price });
+              }
+            }
+          });
+        });
+        results[source.name] = {
+          status: stocks.length > 0 ? '✅ OK' : '⚠️ No stocks parsed',
+          elapsed: `${elapsed}s`,
+          size: `${sizeKB}KB`,
+          stocksFound: stocks.length,
+          sample: stocks.slice(0, 3),
+        };
+      } else if (source.parse === 'kwayisi') {
+        const $ = cheerio.load(data);
+        const stocks = [];
+        $('table tbody tr').each((i, el) => {
+          const cells = $(el).find('td');
+          if (cells.length >= 4) {
+            const ticker = $(cells[0]).text().trim();
+            const name = $(cells[1]).text().trim();
+            const price = parseFloat($(cells[3]).text().trim().replace(/,/g, ''));
+            if (ticker && !isNaN(price)) {
+              stocks.push({ ticker, name, price });
+            }
+          }
+        });
+        results[source.name] = {
+          status: stocks.length > 0 ? '✅ OK' : '⚠️ No stocks parsed',
+          elapsed: `${elapsed}s`,
+          size: `${sizeKB}KB`,
+          stocksFound: stocks.length,
+          sample: stocks.slice(0, 3),
+        };
+      } else {
+        results[source.name] = {
+          status: '📡 Connected',
+          elapsed: `${elapsed}s`,
+          size: `${sizeKB}KB`,
+          preview: data.substring(0, 200).replace(/\s+/g, ' ').trim(),
+        };
+      }
+    } catch (e) {
+      const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+      results[source.name] = {
+        status: '❌ Failed',
+        elapsed: `${elapsed}s`,
+        error: e.message.slice(0, 120),
+        code: e.code || null,
+      };
+    }
+  }
+
+  // Determine which source worked best
+  const working = Object.entries(results).filter(([_, v]) => v.status === '✅ OK');
+  const recommendation = working.length > 0
+    ? `✅ Best source: "${working[0][0]}" (${working[0][1].stocksFound || 'connected'} stocks)`
+    : '❌ No source working yet — may need a paid API or proxy';
+
+  res.json({
+    timestamp: new Date().toISOString(),
+    results,
+    recommendation,
+  });
+});
+
 // ✅ Test Candle Sources (verify which APIs work from Render's US servers)
 // Hit: https://your-app.onrender.com/test-candles
 app.get('/test-candles', async (req, res) => {
