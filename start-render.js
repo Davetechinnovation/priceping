@@ -254,6 +254,8 @@ app.get('/test-ngx-sources', async (req, res) => {
     { name: 'Nairametrics', url: 'https://www.nairametrics.com/ngx-stock-prices/', timeout: 15000, parse: 'table' },
     { name: 'Proshare', url: 'https://proshare.co/market/stock-market', timeout: 15000, parse: 'table' },
     { name: 'TheCable NGX', url: 'https://www.thecable.ng/stock-market', timeout: 15000, parse: 'table' },
+    { name: 'CORS Proxy → Kwayisi', url: 'https://api.allorigins.win/raw?url=https://afx.kwayisi.org/ngx/', timeout: 30000, parse: 'kwayisi' },
+    { name: 'CORS Proxy → NGX doclib', url: 'https://api.allorigins.win/raw?url=https://doclib.ngxgroup.com/REST/api/statistics/equities/?market=&sector=&orderby=&pageSize=500&pageNo=0', timeout: 30000, parse: 'kwayisi' },
     { name: 'NGX Exchange Rates', url: 'https://www.ngxgroup.com/exchange-rate', timeout: 15000, parse: 'none' },
     { name: 'Security Exchange (SEC NG)', url: 'https://sec.gov.ng/market-data/', timeout: 15000, parse: 'none' },
     { name: 'Bloomberg Nigeria', url: 'https://www.bloomberg.com/markets/stocks/nigeria', timeout: 15000, parse: 'none' },

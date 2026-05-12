@@ -878,7 +878,19 @@ class PriceService {
         this._parseKwayisiPage(data, stocks);
         if (page === 1) await new Promise((r) => setTimeout(r, 2000));
       } catch (err) {
-        console.warn(`⚠️ Kwayisi fallback page ${page} failed: ${err.message}`);
+        console.warn(`⚠️ Kwayisi direct page ${page} failed: ${err.message}`);
+        // 🔄 Fallback: try via CORS proxy (works from Render where Nigerian sites are blocked)
+        try {
+          const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(page === 1 ? "https://afx.kwayisi.org/ngx/" : `https://afx.kwayisi.org/ngx/?page=${page}`)}`;
+          console.log(`↩️ Trying CORS proxy for Kwayisi page ${page}...`);
+          const { data: proxyData } = await axios.get(proxyUrl, { timeout: 30000 });
+          if (typeof proxyData === 'string' && proxyData.length > 1000) {
+            this._parseKwayisiPage(proxyData, stocks);
+            console.log(`✅ CORS proxy succeeded for Kwayisi page ${page}`);
+          }
+        } catch (proxyErr) {
+          console.warn(`⚠️ CORS proxy also failed for Kwayisi page ${page}: ${proxyErr.message}`);
+        }
       }
     }
   }
