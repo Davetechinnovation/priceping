@@ -487,6 +487,7 @@ ${usage.isPro ? "" : "🚀 Want unlimited alerts? Type *Subscribe*\n"}
       global.trackUserInterest(input.toUpperCase(), phoneNumber);
     }
 
+    console.log(`🔍 [Price] Input: "${input}" → assetInfo lookup...`);
     const info = await priceService.getAssetInfo(input);
 
     if (!info) {

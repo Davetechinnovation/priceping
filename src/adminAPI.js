@@ -316,10 +316,10 @@ function createAdminAPI(app, memoryMonitor) {
         // 3. 💱 FX Rates API (Forex)
         checkApiHealth("FX Rates (Forex)", `${priceService.forexApi}?base=USD`),
 
-        // 4. 🇳🇬 NGX Pulse (Nigerian Stocks primary)
-        priceService.ngxPulseKey
-          ? checkApiHealth("NGX Pulse (NGX Stocks)", `https://www.ngxpulse.ng/api/ngxdata/stocks`, { headers: { 'X-API-Key': priceService.ngxPulseKey, 'Content-Type': 'application/json' } })
-          : Promise.resolve({ name: "NGX Pulse (NGX Stocks)", status: "Misconfigured (no key)", latency: "N/A" }),
+        // 4. 🇳🇬 NGX Pulse (Nigerian Stocks primary — multi-key rotation)
+        priceService.ngxPulseKeys.length > 0
+          ? checkApiHealth("NGX Pulse (NGX Stocks)", `https://www.ngxpulse.ng/api/ngxdata/stocks`, { headers: { 'X-API-Key': priceService.ngxPulseKeys[0], 'Content-Type': 'application/json' } })
+          : Promise.resolve({ name: "NGX Pulse (NGX Stocks)", status: "Misconfigured (no keys)", latency: "N/A" }),
 
         // 5. 📈 Yahoo Finance (Futures & Indices)
         checkApiHealth("Yahoo Finance (Futures)", "https://query1.finance.yahoo.com/v1/finance/search?q=ES%3DF"),

@@ -14,6 +14,7 @@ class PriceService {
     this.diaAssetApi = "https://api.diadata.org/v1/assetQuotation";
     this.diaCommodityApi = "https://api.diadata.org/v1/rwa/Commodities";
     this.forexApi = "https://api.fxratesapi.com/latest";
+    this.forexCooldownUntil = 0; // 429 cooldown: skip forex fetches until this timestamp
     this.ngxApi = "https://doclib.ngxgroup.com/REST/api/statistics/equities/?market=&sector=&orderby=&pageSize=500&pageNo=0";
     this.termiiApi = "https://api.ng.termii.com/api/sms/send";
     this.alphaVantageKey = process.env.ALPHA_VANTAGE_KEY || null;
@@ -27,15 +28,22 @@ class PriceService {
     this.finnhubTTL = 300000; // 5 min cache
     this.finnhubInflight = new Map();
 
-    // 🇳🇬 NGX Pulse API — reliable NGX data source that works from Render
-    this.ngxPulseKey = process.env.NGX_PULSE_KEY || null;
+    // 🇳🇬 NGX Pulse API — multi-key rotation for higher total rate limit
+    // 3 keys × 100 req/day = 300 daily budget. Auto-rotates on 429.
     this.ngxPulseBase = 'https://www.ngxpulse.ng';
-    // 🚦 Hard rate limiter for NGX Pulse (Personal: 10 req/min, 100 req/day)
-    this.ngxPulseLimiter = {
-      daily: { count: 0, max: 95, reset: Date.now() + 86400000 },    // 95/day (5 buffer)
-      minute: { count: 0, max: 9, reset: Date.now() + 60000 },       // 9/min (1 buffer)
-      windowMs: 1800000, // 30 minute cache when using Pulse
-    };
+    this.ngxPulseKeys = [];
+    const rawKeys = process.env.NGX_PULSE_KEY || '';
+    if (rawKeys) {
+      // Supports comma-separated: "key1,key2,key3"
+      this.ngxPulseKeys = rawKeys.split(',').map(k => k.trim()).filter(Boolean);
+    }
+    this.ngxPulseKeyIndex = 0;
+    // Per-key rate limiters
+    this.ngxPulseLimiters = this.ngxPulseKeys.map(() => ({
+      daily: { count: 0, max: 95, reset: Date.now() + 86400000 },
+      minute: { count: 0, max: 9, reset: Date.now() + 60000 },
+      cooldownUntil: 0, // server-side 429 cooldown
+    }));
 
     this.headers = {
       "User-Agent":
@@ -95,7 +103,7 @@ class PriceService {
 
     this.ngxCache = { data: {}, lastUpdate: 0 };
     this.ngxTTL = 300000;       // Default 5 min (doclib/kwayisi)
-    this.ngxPulseTTL = 1800000; // 30 min when using NGX Pulse (preserves budget)
+    this.ngxPulseTTL = 300000; // 5 min — with 4 keys × 100 = 400 daily budget, safe
 
     this.classifier = new AssetClassifier();
     this.classifier.derivService = derivService;
@@ -777,7 +785,11 @@ class PriceService {
     const now = Date.now();
     const FOREX_TTL = 300000;
 
-    if (!this.globalForexCache || now - this.globalForexCache.ts > FOREX_TTL) {
+    // ⏳ 429 cooldown — skip API calls for 10 min when rate limited
+    // Falls through to serve stale cache below instead of hitting the API
+
+    // Skip API call during 10-min cooldown — serve stale cache below
+    if ((!this.globalForexCache || now - this.globalForexCache.ts > FOREX_TTL) && now >= this.forexCooldownUntil) {
       if (!this.forexInflight) {
         this.forexInflight = (async () => {
           try {
@@ -787,7 +799,12 @@ class PriceService {
               console.log(`🌍 Global Forex Market Cached: ${Object.keys(res.data.rates).length} pairs loaded.`);
             }
           } catch (e) {
-            console.warn(`⚠️ Global Forex Fetch Failed:`, e.message);
+            if (e.message?.includes('429')) {
+              console.warn(`⚠️ Forex API rate limited — cooling down for 10 min`);
+              this.forexCooldownUntil = now + 600000; // 10 min cooldown
+            } else {
+              console.warn(`⚠️ Global Forex Fetch Failed:`, e.message);
+            }
           } finally {
             this.forexInflight = null;
           }
@@ -836,7 +853,7 @@ class PriceService {
       const stocks = {};
 
       // 🇳🇬 Use 30min TTL when NGX Pulse is configured (preserves API budget)
-      const effectiveTTL = this.ngxPulseKey ? this.ngxPulseTTL : this.ngxTTL;
+      const effectiveTTL = this.ngxPulseKeys.length > 0 ? this.ngxPulseTTL : this.ngxTTL;
 
       if (this.ngxCache.data && Object.keys(this.ngxCache.data).length > 0) {
         const age = now - this.ngxCache.lastUpdate;
@@ -859,13 +876,9 @@ class PriceService {
         } catch (e) {}
       }
 
-      // 🥇 PRIMARY: NGX Pulse API (works everywhere, rate-limited to 95 req/day)
-      if (this.ngxPulseKey) {
-        try {
-          await this._fetchNGXPulseIntoStocks(stocks);
-        } catch (e) {
-          console.warn(`⚠️ NGX Pulse failed: ${e.message}`);
-        }
+      // 🥇 PRIMARY: NGX Pulse API (multi-key rotation, auto-swaps on 429)
+      if (this.ngxPulseKeys.length > 0) {
+        await this._fetchNGXPulseIntoStocks(stocks);
       }
 
       // 🥈 FALLBACK: NGX doclib API (works locally, empty on Render)
@@ -999,90 +1012,98 @@ class PriceService {
     });
   }
 
-  // 🇳🇬 NGX Pulse API — fetches all 150+ NGX stocks via clean JSON endpoint
-  // Free Personal tier: 100 req/day, 10 req/min
-  // 🚦 HARD rate limiter ensures we NEVER exceed limits
-  // Data is cached for 30 minutes to minimize requests
-  // Works from ANY network (Render, Cloudflare, etc.)
+  // 🇳🇬 NGX Pulse API — multi-key rotation for higher total rate limit
+  // 3 keys × 100 req/day = 300 total daily budget.
+  // Keys can be set as comma-separated in NGX_PULSE_KEY env var.
+  // Auto-rotates to next key on 429. Falls back to allorigins/doclib if all keys exhausted.
   async _fetchNGXPulseIntoStocks(stocks) {
-    if (!this.ngxPulseKey) return;
+    if (this.ngxPulseKeys.length === 0) return;
 
-    // 🚦 Rate limit check — enforce hard caps
-    const limiter = this.ngxPulseLimiter;
     const now = Date.now();
 
-    // Reset counters if windows have expired
-    if (now > limiter.daily.reset) {
-      limiter.daily.count = 0;
-      limiter.daily.reset = now + 86400000;
-    }
-    if (now > limiter.minute.reset) {
-      limiter.minute.count = 0;
-      limiter.minute.reset = now + 60000;
-    }
+    // Try each key in round-robin until one works
+    for (let attempt = 0; attempt < this.ngxPulseKeys.length; attempt++) {
+      const idx = this.ngxPulseKeyIndex;
+      const key = this.ngxPulseKeys[idx];
+      const limiter = this.ngxPulseLimiters[idx];
 
-    // Check daily cap
-    if (limiter.daily.count >= limiter.daily.max) {
-      const resetHrs = Math.round((limiter.daily.reset - now) / 3600000);
-      console.warn(`⚠️ NGX Pulse daily limit reached (${limiter.daily.max}/day). Resets in ~${resetHrs}h. Serving cached data.`);
-      return;
-    }
+      // Advance index for next attempt
+      this.ngxPulseKeyIndex = (this.ngxPulseKeyIndex + 1) % this.ngxPulseKeys.length;
 
-    // Check minute cap
-    if (limiter.minute.count >= limiter.minute.max) {
-      const resetSec = Math.ceil((limiter.minute.reset - now) / 1000);
-      console.warn(`⚠️ NGX Pulse minute limit reached (${limiter.minute.max}/min). Resets in ${resetSec}s.`);
-      return;
-    }
+      // ⏳ Check server-side 429 cooldown for this key
+      if (limiter.cooldownUntil && now < limiter.cooldownUntil) {
+        continue; // Try next key
+      }
 
-    // Increment counters BEFORE the request (counts budget, not actual)
-    limiter.daily.count++;
-    limiter.minute.count++;
+      // Reset counters if windows have expired
+      if (now > limiter.daily.reset) {
+        limiter.daily.count = 0;
+        limiter.daily.reset = now + 86400000;
+      }
+      if (now > limiter.minute.reset) {
+        limiter.minute.count = 0;
+        limiter.minute.reset = now + 60000;
+      }
 
-    console.log(`📊 NGX Pulse API request #${limiter.daily.count}/${limiter.daily.max} today, #${limiter.minute.count}/${limiter.minute.max} this minute`);
+      // Check daily cap
+      if (limiter.daily.count >= limiter.daily.max) {
+        continue; // Try next key
+      }
+      // Check minute cap
+      if (limiter.minute.count >= limiter.minute.max) {
+        continue; // Try next key
+      }
 
-    try {
-      const { data } = await axios.get(`${this.ngxPulseBase}/api/ngxdata/stocks`, {
-        headers: {
-          'X-API-Key': this.ngxPulseKey,
-          'Content-Type': 'application/json',
-        },
-        timeout: 30000,
-      });
+      // Increment counters
+      limiter.daily.count++;
+      limiter.minute.count++;
 
-      // NGX Pulse returns { stocks: [...] } or an array directly
-      const list = Array.isArray(data) ? data : (data?.stocks || []);
-      if (list.length === 0) {
-        console.warn('⚠️ NGX Pulse returned empty stock list');
-        // Refund the request — no data received
+      try {
+        const { data } = await axios.get(`${this.ngxPulseBase}/api/ngxdata/stocks`, {
+          headers: { 'X-API-Key': key, 'Content-Type': 'application/json' },
+          timeout: 30000,
+        });
+
+        const list = Array.isArray(data) ? data : (data?.stocks || []);
+        if (list.length === 0) {
+          limiter.daily.count = Math.max(0, limiter.daily.count - 1);
+          limiter.minute.count = Math.max(0, limiter.minute.count - 1);
+          continue;
+        }
+
+        let parsed = 0;
+        for (const stock of list) {
+          const ticker = (stock.symbol || '').toUpperCase().trim();
+          const price = parseFloat(stock.current_price || stock.price || stock.close_price);
+          if (ticker && !isNaN(price) && price > 0) {
+            stocks[ticker] = {
+              ticker,
+              name: stock.name || stock.company_name || ticker,
+              price,
+              change: parseFloat(stock.change_percent) || null,
+            };
+            parsed++;
+          }
+        }
+
+        console.log(`📊 NGX Pulse (key ${idx + 1}/${this.ngxPulseKeys.length}): ${parsed} stocks`);
+        return; // Success!
+      } catch (e) {
+        // Refund counter
         limiter.daily.count = Math.max(0, limiter.daily.count - 1);
         limiter.minute.count = Math.max(0, limiter.minute.count - 1);
-        return;
-      }
 
-      let parsed = 0;
-      for (const stock of list) {
-        const ticker = (stock.symbol || '').toUpperCase().trim();
-        const price = parseFloat(stock.current_price || stock.price || stock.close_price);
-        if (ticker && !isNaN(price) && price > 0) {
-          stocks[ticker] = {
-            ticker,
-            name: stock.name || stock.company_name || ticker,
-            price,
-            change: parseFloat(stock.change_percent) || null,
-          };
-          parsed++;
+        if (e.message?.includes('429')) {
+          limiter.cooldownUntil = now + 900000; // 15 min cooldown
+          console.warn(`⚠️ NGX Pulse key ${idx + 1} rate limited — trying next key`);
+        } else {
+          console.warn(`⚠️ NGX Pulse key ${idx + 1} failed: ${e.message}`);
         }
       }
-
-      console.log(`📊 NGX Pulse API returned ${parsed} stocks (budget: ${limiter.daily.count}/${limiter.daily.max} daily, ${limiter.minute.count}/${limiter.minute.max} min)`);
-    } catch (e) {
-      console.warn(`⚠️ NGX Pulse API request failed: ${e.message}`);
-      // Refund the request on failure
-      limiter.daily.count = Math.max(0, limiter.daily.count - 1);
-      limiter.minute.count = Math.max(0, limiter.minute.count - 1);
-      throw e; // Let caller handle fallback chain
     }
+
+    // All keys exhausted — let caller fallback to doclib/Kwayisi
+    console.warn('⚠️ All NGX Pulse keys exhausted — falling back');
   }
 
   // ════════════════════════════════════════════════════════════
