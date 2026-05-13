@@ -293,6 +293,8 @@ _soon as possible._`;
           const displayName = this.getDisplayName(user, pushName);
           let refinedArray = await this.geminiService.refinePrompt(message, isPro, cleanPhone, displayName);
 
+          console.log(`🔍 [Gemini Debug] Raw refinedArray for "${message}":`, JSON.stringify(refinedArray));
+
           if (refinedArray && !Array.isArray(refinedArray)) {
             refinedArray = [refinedArray];
           }
@@ -304,7 +306,7 @@ _soon as possible._`;
                 console.log(`🤖 Gemini chat: "${message}" ->`, refined.args[0]);
                 responses.push(refined.args[0]);
               } else if (this.commands[refined.command]) {
-                console.log(`🤖 Gemini command: "${message}" ->`, refined);
+                console.log(`🔍 [Gemini Debug] Routing: ${JSON.stringify(refined)}`);
                 const res = await this.commands[refined.command](
                   refined.args, cleanPhone, db, priceService, pushName, userState
                 );

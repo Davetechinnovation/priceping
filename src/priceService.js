@@ -1304,15 +1304,17 @@ class PriceService {
 
     if (!symbol) return null;
 
-    // 🚦 Check global cooldown before trying formats
-    if (this._isYahooRateLimited(symbol)) {
-      console.warn(`⏳ [Yahoo] SKIPPING format cascade for "${symbol}" — GLOBAL cooldown active`);
-      return null;
-    }
-
     const formats = [symbol, `${symbol}=F`, `^${symbol}`];
 
     for (const fmt of formats) {
+      // 🚦 Check if THIS specific format is in cooldown before trying it
+      const cooldownUntil = this.yahooCooldownMap.get(fmt.toUpperCase());
+      if (cooldownUntil && Date.now() < cooldownUntil) {
+        const remaining = Math.round((cooldownUntil - Date.now()) / 1000);
+        console.warn(`⏳ [Yahoo] Format "${fmt}" in cooldown (${remaining}s left) — skipping`);
+        continue;
+      }
+
       const result = await this._yahooFetch(fmt);
       if (result && result.price) {
         console.log(`✅ [Dynamic] Yahoo matched "${rawInput}" → ${fmt}`);

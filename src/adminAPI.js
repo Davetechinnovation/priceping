@@ -305,33 +305,43 @@ function createAdminAPI(app, memoryMonitor) {
       };
 
       const checks = [
-        // 1. DIA (Crypto) - Simple GET
-        checkApiHealth("Crypto API (DIA)", priceService.quotedAssetsApi),
-        
-        // 2. Forex - Simple GET
-        checkApiHealth("Forex API", `${priceService.forexApi}?base=USD`),
+        // 1. 🇺🇸 Finnhub (US Stocks primary)
+        priceService.finnhubKey
+          ? checkApiHealth("Finnhub (US Stocks)", `https://finnhub.io/api/v1/quote?symbol=AAPL&token=${priceService.finnhubKey}`)
+          : Promise.resolve({ name: "Finnhub (US Stocks)", status: "Misconfigured (no key)", latency: "N/A" }),
 
-        // 3. NGX Official - Simple GET
-        checkApiHealth("NGX Official API", priceService.ngxApi),
+        // 2. 💎 DIA Data (Crypto)
+        checkApiHealth("DIA Data (Crypto)", priceService.quotedAssetsApi),
 
-        // 4. Yahoo Finance - Ping a real endpoint (e.g., search)
-        checkApiHealth("Yahoo Finance", "https://query1.finance.yahoo.com/v1/finance/search?q=AAPL"),
-        
-        // 5. Kwayisi - Mimic browser headers
-        checkApiHealth("NGX Fallback (Kwayisi)", "https://afx.kwayisi.org/ngx/", {
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
-        }),
+        // 3. 💱 FX Rates API (Forex)
+        checkApiHealth("FX Rates (Forex)", `${priceService.forexApi}?base=USD`),
 
-        // 6. Groq AI - Check models endpoint with Auth header
-        checkApiHealth("AI API (Groq)", "https://api.groq.com/openai/v1/models", {
+        // 4. 🇳🇬 NGX Pulse (Nigerian Stocks primary)
+        priceService.ngxPulseKey
+          ? checkApiHealth("NGX Pulse (NGX Stocks)", `https://www.ngxpulse.ng/api/ngxdata/stocks`, { headers: { 'X-API-Key': priceService.ngxPulseKey, 'Content-Type': 'application/json' } })
+          : Promise.resolve({ name: "NGX Pulse (NGX Stocks)", status: "Misconfigured (no key)", latency: "N/A" }),
+
+        // 5. 📈 Yahoo Finance (Futures & Indices)
+        checkApiHealth("Yahoo Finance (Futures)", "https://query1.finance.yahoo.com/v1/finance/search?q=ES%3DF"),
+
+        // 6. 🔬 Kraken (Crypto candles for TA)
+        checkApiHealth("Kraken (TA Candles)", "https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=60"),
+
+        // 7. 🤖 Groq AI (Market Analysis)
+        checkApiHealth("AI (Groq)", "https://api.groq.com/openai/v1/models", {
           headers: { 'Authorization': `Bearer ${geminiService.apiKey}` }
         }),
 
-        // 7. News API (Google) - Simple GET
-        checkApiHealth("News API (Google)", "https://news.google.com/rss"),
+        // 8. 📰 Google News (Headlines)
+        checkApiHealth("Google News", "https://news.google.com/rss"),
 
-        // 8. Termii SMS - Use their health check endpoint with API key
-        checkApiHealth("SMS API (Termii)", `https://api.ng.termii.com/api/get-balance?api_key=${termiiService.apiKey}`, {})
+        // 9. 🌡️ Fear & Greed Index
+        checkApiHealth("Fear & Greed Index", "https://api.alternative.me/fng/"),
+
+        // 10. 📱 Termii (SMS Alerts)
+        termiiService.apiKey
+          ? checkApiHealth("SMS (Termii)", `https://api.ng.termii.com/api/get-balance?api_key=${termiiService.apiKey}`, {})
+          : Promise.resolve({ name: "SMS (Termii)", status: "Misconfigured (no key)", latency: "N/A" }),
       ];
 
       const results = await Promise.all(checks);
