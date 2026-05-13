@@ -478,7 +478,8 @@ class PriceService {
   async getAssetInfo(input) {
     let classification = this.classifier.classify(input);
     let { type, symbol, chain, confidence } = classification;
-    const sym = symbol; // alias used by DYNAMIC path
+    const sym = symbol;
+    console.log(`🔍 [AssetInfo] "${input}" → classified as ${type} (${confidence}%), symbol="${symbol}"`);
 
     // ════════════════════════════════════════════════════════
     // Dynamic futures pre-resolution
