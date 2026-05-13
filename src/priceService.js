@@ -21,6 +21,12 @@ class PriceService {
     this.omkarKey = process.env.OMKAR_API_KEY || null;
     this.twelveDataKey = process.env.TWELVE_DATA_KEY || null;
 
+    // 🏢 Finnhub — US stocks API (free: 60 req/min, offloads Yahoo ~80%)
+    this.finnhubKey = process.env.FINNHUB_KEY || null;
+    this.finnhubCache = {};
+    this.finnhubTTL = 300000; // 5 min cache
+    this.finnhubInflight = new Map();
+
     // 🇳🇬 NGX Pulse API — reliable NGX data source that works from Render
     this.ngxPulseKey = process.env.NGX_PULSE_KEY || null;
     this.ngxPulseBase = 'https://www.ngxpulse.ng';
@@ -344,6 +350,77 @@ class PriceService {
     }
   }
 
+  // ════════════════════════════════════════════════════════════
+  // FINNHUB — US stocks primary (free: 60 req/min, offloads Yahoo ~80%)
+  // Free tier covers US stocks only (not futures, indices, or NGX)
+  // ════════════════════════════════════════════════════════════
+  async _finnhubFetch(symbol) {
+    if (!this.finnhubKey) return null;
+
+    const key = `finnhub:${symbol.toUpperCase()}`;
+    const now = Date.now();
+
+    // 1️⃣ Cache hit
+    const cached = this.finnhubCache[key];
+    if (cached && now - cached.ts < this.finnhubTTL) {
+      return cached.result;
+    }
+
+    // 2️⃣ In-flight dedup
+    if (this.finnhubInflight.has(key)) {
+      try { return await this.finnhubInflight.get(key); }
+      catch { return null; }
+    }
+
+    // 3️⃣ Fire request (throttled)
+    const requestPromise = this._throttled(async () => {
+      try {
+        const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${this.finnhubKey}`;
+        const { data } = await this.httpClient.get(url, { timeout: 8000 });
+
+        // c === 0 means symbol not found on Finnhub
+        if (!data || data.c === 0 || data.c === null || data.c === undefined) {
+          this.finnhubCache[key] = { result: null, ts: now };
+          return null;
+        }
+
+        const result = {
+          symbol,
+          name:       symbol,
+          blockchain: 'Stock Market',
+          price:      data.c,       // current price
+          currency:   'USD',
+          change24h:  data.dp,      // % change from previous close
+          high52:     null,         // not in /quote endpoint
+          low52:      null,
+          volume:     null,
+          marketCap:  null,
+          others:     [],
+        };
+
+        this.finnhubCache[key] = { result, ts: now };
+        console.log(`✅ [Finnhub] ${symbol}: $${data.c}`);
+        return result;
+
+      } catch (e) {
+        if (e.message?.includes('429')) {
+          console.warn(`⚠️ [Finnhub] Rate limit hit for ${symbol}`);
+        }
+        // Serve stale on error
+        const stale = this.finnhubCache[key];
+        if (stale?.result) return stale.result;
+        return null;
+      }
+    });
+
+    this.finnhubInflight.set(key, requestPromise);
+    try {
+      return await requestPromise;
+    } finally {
+      this.finnhubInflight.delete(key);
+    }
+  }
+
   async loadAssetList() {
     if (
       Date.now() - this.lastCacheUpdate < 3600000 &&
@@ -593,9 +670,9 @@ class PriceService {
     }
 
     // ════════════════════════════════════════════════════════
-    // US STOCKS (Twelve Data + Yahoo hybrid)
+    // US STOCKS (Finnhub → Twelve Data → Yahoo)
     // ════════════════════════════════════════════════════════
-    if (type === "STOCK") {
+    if (type === "STOCK" || type === "US_STOCK") {
       return await this.getStockPrice(symbol, input);
     }
 
@@ -782,43 +859,43 @@ class PriceService {
         } catch (e) {}
       }
 
-      try {
-        const { data } = await this.httpClient.get(this.ngxApi, { timeout: 30000, family: 4 });
-        if (data?.records) {
-          for (const stock of data.records) {
-            const ticker = stock.symbol?.trim() || stock.ticker?.trim();
-            const price = parseFloat(stock.lastTradedPrice || stock.closingPrice || stock.price);
-            const change = parseFloat(stock.change) || null;
-            if (ticker && !isNaN(price)) {
-              stocks[ticker] = { ticker, name: stock.description || stock.name || ticker, price, change };
-            }
-          }
-        }
-        if (data?.records && Object.keys(stocks).length > 0) {
-          console.log(`📊 NGX official API returned ${Object.keys(stocks).length} stocks`);
-        } else {
-          console.warn("⚠️ NGX doclib API returned no records — will try Kwayisi");
-        }
-      } catch (e) {
-        console.warn(`⚠️ NGX doclib API failed: ${e.message}`);
-      }
-
-      // 🇳🇬 Fallback 1: NGX Pulse API (reliable, works from Render, free 100 req/day)
-      if (Object.keys(stocks).length === 0 && this.ngxPulseKey) {
-        console.log("↩️ Falling back to NGX Pulse API...");
+      // 🥇 PRIMARY: NGX Pulse API (works everywhere, rate-limited to 95 req/day)
+      if (this.ngxPulseKey) {
         try {
           await this._fetchNGXPulseIntoStocks(stocks);
         } catch (e) {
-          console.warn("⚠️ NGX Pulse fallback failed:", e.message);
+          console.warn(`⚠️ NGX Pulse failed: ${e.message}`);
         }
       }
 
+      // 🥈 FALLBACK: NGX doclib API (works locally, empty on Render)
       if (Object.keys(stocks).length === 0) {
-        console.log("↩️ Falling back to Kwayisi scrape...");
+        try {
+          const { data } = await this.httpClient.get(this.ngxApi, { timeout: 15000, family: 4 });
+          if (data?.records) {
+            for (const stock of data.records) {
+              const ticker = stock.symbol?.trim() || stock.ticker?.trim();
+              const price = parseFloat(stock.lastTradedPrice || stock.closingPrice || stock.price);
+              const change = parseFloat(stock.change) || null;
+              if (ticker && !isNaN(price)) {
+                stocks[ticker] = { ticker, name: stock.description || stock.name || ticker, price, change };
+              }
+            }
+            if (Object.keys(stocks).length > 0) {
+              console.log(`📊 NGX doclib API returned ${Object.keys(stocks).length} stocks`);
+            }
+          }
+        } catch (e) {
+          console.warn(`⚠️ NGX doclib API failed: ${e.message}`);
+        }
+      }
+
+      // 🥉 FALLBACK: Kwayisi scrape (works locally, blocked on Render)
+      if (Object.keys(stocks).length === 0) {
         try {
           await this._scrapeKwayisiIntoStocks(stocks);
         } catch (e) {
-          console.warn("⚠️ Kwayisi fallback also failed:", e.message);
+          console.warn(`⚠️ Kwayisi scrape failed: ${e.message}`);
         }
       }
 
@@ -897,41 +974,11 @@ class PriceService {
     for (const page of [1, 2]) {
       try {
         const url = page === 1 ? "https://afx.kwayisi.org/ngx/" : `https://afx.kwayisi.org/ngx/?page=${page}`;
-        // 🕐 Timeout 30s — Kwayisi is reliable but slow; stale cache fallback handles failures gracefully
         const { data } = await axios.get(url, { family: 4, timeout: 30000, headers: browserHeaders });
         this._parseKwayisiPage(data, stocks);
         if (page === 1) await new Promise((r) => setTimeout(r, 2000));
       } catch (err) {
-        console.warn(`⚠️ Kwayisi direct page ${page} failed: ${err.message}`);
-        // 🔄 Fallback 1: allorigins.win proxy (free, may work from Render)
-        try {
-          const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(page === 1 ? "https://afx.kwayisi.org/ngx/" : `https://afx.kwayisi.org/ngx/?page=${page}`)}`;
-          console.log(`↩️ Trying allorigins proxy for Kwayisi page ${page}...`);
-          const { data: proxyData } = await axios.get(proxyUrl, { timeout: 30000 });
-          if (typeof proxyData === 'string' && proxyData.length > 1000) {
-            this._parseKwayisiPage(proxyData, stocks);
-            console.log(`✅ allorigins proxy succeeded for Kwayisi page ${page}`);
-            continue; // Skip Cloudflare fallback if this worked
-          }
-        } catch (proxyErr) {
-          console.warn(`⚠️ allorigins proxy failed for Kwayisi page ${page}: ${proxyErr.message}`);
-        }
-        // 🔄 Fallback 2: Cloudflare Worker proxy (if configured — most reliable)
-        const cfProxyBase = process.env.CLOUDFLARE_PROXY_URL;
-        if (cfProxyBase) {
-          try {
-            const targetUrl = page === 1 ? "https://afx.kwayisi.org/ngx/" : `https://afx.kwayisi.org/ngx/?page=${page}`;
-            const cfUrl = `${cfProxyBase.replace(/\/$/, '')}/fetch?url=${encodeURIComponent(targetUrl)}`;
-            console.log(`↩️ Trying Cloudflare Worker proxy for Kwayisi page ${page}...`);
-            const { data: cfData } = await axios.get(cfUrl, { timeout: 30000 });
-            if (typeof cfData === 'string' && cfData.length > 1000) {
-              this._parseKwayisiPage(cfData, stocks);
-              console.log(`✅ Cloudflare Worker proxy succeeded for Kwayisi page ${page}`);
-            }
-          } catch (cfErr) {
-            console.warn(`⚠️ Cloudflare Worker proxy failed for Kwayisi page ${page}: ${cfErr.message}`);
-          }
-        }
+        // Kwayisi is blocked on Render — silently skip, Pulse/doclib handles it
       }
     }
   }
@@ -1039,18 +1086,26 @@ class PriceService {
   }
 
   // ════════════════════════════════════════════════════════════
-  // GLOBAL STOCKS (Twelve Data + Yahoo hybrid)
-  // US stocks → Twelve Data first, then Yahoo
-  // Futures/indices → Yahoo only
+  // US STOCKS — Finnhub (primary, 60 req/min) → Twelve Data → Yahoo
+  // Futures/Indices — Yahoo only
   // ════════════════════════════════════════════════════════════
   async getStockPrice(symbol, rawInput) {
     const isFuturesOrIndex = symbol.includes('=F') || symbol.startsWith('^');
 
-    if (!isFuturesOrIndex && this.twelveDataKey) {
-      const tdResult = await this._twelveDataFetch(symbol);
-      if (tdResult) return tdResult;
+    if (!isFuturesOrIndex) {
+      // 1️⃣ Finnhub — free US stocks, 60 req/min, covers ~80% of traffic
+      if (this.finnhubKey) {
+        const fhResult = await this._finnhubFetch(symbol);
+        if (fhResult) return fhResult;
+      }
+      // 2️⃣ Twelve Data — US stocks fallback (if configured)
+      if (this.twelveDataKey) {
+        const tdResult = await this._twelveDataFetch(symbol);
+        if (tdResult) return tdResult;
+      }
     }
 
+    // 3️⃣ Yahoo — last resort for stocks, primary for futures/indices
     return await this._yahooFetch(symbol);
   }
 

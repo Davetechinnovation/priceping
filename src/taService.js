@@ -27,27 +27,7 @@ class TAService {
 
   async _fetchBinanceCandles(asset) {
     const base = asset.toUpperCase().replace(/-PERP$/i, '').replace(/USDT$/, '');
-    const symbol = `${base}USDT`;
-
-    // ── 1. Try Binance (works locally, 451 blocked on Render/AWS) ───
-    try {
-      const { data } = await axios.get('https://api.binance.com/api/v3/klines', {
-        params: { symbol, interval: '1h', limit: 200 },
-        timeout: 6000,
-      });
-      console.log(`✅ [TA] Binance klines OK for ${symbol}`);
-      return data.map(k => ({
-        open:   parseFloat(k[1]),
-        high:   parseFloat(k[2]),
-        low:    parseFloat(k[3]),
-        close:  parseFloat(k[4]),
-        volume: parseFloat(k[5]),
-      }));
-    } catch (e) {
-      console.warn(`⚠️ [TA] Binance blocked (${e.response?.status || e.code || e.message}), trying Kraken...`);
-    }
-
-    // ── 2. Kraken (confirmed working on Render ✅) ────────────
+    // Binance is blocked on Render (451) — skip to Kraken directly
     return await this._fetchKrakenCandles(base);
   }
 

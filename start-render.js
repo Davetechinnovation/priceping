@@ -250,18 +250,9 @@ app.get('/test-ngx-sources', async (req, res) => {
   };
 
   const sources = [
-    { name: 'Kwayisi (retry)', url: 'https://afx.kwayisi.org/ngx/', timeout: 30000, parse: 'kwayisi' },
-    { name: 'Nairametrics', url: 'https://www.nairametrics.com/ngx-stock-prices/', timeout: 15000, parse: 'table' },
-    { name: 'Proshare', url: 'https://proshare.co/market/stock-market', timeout: 15000, parse: 'table' },
-    { name: 'TheCable NGX', url: 'https://www.thecable.ng/stock-market', timeout: 15000, parse: 'table' },
-    { name: 'CORS Proxy → Kwayisi', url: 'https://api.allorigins.win/raw?url=https://afx.kwayisi.org/ngx/', timeout: 30000, parse: 'kwayisi' },
-    { name: 'CORS Proxy → NGX doclib', url: 'https://api.allorigins.win/raw?url=https://doclib.ngxgroup.com/REST/api/statistics/equities/?market=&sector=&orderby=&pageSize=500&pageNo=0', timeout: 30000, parse: 'kwayisi' },
-    { name: 'NGX Exchange Rates', url: 'https://www.ngxgroup.com/exchange-rate', timeout: 15000, parse: 'none' },
-    { name: 'Security Exchange (SEC NG)', url: 'https://sec.gov.ng/market-data/', timeout: 15000, parse: 'none' },
-    { name: 'Bloomberg Nigeria', url: 'https://www.bloomberg.com/markets/stocks/nigeria', timeout: 15000, parse: 'none' },
-    { name: 'TradingView NGX', url: 'https://www.tradingview.com/symbols/NGX-MTNN/', timeout: 15000, parse: 'none' },
-    { name: 'Google Finance NGX', url: 'https://www.google.com/finance/quote/MTNN:NGX', timeout: 15000, parse: 'none' },
-    { name: 'Investing.com Nigeria', url: 'https://www.investing.com/equities/nigeria', timeout: 15000, parse: 'none' },
+    { name: 'NGX doclib', url: 'https://doclib.ngxgroup.com/REST/api/statistics/equities/?market=&sector=&orderby=&pageSize=500&pageNo=0', timeout: 15000, parse: 'none' },
+    { name: 'Kwayisi', url: 'https://afx.kwayisi.org/ngx/', timeout: 30000, parse: 'kwayisi' },
+    { name: 'Google Finance', url: 'https://www.google.com/finance/quote/MTNN:NGX', timeout: 15000, parse: 'none' },
   ];
 
   for (const source of sources) {
