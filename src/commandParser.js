@@ -1,10 +1,10 @@
 const { evaluate } = require('mathjs');
-const GeminiService = require('./geminiService');
+const GroqService = require('./groqService');
 const fearGreedService = require('./fearGreedService');
 const newsService = require('./newsService');
 class CommandParser {
   constructor(db = null) {
-    this.geminiService = new GeminiService(db);
+    this.geminiService = new GroqService(db);
     this.commands = {
       hi: this.handleGreeting.bind(this),
       hello: this.handleGreeting.bind(this),
@@ -253,6 +253,8 @@ _soon as possible._`;
     // FIX: Only use the zero-cost fast-path if the message strictly structurally matches a command.
     // If it's a natural English sentence starting with a command word (e.g. "Price is moving fast"),
     // pass it safely to Gemini for context processing.
+    // Gemini handles missing args intelligently: if user discussed BTC and says "Analyze", it
+    // fills BTC. If no context, Gemini asks "Which asset?"
     if (handler && !this.isStrictCommand(command, args)) {
       handler = null;
     }
@@ -675,6 +677,7 @@ Type *Subscribe* to view plans!`;
       low52: info.low52 || null,
       volume: info.volume || null,
       marketCap: info.marketCap || null,
+      marketLabel: info.blockchain || null,
       fearGreed,
     };
 
@@ -724,14 +727,25 @@ news analysis and market updates.
 Type *Subscribe* to view plans!`;
     }
 
-    // 2. Fetch News
-    const headlines = await newsService.getLatestHeadlines(input);
+    // 2. Classify asset to get right keyword (crypto, stock, forex, etc.)
+    const assetType = priceService.classifier?.classify(input)?.type?.toLowerCase() || 'crypto';
+    const headlineMap = {
+      'crypto': 'crypto', 'synthetic_index': 'crypto', 'deriv_asset': 'crypto',
+      'stock': 'stock', 'us_stock': 'stock', 'ngx_stock': 'stock',
+      'forex': 'forex',
+      'commodity': 'commodity',
+      'traditional_future': 'futures',
+    };
+    const newsKeyword = headlineMap[assetType] || 'finance';
+
+    // 3. Fetch News
+    const headlines = await newsService.getLatestHeadlines(input, newsKeyword);
     if (!headlines || headlines.length === 0) {
       return `ℹ️ *No major news found for ${input} in the last 24 hours.*`;
     }
 
-    // 3. Call Groq
-    const analysis = await this.geminiService.analyzeNewsHeadlines(input, headlines);
+    // 4. Call Groq with asset-specific prompt
+    const analysis = await this.geminiService.analyzeNewsHeadlines(input, headlines, newsKeyword);
 
     if (!analysis) {
       return `⚠️ *System Error*\nThe AI is currently resting. Please try again in a moment!`;

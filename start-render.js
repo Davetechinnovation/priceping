@@ -22,7 +22,7 @@ const AlertMonitor = require("./src/alertMonitor");
 const PriceService = require("./src/priceService");
 const MemoryMonitor = require("./src/memoryMonitor");
 const TermiiService = require("./src/termiiService");
-const GeminiService = require("./src/geminiService");
+const GroqService = require("./src/groqService");
 const cron = require("node-cron");
 const { createAdminAPI } = require("./src/adminAPI");
 
@@ -698,7 +698,7 @@ ${u.isPro ? "👑 Pro Plan" : `⏰ Resets in: ${u.resetIn}`}
     // ==========================================
     // ☀️ DAILY MORNING BRIEF (8:00 AM WAT = 7:00 AM UTC)
     // ==========================================
-    const geminiService = new GeminiService(database.db);
+    const geminiService = new GroqService(database.db);
     const TOP_COINS = ['BTC', 'ETH', 'SOL', 'AAPL', 'ZENITHBANK', 'DANGCEM', 'MTNN', 'GTCO'];
 
     cron.schedule('0 7 * * *', async () => {

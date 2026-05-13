@@ -78,7 +78,7 @@ User: "Go ahead" / "Yes" / "Correct" / "Do it"
 DO NOT re-calculate. DO NOT re-explain. Just set it.`;
 const TAService = require('./taService');
 
-class GeminiService {
+class GroqService {
   constructor(db = null) {
     this.db = db;
     this.apiKey = process.env.GROQ_API_KEY;
@@ -563,12 +563,13 @@ ${knowledgeBase}`.trim();
         ...warnings.map(w => `⚠️ ${w}`)
       ].join('\n');
 
-      // RSI annotation matches taService thresholds exactly
-      const rsiLabel = ta.rsi >= 75 ? ' ← HEAVILY OVERBOUGHT'
-                     : ta.rsi >= 65 ? ' ← APPROACHING OVERBOUGHT'
-                     : ta.rsi <= 25 ? ' ← HEAVILY OVERSOLD'
-                     : ta.rsi <= 35 ? ' ← OVERSOLD'
-                     : ta.rsi <= 45 ? ' ← APPROACHING OVERSOLD'
+      // RSI annotation — industry-standard 7-tier (TradingView, Bloomberg)
+      const rsiLabel = ta.rsi >= 80 ? ' ← HEAVILY OVERBOUGHT'
+                     : ta.rsi >= 70 ? ' ← OVERBOUGHT'
+                     : ta.rsi >= 60 ? ' ← APPROACHING OVERBOUGHT'
+                     : ta.rsi <= 20 ? ' ← HEAVILY OVERSOLD'
+                     : ta.rsi <= 30 ? ' ← OVERSOLD'
+                     : ta.rsi <= 40 ? ' ← APPROACHING OVERSOLD'
                      : ' ← NEUTRAL';
 
       taSection = `
@@ -592,6 +593,14 @@ ${allSignals}`;
     if (extras.high52 && extras.low52) {
       const pctFromHigh = (((extras.high52 - price) / extras.high52) * 100).toFixed(1);
       suppLines.push(`52-week range: ${currPrefix}${extras.low52.toLocaleString()} – ${currPrefix}${extras.high52.toLocaleString()} (${pctFromHigh}% below yearly high)`);
+    }
+    if (extras.volume && extras.volume > 0) {
+      const volStr = extras.volume >= 1e9
+        ? `${(extras.volume / 1e9).toFixed(2)}B`
+        : extras.volume >= 1e6
+        ? `${(extras.volume / 1e6).toFixed(1)}M`
+        : `${(extras.volume / 1e3).toFixed(0)}K`;
+      suppLines.push(`Volume: ${volStr}`);
     }
     if (extras.marketCap) {
       const capStr = extras.marketCap >= 1e12
@@ -695,7 +704,7 @@ Return exactly in this JSON format strictly, no explanation: {"support": number,
     return null;
   }
 
-  async analyzeNewsHeadlines(asset, headlines) {
+  async analyzeNewsHeadlines(asset, headlines, assetType = 'crypto') {
     if (!this.apiKey || !headlines || headlines.length === 0) return null;
 
     const cacheKey = `news:${asset}`;
@@ -704,7 +713,14 @@ Return exactly in this JSON format strictly, no explanation: {"support": number,
     if (cached && now - cached.ts < 1800000) return cached.text; // 30 min cache
 
     const headlinesStr = headlines.map((h, i) => `${i + 1}. ${h}`).join("\n");
-    const prompt = `You are a crypto news analyst. Here are the top news headlines for ${asset} right now:\n\n${headlinesStr}\n\nWrite a short, engaging 3-point summary (using emojis) of what is happening with ${asset} based ONLY on these headlines. End with a 1-sentence overall sentiment (e.g. Bullish, Bearish, or Neutral).`;
+    const prompt = `You are a professional ${assetType} market analyst. Here are the top headlines for ${asset}:\n\n${headlinesStr}\n\nWrite a concise 3-point brief for traders:
+1️⃣ Key news event — what happened (1 sentence)
+2️⃣ Price impact — what this means for ${asset}'s price direction (1 sentence)
+3️⃣ Key number — the most important figure from these headlines (e.g. earnings beat %, rate change, supply figure)
+
+Then end with: "Sentiment: [Strongly Bullish / Bullish / Slightly Bullish / Neutral / Slightly Bearish / Bearish / Strongly Bearish]"
+
+Rules: Max 80 words. Use 2-3 emojis. Be direct — traders need signal, not fluff. Base ONLY on the headlines above.`;
 
     try {
       const response = await axios.post(
@@ -817,4 +833,4 @@ Write a 3-sentence morning brief in plain text (no markdown headers). Mention th
   }
 }
 
-module.exports = GeminiService;
+module.exports = GroqService;

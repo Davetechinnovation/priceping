@@ -349,9 +349,13 @@ class AssetClassifier {
         return { type: 'SYNTHETIC_INDEX', symbol, chain: null, confidence: 98 };
       }
       // Check display name match (e.g. "volatility 75" → "Volatility 75 Index" → "R_75")
-      const searchResults = this.derivService.searchSymbols(symbol);
-      if (searchResults.length > 0) {
-        return { type: 'SYNTHETIC_INDEX', symbol: searchResults[0].symbol, chain: null, confidence: 90 };
+      // Skip bare "VOLATILITY", "V", "VOL" without a number — they're too vague and hit wrong symbols
+      const vagueSynthetics = new Set(['VOLATILITY', 'V', 'VOL', 'BOOM', 'CRASH', 'JUMP', 'RANGE']);
+      if (!vagueSynthetics.has(symbol)) {
+        const searchResults = this.derivService.searchSymbols(symbol);
+        if (searchResults.length > 0) {
+          return { type: 'SYNTHETIC_INDEX', symbol: searchResults[0].symbol, chain: null, confidence: 90 };
+        }
       }
     }
 

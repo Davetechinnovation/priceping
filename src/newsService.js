@@ -7,7 +7,7 @@ class NewsService {
     this.cacheTTL = 1800000; // 30 mins
   }
 
-  async getLatestHeadlines(assetSymbol) {
+  async getLatestHeadlines(assetSymbol, assetType = 'crypto') {
     const cacheKey = assetSymbol.toLowerCase();
     const now = Date.now();
     
@@ -18,9 +18,17 @@ class NewsService {
     }
 
     try {
-      // Use Google News RSS for the asset over the past 24 hours
-      // URL encoded query: "BTC crypto when:1d"
-      const query = encodeURIComponent(`${assetSymbol} crypto when:1d`);
+      // Use Google News RSS with proper keyword for asset type
+      // Crypto → "BTC crypto", Stocks → "AAPL stock", Commodities → "GOLD commodity"
+      const keywords = {
+        'crypto': 'crypto',
+        'stock': 'stock',
+        'forex': 'forex',
+        'commodity': 'commodity',
+        'futures': 'futures',
+      };
+      const keyword = keywords[assetType] || assetType;
+      const query = encodeURIComponent(`${assetSymbol} ${keyword} when:1d`);
       const url = `https://news.google.com/rss/search?q=${query}&hl=en-US&gl=US&ceid=US:en`;
       
       const feed = await this.parser.parseURL(url);
