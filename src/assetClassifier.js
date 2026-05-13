@@ -309,25 +309,9 @@ class AssetClassifier {
     }
 
     // ============================================
-    // 3.5️⃣ LIVE DERIV SYMBOL CHECK (supplementary)
-    // If derivService is seeded, check if the raw symbol (or symbol) exists
-    // as an active Deriv instrument. This catches ANY synthetic index, including
-    // new ones that get added to Deriv's platform.
-    // ============================================
-    if (this.derivService && this.derivService.activeSymbolSet.size > 0) {
-      // Direct exact match on raw input
-      if (this.derivService.isSynthetic(symbol) || this.derivService.hasSymbol(symbol)) {
-        return { type: 'SYNTHETIC_INDEX', symbol, chain: null, confidence: 98 };
-      }
-      // Check display name match (e.g. "volatility 75" → "Volatility 75 Index" → "R_75")
-      const searchResults = this.derivService.searchSymbols(symbol);
-      if (searchResults.length > 0) {
-        return { type: 'SYNTHETIC_INDEX', symbol: searchResults[0].symbol, chain: null, confidence: 90 };
-      }
-    }
-
-    // ============================================
-    // 4️⃣ PATTERN-BASED HEURISTICS
+    // 4️⃣ PATTERN-BASED HEURISTICS (run BEFORE Deriv search to avoid
+    //     partial display-name matches — e.g. "Volatility 100" should map
+    //     to R_100, not "1-Hour Volatility 10 Index" = 1HZ10V)
     // ============================================
 
     // 🎲 SYNTHETIC INDICES (Deriv) — Hardcoded aliases for common known patterns
@@ -353,6 +337,22 @@ class AssetClassifier {
     const rangeMatch = rawInput.match(/^(RANGE\s*BREAK|RB)\s*(\d+)$/i);
     if (rangeMatch) {
       return { type: 'SYNTHETIC_INDEX', symbol: `RB${rangeMatch[2]}`, chain: null, confidence: 100 };
+    }
+
+    // ============================================
+    // 3.5️⃣ LIVE DERIV SYMBOL CHECK (supplementary)
+    // Runs AFTER pattern heuristics so known patterns get exact matches first
+    // ============================================
+    if (this.derivService && this.derivService.activeSymbolSet.size > 0) {
+      // Direct exact match on raw input
+      if (this.derivService.isSynthetic(symbol) || this.derivService.hasSymbol(symbol)) {
+        return { type: 'SYNTHETIC_INDEX', symbol, chain: null, confidence: 98 };
+      }
+      // Check display name match (e.g. "volatility 75" → "Volatility 75 Index" → "R_75")
+      const searchResults = this.derivService.searchSymbols(symbol);
+      if (searchResults.length > 0) {
+        return { type: 'SYNTHETIC_INDEX', symbol: searchResults[0].symbol, chain: null, confidence: 90 };
+      }
     }
 
     // 💱 Forex pattern: 6 uppercase letters (EURUSD, GBPJPY)
