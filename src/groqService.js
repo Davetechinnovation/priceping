@@ -451,25 +451,25 @@ ${knowledgeBase}`.trim();
           // Fix generic asset words using last known context
           if (['price', 'analyze', 'news', 'set', 'bought', 'sold'].includes(cmd.command)) {
             const assetArg = (cmd.args?.[0] || '').toLowerCase().trim();
+            const assetUpper = assetArg.toUpperCase();
 
+            // 🚦 Check 1: If asset is a generic reference, replace it
             if (GENERIC_WORDS.has(assetArg)) {
               if (lastAssets.length > 0) {
                 console.log(`🔧 Context fix: "${cmd.args[0]}" → "${lastAssets[0]}"`);
                 cmd.args[0] = lastAssets[0];
               } else {
-                // No context at all — convert set to a chat question
                 if (cmd.command === 'set') {
-                  return {
-                    command: 'chat',
-                    args: ['Which asset would you like to set an alert for? (e.g. BTC below 80000 or ZENITHBANK below 30)']
-                  };
+                  return { command: 'chat', args: ['Which asset would you like to set an alert for? (e.g. BTC below 80000 or ZENITHBANK below 30)'] };
                 }
-                // For price/analyze/news with no context
-                return {
-                  command: 'chat',
-                  args: ['Which asset would you like to check?']
-                };
+                return { command: 'chat', args: ['Which asset would you like to check?'] };
               }
+            }
+            // 🚦 Check 2: If AI invented an asset NOT in lastAssets and user has recent context, use lastAssets instead
+            // This catches hallucinations like EURTRY when user was just discussing DANGCEM
+            else if (lastAssets.length > 0 && !lastAssets.some(a => a.toUpperCase() === assetUpper)) {
+              console.log(`🔧 Hallucination guard: "${cmd.args[0]}" not in lastAssets [${lastAssets.join(', ')}] → using "${lastAssets[0]}"`);
+              cmd.args[0] = lastAssets[0];
             }
           }
 
