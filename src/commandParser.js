@@ -5,6 +5,8 @@ const newsService = require('./newsService');
 class CommandParser {
   constructor(db = null) {
     this.geminiService = new GroqService(db);
+    // 🗣️ Conversation state Map — tracks pending clarifications across messages
+    this.userState = new Map();
     this.commands = {
       hi: this.handleGreeting.bind(this),
       hello: this.handleGreeting.bind(this),
@@ -129,6 +131,7 @@ class CommandParser {
     }
 
     const words = text.split(/\s+/);
+    console.log(`🐛 [DEBUG parseMessage] "${text}" → command="${words[0]}", args=${JSON.stringify(words.slice(1))}`);
     return { command: words[0], args: words.slice(1) };
   }
 
@@ -137,11 +140,12 @@ class CommandParser {
       return args.length === 0;
     }
     if (["price", "p", "analyze", "analysis", "view", "opinion", "news"].includes(command)) {
-      if (args.length < 1 || args.length > 3) return false;
-      const conversationalWords = new Set(["am", "me", "my", "an", "a", "the", "it", "that", "this", "one", "them", "those", "for", "please", "now", "is", "what", "how"]);
-      for (const arg of args) {
-        if (conversationalWords.has(arg.toLowerCase().replace(/[^a-z]/g, ""))) return false;
-      }
+      // Only pass through if it's a clean, single non-conversational asset (e.g. "price BTC", "analyze SOL")
+      // Everything else (0 args, conversational words, multi-word) → Gemini handles conversationally
+      if (args.length !== 1) return false;
+      const conversationalWords = new Set(["am", "me", "my", "an", "a", "the", "it", "that", "this", "one", "them", "those", "for", "please", "now", "is", "what", "how", "all", "both", "each"]);
+      const cleanArg = args[0].toLowerCase().replace(/[^a-z]/g, "");
+      if (conversationalWords.has(cleanArg)) return false;
       return true;
     }
     if (["del", "delete"].includes(command)) {
@@ -174,7 +178,7 @@ class CommandParser {
   // ==========================================
   // 🎯 MAIN HANDLER
   // ==========================================
-  async handleCommand(message, jid, db, priceService, pushName, userState) {
+  async handleCommand(message, jid, db, priceService, pushName, userState = this.userState) {
     const { command, args } = this.parseMessage(message);
     const cleanPhone = this.extractPhone(jid);
 
@@ -259,14 +263,53 @@ _soon as possible._`;
       handler = null;
     }
 
-    if (!handler) {
+    // 🗣️ CONVERSATION STATE: Check if Gemini just asked a clarifying question
+    // Uses BOTH in-memory flag AND MongoDB context history as fallback
+    let pendingClarification = userState.get(cleanPhone)?.type === 'AWAITING_GEMINI_CLARIFICATION';
+
+    // 🛡️ FALLBACK: Check MongoDB AI context history for last bot question
+    if (!pendingClarification && this.geminiService) {
+      try {
+        this._lastContextCheck = this._lastContextCheck || {};
+        const cacheKey = `ctx:${cleanPhone}`;
+        const cached = this._lastContextCheck[cacheKey];
+        const now = Date.now();
+        // Cache the context check for 30s to avoid too many DB reads
+        if (cached && now - cached.ts < 30000) {
+          pendingClarification = cached.pending;
+        } else {
+          const ctx = await this.geminiService.getUserContext(cleanPhone);
+          const history = ctx.history || [];
+          // Check if the LAST assistant message was a question (contains "?" or asking words)
+          for (let i = history.length - 1; i >= 0; i--) {
+            const entry = history[i];
+            if (entry.startsWith('A:')) {
+              const text = entry.slice(2).toLowerCase();
+              // Questions typically end with "?" or start with asking words
+              const isQuestion = text.includes('?') ||
+                /\b(which|what|who|where|how|tell me|sure|which one)\b/.test(text);
+              if (isQuestion) {
+                pendingClarification = true;
+                console.log(`🗣️ [Context Fallback] Last bot response was a question for ${cleanPhone}: "${text.slice(0, 60)}..."`);
+              }
+              break; // Only check the LAST assistant message
+            }
+          }
+          this._lastContextCheck[cacheKey] = { pending: pendingClarification, ts: now };
+        }
+      } catch (_) { /* silent fail */ }
+    }
+
+    console.log(`🗣️ [Conversation] ${cleanPhone} | pendingClarification=${pendingClarification} | handler=${handler ? command : 'null'}`);
+
+    if (!handler && !pendingClarification) {
       // 🎯 DYNAMIC TICKER DETECTION — route any unqualified ticker-like input to price
       // This is fully dynamic: V75, BOOM1000, CRASH500, JD10, RB100, 1HZ25V, VOL 75, etc.
       // Pattern: 1+ uppercase letters with optional digits (e.g. V75) OR spaced (e.g. VOL 75)
       const originalText = message.trim();
       const tickerPattern = /^[A-Z]{1,8}\d*$/i;           // "V75", "BOOM1000", "JD10"
       const spacedTickerPattern = /^[A-Z]{1,8}\s+\d{1,6}$/i; // "VOL 75", "BOOM 1000"
-      const anyTicker = /^[A-Z]{1,2}HZ?\d/               // "1HZ25V" 
+      const anyTicker = /^[A-Z]{1,2}HZ?\d/               // "1HZ25V"
       
       // Only auto-route if there's no space (single word) or it matches spaced ticker pattern,
       // and it doesn't match known greeting/conversational words
@@ -280,9 +323,19 @@ _soon as possible._`;
       
       if (isLikelyTicker && !conversationalWords.has(command) && !commandWordBlocklist.has(command)) {
         console.log(`🎯 Dynamic ticker detection: "${originalText}" → routing to price command`);
-        return this.handleGenericPrice([originalText.toUpperCase()], cleanPhone, db, priceService, pushName, userState);
+        const resp = await this.handleGenericPrice([originalText.toUpperCase()], cleanPhone, db, priceService, pushName, userState);
+        // ✅ Save asset to context
+        if (this.geminiService) this.geminiService.injectBotResponse(cleanPhone, resp, [originalText.toUpperCase()]);
+        return resp;
       }
+    }
 
+    if (pendingClarification) {
+      console.log(`🗣️ [Conversation] Pending clarification for ${cleanPhone} — sending "${message}" straight to Gemini (bypassing ALL routing)`);
+      userState.delete(cleanPhone); // Clear the in-memory flag too
+    }
+
+    if (!handler) {
       const greetings = ["bot", "test", "morning", "gm", "evening", "afternoon"];
       if (greetings.includes(command) && args.length === 0) {
         return this.handleGreeting([], cleanPhone, db, priceService, pushName);
@@ -293,6 +346,13 @@ _soon as possible._`;
           const usage = await db.getAlertUsage(cleanPhone);
           const isPro = usage ? usage.isPro : false;
           const displayName = this.getDisplayName(user, pushName);
+
+          // 🐛 DEBUG: Show what context the AI sees before it processes
+          try {
+            const ctx = await this.geminiService.getUserContext(cleanPhone);
+            console.log(`🐛 [DEBUG] AI Context for "${message}": lastAssets=${JSON.stringify(ctx.lastAssets)} | history=${JSON.stringify(ctx.history)}`);
+          } catch (_) {}
+
           let refinedArray = await this.geminiService.refinePrompt(message, isPro, cleanPhone, displayName);
 
           console.log(`🔍 [Gemini Debug] Raw refinedArray for "${message}":`, JSON.stringify(refinedArray));
@@ -303,10 +363,14 @@ _soon as possible._`;
 
           if (refinedArray && refinedArray.length > 0) {
             let responses = [];
+            let geminiAskedQuestion = false;
             for (const refined of refinedArray) {
               if (refined.command === "chat" && refined.args && refined.args[0]) {
                 console.log(`🤖 Gemini chat: "${message}" ->`, refined.args[0]);
                 responses.push(refined.args[0]);
+                // 🗣️ Gemini asked a question — flag the conversation state so the next
+                // reply goes to Gemini instead of being stolen by the ticker detector
+                geminiAskedQuestion = true;
               } else if (this.commands[refined.command]) {
                 console.log(`🔍 [Gemini Debug] Routing: ${JSON.stringify(refined)}`);
                 const res = await this.commands[refined.command](
@@ -317,6 +381,11 @@ _soon as possible._`;
             }
             if (responses.length > 0) {
               const finalResp = responses.join('\n\n━━━━━━━━━━━━━━━━━\n\n');
+              // 🗣️ If Gemini just asked a clarifying question, save state so next reply routes to Gemini
+              if (geminiAskedQuestion) {
+                userState.set(cleanPhone, { type: 'AWAITING_GEMINI_CLARIFICATION' });
+                console.log(`🗣️ [Conversation] State set to AWAITING_GEMINI_CLARIFICATION for ${cleanPhone}`);
+              }
               this.geminiService.injectBotResponse(cleanPhone, finalResp);
               return finalResp;
             }
@@ -350,7 +419,17 @@ _soon as possible._`;
         finalResp += `\n\n🎉 *Onboarding Complete!* You've set your first alert. I'll notify you the second it hits!\n\n💡 _Type *Menu* anytime to see all features._`;
       }
 
-      if (this.geminiService) this.geminiService.injectBotResponse(cleanPhone, finalResp);
+      // ✅ Extract asset from args for context tracking (price/analyze/set commands)
+      let contextAssets = [];
+      if (['price', 'p', 'analyze', 'analysis', 'view', 'opinion', 'news', 'set', 'alert', 'watch', 'bought', 'sold'].includes(command) && args.length > 0) {
+        // First arg is usually the asset, strip non-alphanumeric
+        const raw = args[0].replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+        if (raw && raw.length >= 1 && raw.length <= 12) {
+          contextAssets = [raw];
+        }
+      }
+      console.log(`🔧 [Context] Direct handler "${command}" → passing assets=${JSON.stringify(contextAssets)} to injectBotResponse`);
+      if (this.geminiService) this.geminiService.injectBotResponse(cleanPhone, finalResp, contextAssets);
       return finalResp;
     } catch (error) {
       console.error(error);

@@ -5,25 +5,35 @@ const STATIC_SYSTEM_PROMPT = `You are the official customer service assistant fo
 Output ONLY raw JSON array. No markdown, no text outside JSON.
 
 PERSONALITY & TONE (CRITICAL):
-- You are the PricePing assistant. You speak on behalf of PricePing, but you are NOT PricePing.
-- Professional, warm, and helpful. Like a well-trained support agent who knows the product inside out.
-- 1-2 emojis max per response. Max 40 words per chat.
+- You are the PricePing assistant, a financial bestie who knows markets.
+- Warm, chatty, and direct — like explaining to a friend over drinks.
+- 1-2 emojis max per chat response. Max 40 words per chat.
 - NEVER repeat the user's question back. NEVER apologize unnecessarily.
-- If frustrated user (😒, "Fool", "Stop it") → acknowledge briefly, stay professional, move on.
+- If user is frustrated (😒, "Fool", "Stop it") → acknowledge briefly, stay professional, move on.
 - If user repeats or says "I have heard" → do NOT re-explain. Give a brief follow-up or move on.
 - Never output the same chat response twice in a row.
 
-CORE RULES:
-1. MULTI-ASSET: "all of them", "the three", "both" → generate command for EACH asset in lastAssets array.
-2. NEVER use these as asset names: me, my, an, a, the, it, that, this, one, them, those, alert, price, stock, crypto, coin, share, above
-3. No price in "set" command → ask via chat.
-4. GENERIC REFERENCES: If user says "the above", "it", "that", "this", "the coin", "my asset" etc. → use the MOST RECENT asset from lastAssets. Do NOT invent tickers like EURTRY or random forex pairs. If truly unsure, output UNKNOWN and the chat safety net will handle it.
-5. Asset unclear + lastAssets exists → use most recent.
-5. MATH ALERTS — TWO STEPS ONLY:
-   STEP 1: User gives formula → calculate → output [{"command":"chat","args":["I calculated $X. Set alert for ASSET at $X?"]}]
-   STEP 2: User confirms (yes/ok/sure/go ahead/correct/do it) → IMMEDIATELY output set command. NEVER re-calculate.
-6. SUPPORT QUESTIONS: Use Knowledge Base below to answer accurately via "chat" command.
-7. MARKET VIEWS: "view", "opinion", "prediction", "analysis", "what do you think" about an asset → ALWAYS map to "analyze" command.
+CONVERSATIONAL RESOLUTION (CRITICAL — replaces old rule #1-5):
+When the user's message is vague, has multiple assets, or uses conversational words ("it", "that", "them", "this", "all"), follow this decision tree:
+
+1. **lastAssets is empty** → Ask conversationally. E.g. "Which asset did you have in mind? 🤔"
+2. **lastAssets has ONE asset** → Use it directly. E.g. "You mean BTC? Let me check..."
+3. **lastAssets has MULTIPLE assets (2-5)** →
+   - If user says "all of them", "both", "the three" etc. → Generate ONE command per asset.
+   - If user says "it", "that", "the coin" etc. → Use the MOST RECENT asset from lastAssets.
+   - If user just says "analyze" or "price" with no hint → ASK: "Which one? I have BTC, ETH and SOL in your recent history."
+4. **User lists multiple assets in their message** (e.g. "BTC, ETH, SOL", "BTC and ETH") →
+   - If they ask for ONE action on multiple → Generate ONE command per recognized asset.
+   - If they ask vaguely like "Analyze BTC, ETH, SOL" → Pick the LAST mentioned one, OR ask "Which one do you want me to dive into?" — be natural.
+5. **NEVER invent tickers that aren't in lastAssets or the user's current message.** If you're unsure, output [{"command":"chat","args":["ask a short clarifying question"]}]
+
+MATH ALERTS — TWO STEPS ONLY:
+STEP 1: User gives formula → calculate → output [{"command":"chat","args":["I calculated $X. Set alert for ASSET at $X?"]}]
+STEP 2: User confirms (yes/ok/sure/go ahead/correct/do it) → IMMEDIATELY output set command. NEVER re-calculate.
+
+SUPPORT QUESTIONS: Use Knowledge Base below to answer accurately via "chat" command.
+
+MARKET VIEWS: "view", "opinion", "prediction", "analysis", "what do you think" about an asset → ALWAYS map to "analyze" command.
 
 MARKETS SUPPORTED (all available, do NOT say unsupported):
 - Crypto: All CoinGecko coins (24/7)
@@ -62,14 +72,23 @@ name [n]               → [{"command":"name","args":["Sarah"]}]
 chat [msg]             → [{"command":"chat","args":["reply under 40 words"]}]
 
 EXAMPLES:
+"Analyze BTC, ETH, SOL" (Last: BTC, ETH, SOL)
+→ [{"command":"chat","args":["I can analyze BTC, ETH or SOL — which one's on your mind? 🔍"]}]
+
 "their prices please" (Last: ZENITHBANK, MTNN)
 → [{"command":"price","args":["ZENITHBANK"]},{"command":"price","args":["MTNN"]}]
 
 "set alert for all three at 10% increase each" (Last: ZENITHBANK, MTNN, DANGCEM)
 → [{"command":"set_percent","args":["ZENITHBANK","10"]},{"command":"set_percent","args":["MTNN","10"]},{"command":"set_percent","args":["DANGCEM","10"]}]
 
-"what's your view on GBPUSD?"
+"what's your view on it?" (Last: GBPUSD)
 → [{"command":"analyze","args":["GBPUSD"]}]
+
+"Analyze" (Last: [])
+→ [{"command":"chat","args":["What asset do you want me to analyze? 🧐"]}]
+
+"Analyze" (Last: BTC, ETH)
+→ [{"command":"chat","args":["I've got BTC and ETH in your history — which should I dig into? 📊"]}]
 
 MATH CONFIRMATION (CRITICAL):
 Context: "I calculated BTC target at $144,903.52. Set alert?"
@@ -210,6 +229,9 @@ class GroqService {
     // ── 📂 STEP 2: Load Persistent Context ────────────────────────────
     const context = await this.getUserContext(phone);
     let { history: userHist, lastAssets } = context; // ← lastAssets array
+
+    // 🐛 DEBUG: Log what context is loaded before AI call
+    console.log(`🐛 [DEBUG groqService.refinePrompt] phone=${phone} | lastAssets=${JSON.stringify(lastAssets)} | msg="${messageText}"`);
 
     userHist.push(`U:${messageText}`);
     if (userHist.length > 5) userHist.shift();
@@ -470,6 +492,9 @@ ${knowledgeBase}`.trim();
             else if (lastAssets.length > 0 && !lastAssets.some(a => a.toUpperCase() === assetUpper)) {
               console.log(`🔧 Hallucination guard: "${cmd.args[0]}" not in lastAssets [${lastAssets.join(', ')}] → using "${lastAssets[0]}"`);
               cmd.args[0] = lastAssets[0];
+            } else {
+              // 🐛 DEBUG: Track why hallucination guard didn't fire
+              console.log(`🐛 [DEBUG Hallucination Guard SKIP] cmd="${cmd.command}" asset="${cmd.args[0]}" | lastAssets: ${JSON.stringify(lastAssets)} | reason: ${lastAssets.length === 0 ? 'lastAssets EMPTY' : `"${assetUpper}" found in lastAssets`}`);
             }
           }
 
@@ -523,9 +548,17 @@ ${knowledgeBase}`.trim();
     }
   }
 
-  async injectBotResponse(phone, responseText) {
+  async injectBotResponse(phone, responseText, assets = []) {
     const context = await this.getUserContext(phone);
     let { history: userHist, lastAssets } = context;
+
+    // ✅ NEW: Merge any provided assets into lastAssets
+    if (assets.length > 0) {
+      lastAssets = [...new Set([...assets, ...lastAssets])].slice(0, 5);
+      console.log(`🔧 [Context] Updated lastAssets with ${JSON.stringify(assets)} → ${JSON.stringify(lastAssets)}`);
+    } else {
+      console.log(`🔧 [Context] injectBotResponse — no assets provided, lastAssets unchanged: ${JSON.stringify(lastAssets)}`);
+    }
 
     const snippet = responseText.replace(/\n+/g, " ").slice(0, 150) + (responseText.length > 150 ? "..." : "");
     userHist.push(`A:${snippet}`);

@@ -19,54 +19,40 @@ class TAService {
   // ============================================
   async fetchCandles(asset) {
     if (this._isCrypto(asset)) {
-      return await this._fetchBinanceCandles(asset);
+      // Binance is blocked (451) and Kraken is DNS-blocked (ENOTFOUND) on Render.
+      // Use CryptoCompare directly — free, no API key, works perfectly.
+      return await this._fetchCryptoCompareCandles(asset);
     } else {
       return await this._fetchYahooCandles(asset);
     }
   }
 
-  async _fetchBinanceCandles(asset) {
-    const base = asset.toUpperCase().replace(/-PERP$/i, '').replace(/USDT$/, '');
-    // Binance is blocked on Render (451) — skip to Kraken directly
-    return await this._fetchKrakenCandles(base);
-  }
-
-  async _fetchKrakenCandles(asset) {
-    // Kraken uses non-standard pair naming (XBT not BTC, etc.)
-    const KRAKEN_PAIRS = {
-      BTC:  'XBTUSD', ETH:  'ETHUSD',  SOL:  'SOLUSD',  XRP:  'XRPUSD',
-      ADA:  'ADAUSD', DOGE: 'DOGEUSD', LTC:  'LTCUSD',  LINK: 'LINKUSD',
-      DOT:  'DOTUSD', AVAX: 'AVAXUSD', MATIC:'MATICUSD', UNI:  'UNIUSD',
-      ATOM: 'ATOMUSD', BNB: 'BNBUSD',  SHIB: 'SHIBUSD',  NEAR: 'NEARUSD',
-      ARB:  'ARBUSD',  OP:  'OPUSD',   INJ:  'INJUSD',   TRX:  'TRXUSD',
-    };
-
-    const pair = KRAKEN_PAIRS[asset.toUpperCase()] || `${asset.toUpperCase()}USD`;
-
+  async _fetchCryptoCompareCandles(asset) {
     try {
-      const { data } = await axios.get('https://api.kraken.com/0/public/OHLC', {
-        params: { pair, interval: 60 }, // 60 = 1h candles, returns 720
+      const symbol = asset.toUpperCase().replace(/-PERP$/i, '').replace(/USDT$/, '');
+      const { data } = await axios.get('https://min-api.cryptocompare.com/data/v2/histoday', {
+        params: { fsym: symbol, tsym: 'USD', limit: 300, aggregate: 1 },
         timeout: 10000,
       });
 
-      if (data.error?.length > 0) throw new Error(data.error[0]);
+      if (data.Response === 'Error') throw new Error(data.Message);
 
-      // Kraken internal key differs from requested pair (e.g. XBTUSD → XXBTZUSD)
-      const resultKey = Object.keys(data.result).find(k => k !== 'last');
-      const candles = data.result[resultKey];
-      if (!candles || candles.length === 0) return null;
+      const candles = data.Data?.Data;
+      if (!candles || candles.length < 50) {
+        console.warn(`⚠️ [TA] CryptoCompare: ${symbol} → ${candles?.length || 0} candles (too few)`);
+        return null;
+      }
 
-      // Kraken format: [time, open, high, low, close, vwap, volume, count]
-      console.log(`✅ [TA] Kraken: ${pair} → ${candles.length} candles`);
+      console.log(`✅ [TA] CryptoCompare: ${symbol} → ${candles.length} daily candles (free)`);
       return candles.map(k => ({
-        open:   parseFloat(k[1]),
-        high:   parseFloat(k[2]),
-        low:    parseFloat(k[3]),
-        close:  parseFloat(k[4]),
-        volume: parseFloat(k[6]),
+        open:   k.open,
+        high:   k.high,
+        low:    k.low,
+        close:  k.close,
+        volume: k.volumeto || 0,
       }));
     } catch (e) {
-      console.warn(`⚠️ [TA] Kraken failed for ${pair}: ${e.message}`);
+      console.warn(`⚠️ [TA] CryptoCompare failed for ${asset}: ${e.message}`);
       return null;
     }
   }
@@ -77,8 +63,14 @@ class TAService {
       const period1 = new Date(Date.now() - 300 * 24 * 60 * 60 * 1000);
       const period2 = new Date();
 
+      // 📌 Forex pairs on Yahoo use =X suffix (e.g. EURUSD=X, GBPUSD=X)
+      // Detect 6-letter uppercase patterns: exactly 6 alpha chars = forex pair
+      const isForex = /^[A-Z]{6}$/.test(asset.toUpperCase());
+      const symbol = isForex ? `${asset}=X` : asset;
+      if (isForex) console.log(`📌 [TA] Forex pair detected: ${asset} → Yahoo symbol ${symbol}`);
+
       // Use chart() — the current Yahoo Finance API (historical() is deprecated)
-      const result = await yf.chart(asset, { period1, period2, interval: '1d' });
+      const result = await yf.chart(symbol, { period1, period2, interval: '1d' });
       const quotes = result?.quotes || [];
       if (quotes.length === 0) return null;
 
@@ -226,13 +218,30 @@ class TAService {
   // ── Helpers ──────────────────────────────────────────────────────────────
   _isCrypto(asset) {
     const KNOWN_NON_CRYPTO = new Set([
+      // US Stocks
       'AAPL','TSLA','NVDA','GOOGL','MSFT','AMZN','META','NFLX','AMD','INTC',
       'PYPL','DIS','BA','UBER','BABA','PLTR','COIN','SHOP','SQ','SNAP','HOOD',
-      'JPM','BAC','WFC','GS','V','MA','ES=F','NQ=F','GC=F','CL=F','CC=F',
-      'BZ=F','SI=F','YM=F','RTY=F','6E=F','6B=F','6J=F','ZN=F','ZB=F',
+      'JPM','BAC','WFC','GS','V','MA',
+      // Futures
+      'ES=F','NQ=F','GC=F','CL=F','CC=F','BZ=F','SI=F','YM=F','RTY=F',
+      '6E=F','6B=F','6J=F','ZN=F','ZB=F',
       // NGX stocks
       'ZENITHBANK','MTNN','DANGCEM','GTCO','ACCESSCORP','FBNH','UBA','AIRTELAFRI',
-      'FIDELITYBK','STERLINGBANK','SEPLAT','OANDO','NESTLE'
+      'FIDELITYBK','STERLINGBANK','SEPLAT','OANDO','NESTLE',
+      // Commodities (non-futures symbol)
+      'XAU','XAG',
+      // 📌 FOREX PAIRS — route to Yahoo Finance with =X suffix
+      'EURUSD','GBPUSD','USDJPY','USDCHF','USDCAD','AUDUSD','NZDUSD',
+      'EURGBP','EURJPY','GBPJPY','EURCHF','GBPCHF',
+      'EURAUD','EURCAD','EURNZD','GBPAUD','GBPCAD','GBPNZD',
+      'AUDJPY','AUDCHF','AUDCAD','CADJPY','CHFJPY','NZDJPY',
+      'USDMXN','USDZAR','USDSGD','USDNOK','USDSEK','USDPLN','USDTRY',
+      'EURTRY','GBPTRY','EURNGN','GBPNGN','USDNGN','USDGHS','GBPGHS',
+      'EURZAR','GBPZAR','AUDNZD','EURHUF','EURCZK','USDRUB',
+      // Cross rates
+      'EURCHF','GBPCHF','EURGBP','EURJPY','GBPJPY','EURNZD','GBPNZD',
+      'AUDCAD','AUDCHF','AUDJPY','AUDNZD','CADCHF','CADJPY',
+      'CHFJPY','EURAUD','EURCAD','GBPAUD','GBPCAD','NZDCAD','NZDCHF','NZDJPY',
     ]);
     const clean = asset.replace(/-PERP$/i, '').replace(/USDT$/i, '').toUpperCase();
     return !KNOWN_NON_CRYPTO.has(clean);
