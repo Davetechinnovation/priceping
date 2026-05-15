@@ -13,6 +13,18 @@ PERSONALITY & TONE (CRITICAL):
 - If user repeats or says "I have heard" → do NOT re-explain. Give a brief follow-up or move on.
 - Never output the same chat response twice in a row.
 
+CLARIFICATION RESPONSE HANDLING (CRITICAL — NEW):
+When a user's message contains "I said" or rephrases a previous request, this means the user is RE-STATING their original intent because the bot didn't understand before. DO NOT ask for clarification again. Extract the intent directly.
+
+Examples:
+- "Are u stupid I said price volatility 100" → The user wants price volatility. This contains "price" and a number. Route it: {"command":"price","args":["VOLATILITY 100"]}
+- "I SAID PRICE BTC" → {"command":"price","args":["BTC"]}
+- "Bro I said set BTC at 50000 not ETH" → {"command":"set","args":["BTC","at","50000"]}
+- "I said check the price of gold" → {"command":"price","args":["GOLD"]}
+- "how many times do I have to say price SOL" → {"command":"price","args":["SOL"]}
+
+When a user says something like "Are u stupid I said X", the correct response is to DO X, not to apologize or ask again.
+
 CONVERSATIONAL RESOLUTION (CRITICAL — replaces old rule #1-5):
 When the user's message is vague, has multiple assets, or uses conversational words ("it", "that", "them", "this", "all"), follow this decision tree:
 
@@ -130,7 +142,9 @@ class GroqService {
 
     const stripPunct = s => s.replace(/[.,!?;:'"]+$/, '');
     const DIRECT_PATTERNS = [
-      { re: /^price\s+(\S+)$/i, cmd: 'price', args: m => [stripPunct(m[1]).toUpperCase()] },
+      // 🔥 FIX: Use .+ instead of \S+ to support multi-word assets like "volatility 100"
+      // The price command handler joins all args anyway, so capturing everything captures the full asset name
+      { re: /^price\s+(.+)$/i, cmd: 'price', args: m => [stripPunct(m[1].trim()).toUpperCase()] },
       { re: /^alerts?$/i, cmd: 'alerts', args: () => [] },
       { re: /^status$/i, cmd: 'status', args: () => [] },
       { re: /^subscribe$/i, cmd: 'subscribe', args: () => [] },
@@ -140,8 +154,9 @@ class GroqService {
       { re: /^portfolio$/i, cmd: 'portfolio', args: () => [] },
       { re: /^del(?:ete)?\s+all$/i, cmd: 'del', args: () => ['all'] },
       { re: /^del(?:ete)?\s+([\d\s,and]+)$/i, cmd: 'del', args: m => m[1].match(/\d+/g) || [] },
-      { re: /^news\s+(\S+)$/i, cmd: 'news', args: m => [stripPunct(m[1]).toUpperCase()] },
-      { re: /^(?:analyze|analysis|view|opinion)\s+(\S+)$/i, cmd: 'analyze', args: m => [stripPunct(m[1]).toUpperCase()] },
+      // 🔥 FIX: Use .+ instead of \S+ for multi-word asset names (e.g. "news volatility 100")
+      { re: /^news\s+(.+)$/i, cmd: 'news', args: m => [stripPunct(m[1].trim()).toUpperCase()] },
+      { re: /^(?:analyze|analysis|view|opinion)\s+(.+)$/i, cmd: 'analyze', args: m => [stripPunct(m[1].trim()).toUpperCase()] },
 
       // ✅ NEW: Structured set commands (zero AI calls for clean alerts)
       {
@@ -164,9 +179,16 @@ class GroqService {
           return [asset, percent, type];
         }
       },
+      // 🔥 NEW: Direct "volatility [n]" or "vol [n]" pattern
+      // Maps to "price VOLATILITY [n]" — the price service handles Deriv synthetics
+      {
+        re: /^vol(?:atility)?\s+(\d{2,3})$/i,
+        cmd: 'price',
+        args: m => [`VOLATILITY ${m[1]}`.toUpperCase()]
+      },
     ];
 
-    const GENERIC_ASSET_WORDS = new Set(['IT', 'AM', 'THAT', 'THAR', 'THIS', 'THEM', 'THOSE', 'ALL', 'ME', 'MY', 'AN', 'A', 'HIM', 'THE', 'ONE']);
+    const GENERIC_ASSET_WORDS = new Set(['IT', 'AM', 'THAT', 'THAR', 'THIS', 'THEM', 'THOSE', 'ALL', 'ME', 'MY', 'AN', 'A', 'HIM', 'THE', 'ONE', 'ARE', 'IS', 'WAS']);
 
     for (const { re, cmd, args } of DIRECT_PATTERNS) {
       const m = t.match(re);
@@ -298,7 +320,7 @@ class GroqService {
 - Cannot self-refer or redeem multiple codes
 
 💰 PRICING & TIERS:
-| Feature | Free | Pro (₦2,500/mo) |
+| Feature | Free | Pro (₦2,000/mo) |
 |---------|------|-----------------|
 | Alert quota | 3 per 12h | Unlimited |
 | Price checks | ✅ | ✅ |
@@ -460,12 +482,19 @@ ${knowledgeBase}`.trim();
       if (!Array.isArray(parsed) && parsed?.command) parsed = [parsed];
 
       // ── 🔧 STEP 4: Asset Context Safety Net ──────────────────────────
+      // 🔥 FIX: Only replace generic placeholder words. NEVER replace a real-looking
+      // ticker/asset name because the user might be asking about something new!
       const GENERIC_WORDS = new Set([
         'it', 'that', 'this', 'stock', 'stocks', 'asset', 'assets', 'coin', 'crypto',
         'shares', 'share', 'one', 'the', 'them', 'those',
         // THE KEY ADDITIONS - these were causing your "ME" and "AN" bugs:
-        'me', 'my', 'an', 'a', 'alert', 'alerts', 'price', 'set'
+        'me', 'my', 'an', 'a', 'alert', 'alerts', 'price', 'set',
+        'there', 'here', 'some', 'any', 'each', 'every', 'both', 'either',
       ]);
+
+      // 🔥 VALID TICKER PATTERN: 2-10 uppercase letters, optionally followed by digits
+      // Examples: BTC, ETH, SOL, AAPL, TSLA, ZENITHBANK, V75, VOLATILITY25, BOOM1000
+      const VALID_TICKER_RE = /^[A-Z][A-Z0-9]{1,9}$/;
 
       if (Array.isArray(parsed)) {
         parsed = parsed.map(cmd => {
@@ -475,10 +504,10 @@ ${knowledgeBase}`.trim();
             const assetArg = (cmd.args?.[0] || '').toLowerCase().trim();
             const assetUpper = assetArg.toUpperCase();
 
-            // 🚦 Check 1: If asset is a generic reference, replace it
+            // 🚦 Check 1: If asset is a generic reference (it, that, this, etc.), replace with lastAssets
             if (GENERIC_WORDS.has(assetArg)) {
               if (lastAssets.length > 0) {
-                console.log(`🔧 Context fix: "${cmd.args[0]}" → "${lastAssets[0]}"`);
+                console.log(`🔧 Context fix: "${cmd.args[0]}" → "${lastAssets[0]}" (generic word resolution)`);
                 cmd.args[0] = lastAssets[0];
               } else {
                 if (cmd.command === 'set') {
@@ -487,14 +516,19 @@ ${knowledgeBase}`.trim();
                 return { command: 'chat', args: ['Which asset would you like to check?'] };
               }
             }
-            // 🚦 Check 2: If AI invented an asset NOT in lastAssets and user has recent context, use lastAssets instead
-            // This catches hallucinations like EURTRY when user was just discussing DANGCEM
-            else if (lastAssets.length > 0 && !lastAssets.some(a => a.toUpperCase() === assetUpper)) {
-              console.log(`🔧 Hallucination guard: "${cmd.args[0]}" not in lastAssets [${lastAssets.join(', ')}] → using "${lastAssets[0]}"`);
+            // 🚦 Check 2: PREVIOUSLY this was an aggressive hallucination guard that replaced ANY
+            // asset not in lastAssets with lastAssets[0]. This was BROKEN — it prevented users
+            // from asking about new assets! Now we only guard against obvious hallucinated tickers
+            // that DON'T look like real asset names (e.g., single letters, weird combos).
+            else if (assetUpper.length >= 2 && VALID_TICKER_RE.test(assetUpper)) {
+              // ✅ This looks like a legitimate asset ticker — trust the AI and let it through
+              console.log(`🐛 [DEBUG Hallucination Guard SAFE] cmd="${cmd.command}" asset="${assetUpper}" passes ticker validation — NOT replacing`);
+            } else if (lastAssets.length > 0) {
+              // Asset doesn't look like a valid ticker — fall back to context
+              console.log(`🔧 Context fix: "${cmd.args[0]}" (not valid ticker) → "${lastAssets[0]}"`);
               cmd.args[0] = lastAssets[0];
             } else {
-              // 🐛 DEBUG: Track why hallucination guard didn't fire
-              console.log(`🐛 [DEBUG Hallucination Guard SKIP] cmd="${cmd.command}" asset="${cmd.args[0]}" | lastAssets: ${JSON.stringify(lastAssets)} | reason: ${lastAssets.length === 0 ? 'lastAssets EMPTY' : `"${assetUpper}" found in lastAssets`}`);
+              console.log(`🐛 [DEBUG Hallucination Guard SKIP] cmd="${cmd.command}" asset="${cmd.args[0]}" | lastAssets EMPTY — sending as-is`);
             }
           }
 

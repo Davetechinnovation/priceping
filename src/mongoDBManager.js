@@ -925,6 +925,78 @@ class MongoDBManager {
     }
   }
 
+  // ==========================================
+  // 💳 PAYMENT / PRO METHODS
+  // ==========================================
+
+  /**
+   * Create a pending payment record.
+   */
+  async createPaymentRecord(phoneNumber, reference, amount) {
+    try {
+      await this.db.collection("payments").insertOne({
+        phone_number: phoneNumber,
+        reference,
+        amount,
+        currency: "NGN",
+        status: "pending",
+        created_at: new Date(),
+        updated_at: new Date(),
+      });
+      console.log(`💳 [Payment] Record created: ${reference} for ${phoneNumber}`);
+      return true;
+    } catch (e) {
+      console.error(`❌ [Payment] Failed to create record: ${e.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Get a payment record by reference.
+   */
+  async getPaymentByReference(reference) {
+    try {
+      return await this.db.collection("payments").findOne({ reference });
+    } catch (e) {
+      console.error(`❌ [Payment] Failed to find reference: ${e.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Mark a payment as completed and upgrade the user to Pro.
+   */
+  async setUserPro(phoneNumber, paymentRef) {
+    try {
+      const now = new Date();
+
+      // Mark payment as completed
+      await this.db.collection("payments").updateOne(
+        { reference: paymentRef },
+        { $set: { status: "completed", updated_at: now } }
+      );
+
+      // Upgrade user
+      await this.db.collection("users").updateOne(
+        { phone_number: phoneNumber },
+        {
+          $set: {
+            subscription_type: "pro",
+            pro_activated_at: now,
+            payment_reference: paymentRef,
+            updated_at: now,
+          },
+        }
+      );
+
+      console.log(`✅ [Payment] User ${phoneNumber} upgraded to Pro (ref: ${paymentRef})`);
+      return true;
+    } catch (e) {
+      console.error(`❌ [Payment] Failed to upgrade user: ${e.message}`);
+      return false;
+    }
+  }
+
   async close() {
 
     if (this.client) {

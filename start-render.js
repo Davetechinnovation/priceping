@@ -11,6 +11,7 @@ const helmet = require("helmet");
 const morgan = require("morgan");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const swaggerUi = require('swagger-ui-express');
 const swaggerSpecs = require('./src/swaggerConfig');
 require("dotenv").config();
@@ -42,6 +43,153 @@ const memoryMonitor = new MemoryMonitor({
 app.use(helmet());
 app.use(cors());
 app.use(morgan("combined"));
+
+// ════════════════════════════════════════════════════════════
+// 🎉 PAYMENT SUCCESS PAGE — Redirects user back to WhatsApp DM
+// ════════════════════════════════════════════════════════════
+app.get('/payment/success', (req, res) => {
+  const phone = req.query.phone || '';
+  const waLink = `https://wa.me/${phone.replace(/[^0-9]/g, '')}`;
+  
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <meta http-equiv="refresh" content="5; url=${waLink}">
+      <title>Payment Successful - PricePing</title>
+      <style>
+        body { font-family: system-ui, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #0f172a; color: #e2e8f0; text-align: center; padding: 20px; }
+        .card { background: #1e293b; padding: 40px; border-radius: 16px; max-width: 400px; width: 100%; box-shadow: 0 4px 24px rgba(0,0,0,0.3); }
+        .check { font-size: 64px; margin-bottom: 16px; }
+        h1 { color: #22c55e; margin: 0 0 8px; font-size: 24px; }
+        p { color: #94a3b8; margin: 0 0 24px; line-height: 1.5; }
+        .btn { display: inline-block; background: #22c55e; color: #fff; padding: 12px 32px; border-radius: 8px; text-decoration: none; font-weight: 600; transition: background 0.2s; }
+        .btn:hover { background: #16a34a; }
+        .redirect { color: #64748b; font-size: 14px; margin-top: 16px; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <div class="check">✅</div>
+        <h1>Payment Successful!</h1>
+        <p>You're now a <strong>PricePing Pro</strong> member.<br>Check your WhatsApp for your welcome message.</p>
+        <a class="btn" href="${waLink}" target="_blank">Return to WhatsApp 💬</a>
+        <p class="redirect">Redirecting to WhatsApp in 5 seconds...</p>
+      </div>
+    </body>
+    </html>
+  `);
+});
+
+// ════════════════════════════════════════════════════════════
+// 💳 PAYSTACK WEBHOOK (MUST be BEFORE express.json() to get raw body)
+// ════════════════════════════════════════════════════════════
+const PRO_WELCOME_MESSAGE = `🎉 *WELCOME TO PRICEPING PRO!* 🎉
+
+━━━━━━━━━━━━━━━━━
+✅ *Payment confirmed!* You're now a VIP member.
+
+Here's everything you unlocked:
+
+🤖 *AI Analysis* — Technical analysis for any asset
+📰 *Live News* — AI-summarized breaking headlines
+💡 *Smart Alerts* — AI-suggested support & resistance
+📈 *Volatility Alerts* — Two-way percentage alerts
+💼 *Portfolio Tracker* — Live profit & loss tracking
+📓 *Trade Journal* — Auto-track your win rate
+☀️ *Daily Briefs* — Full AI morning market intel at 8AM
+🔥 *Move Detectors* — Instant pump/dump warnings
+📞 *SMS Fallback* — Text alerts when offline
+♾️ *Unlimited Alerts* — No limits, no caps
+
+━━━━━━━━━━━━━━━━━
+🚀 *Try it now:* Type *Analyze BTC* or *Portfolio*
+
+💬 *Need help?* Just ask — I'm here 24/7!`;
+
+app.post('/webhook/paystack', express.raw({ type: 'application/json' }), async (req, res) => {
+  try {
+    // Use global.database (set after MongoDB connects in initializeBot)
+    const db = global.database || null;
+    if (!db) {
+      console.warn('⚠️ [Paystack] Database not ready yet');
+      return res.status(503).send('Database not ready');
+    }
+
+    const PaystackService = require('./src/paystackService');
+    const paystack = new PaystackService(db);
+
+    // 1. Verify signature
+    const signature = req.headers['x-paystack-signature'];
+    if (!signature || !paystack.verifyWebhookSignature(req.body.toString(), signature)) {
+      console.warn('⚠️ [Paystack] Invalid webhook signature');
+      return res.status(401).send('Invalid signature');
+    }
+
+    const event = JSON.parse(req.body);
+    console.log(`🏦 [Paystack] Webhook: ${event.event}`, event.data?.reference || '');
+
+    // 2. Log event to MongoDB
+    try {
+      await db.db.collection('webhook_events').insertOne({
+        event: event.event,
+        reference: event.data?.reference,
+        data: event.data,
+        received_at: new Date()
+      });
+    } catch (_) {}
+
+    // 3. Process charge.success
+    if (event.event === 'charge.success') {
+      const { reference, metadata, customer } = event.data;
+      const phone = metadata?.phone || customer?.phone?.replace(/[^0-9]/g, '') || null;
+
+      if (!phone) {
+        console.warn(`⚠️ [Paystack] No phone in metadata for ${reference}`);
+        return res.status(200).send('OK');
+      }
+
+      // Check if already processed
+      const existing = await db.getPaymentByReference(reference);
+      if (existing && existing.status === 'completed') {
+        console.log(`⏭️ [Paystack] ${reference} already processed`);
+        return res.status(200).send('OK');
+      }
+
+      // Verify with Paystack API
+      const verification = await paystack.verifyTransaction(reference);
+      if (verification.status !== 'success') {
+        console.warn(`⚠️ [Paystack] Verification failed for ${reference}: ${verification.status}`);
+        return res.status(200).send('OK');
+      }
+
+      // Upgrade user to Pro
+      await db.setUserPro(phone, reference);
+      console.log(`✅ [Paystack] User ${phone} upgraded to Pro (ref: ${reference})`);
+
+      // Send WhatsApp welcome message
+      if (global.whatsappService && global.whatsappService.isConnected) {
+        try {
+          const user = await db.getUserByPhoneNumber(phone);
+          if (user?.whatsapp_number) {
+            await global.whatsappService.sendMessage(user.whatsapp_number, PRO_WELCOME_MESSAGE);
+            console.log(`📨 [Paystack] Welcome message sent to ${phone}`);
+          }
+        } catch (e) {
+          console.warn(`⚠️ [Paystack] Failed to send welcome: ${e.message}`);
+        }
+      }
+    }
+
+    res.status(200).send('OK');
+  } catch (e) {
+    console.error('❌ [Paystack] Webhook error:', e.message);
+    res.status(500).send('Error');
+  }
+});
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 

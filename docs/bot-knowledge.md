@@ -19,7 +19,7 @@ Nigerian financial WhatsApp bot. AI-powered analyst + alert system.
 | `Invite` | Get 6-digit referral code |
 | `Redeem XYZ123` | Use friend's code → referrer gets +1 slot (max +3) |
 | `Subscribe` | Free vs Pro comparison + current usage |
-| `Upgrade` | Pro pricing (₦2,500/mo, ₦6,000/qtr, ₦20,000/yr) + admin link |
+| `Upgrade` | Pro pricing (₦2,000/mo) + Paystack payment link |
 | `Features` | Full capability listing |
 | `Menu` / `Help` | Quick command reference + quota |
 | `Name Sarah` | Set display name |
@@ -35,7 +35,7 @@ Nigerian financial WhatsApp bot. AI-powered analyst + alert system.
 - **Synthetics** (Deriv): V75, V100, BOOM1000/500/300, CRASH1000/500/300, JD10/25/50/100, RB100/200, STEP
 
 ## Tier Comparison
-| Feature | Free | Pro (₦2,500/mo) |
+| Feature | Free | Pro (₦2,000/mo) |
 |---|---|---|
 | Alert quota | 3 per 12h | Unlimited |
 | Price checks | ✅ | ✅ |

@@ -131,32 +131,81 @@ class CommandParser {
     }
 
     const words = text.split(/\s+/);
-    console.log(`🐛 [DEBUG parseMessage] "${text}" → command="${words[0]}", args=${JSON.stringify(words.slice(1))}`);
-    return { command: words[0], args: words.slice(1) };
+    let command = words[0];
+    let args = words.slice(1);
+
+    // 🧠 SMART COMMAND SCANNING
+    // If the first word isn't a known command, scan the entire sentence for one.
+    // This catches frustrated re-tries like "Are u stupid I said price BTC"
+    // or "Can you check price of ETH" where the real command is mid-sentence.
+    const knownCommands = new Set(Object.keys(this.commands));
+    if (!knownCommands.has(command)) {
+      const foundIdx = words.findIndex(w => knownCommands.has(w));
+      if (foundIdx > 0) {
+        command = words[foundIdx];
+        args = words.slice(foundIdx + 1);
+        console.log(`🐛 [DEBUG parseMessage] Smart scan: "${text}" → extracted command="${command}" at word ${foundIdx}, args=${JSON.stringify(args)}`);
+      }
+    }
+
+    console.log(`🐛 [DEBUG parseMessage] "${text}" → command="${command}", args=${JSON.stringify(args)}`);
+    return { command, args };
   }
 
   isStrictCommand(command, args) {
-    if (["hi", "hello", "halo", "hallo", "hey", "sup", "start", "menu", "status", "subscribe", "upgrade", "help"].includes(command)) {
+    // ════════════════════════════════════════════════════════════════
+    // WHITELIST APPROACH — only pure machine-readable patterns pass
+    // through directly. EVERYTHING else (conversational, vague,
+    // pronouns, prepositions) → Gemini handles it.
+    // ════════════════════════════════════════════════════════════════
+
+    // Simple commands — zero args only
+    if (["hi", "hello", "halo", "hallo", "hey", "sup", "start", "menu", "status", "subscribe", "upgrade", "help", "alerts", "watchlist", "invite", "features", "portfolio", "holdings", "trades", "journal"].includes(command)) {
       return args.length === 0;
     }
+
+    // Price / analyze / news — ONLY pass through if ALL args look like valid
+    // ticker characters (A-Z, 0-9). No English words, no pronouns, no prepositions.
+    // Examples that PASS: "BTC", "SOL", "volatility 100", "crude oil", "V75", "R_100"
+    // Examples that REJECT (→ Gemini): "it", "am", "price of", "the coin", "that one"
     if (["price", "p", "analyze", "analysis", "view", "opinion", "news"].includes(command)) {
-      // Only pass through if it's a clean, single non-conversational asset (e.g. "price BTC", "analyze SOL")
-      // Everything else (0 args, conversational words, multi-word) → Gemini handles conversationally
-      if (args.length !== 1) return false;
-      const conversationalWords = new Set(["am", "me", "my", "an", "a", "the", "it", "that", "this", "one", "them", "those", "for", "please", "now", "is", "what", "how", "all", "both", "each"]);
-      const cleanArg = args[0].toLowerCase().replace(/[^a-z]/g, "");
-      if (conversationalWords.has(cleanArg)) return false;
+      if (args.length === 0) return false;
+      // 🧠 ONLY pass through if ALL arg tokens are pure alphanumeric ticker-like
+      // This means: each token contains ONLY letters A-Z and digits 0-9, no English words
+      for (const arg of args) {
+        const clean = arg.replace(/[^a-zA-Z0-9]/g, '');
+        if (!clean || clean.length === 0) return false;
+        // If the token is a known English conversational word → reject
+        if (/^[a-z]{2,}$/i.test(clean) && !/^\d/.test(clean)) {
+          // These are the ONLY acceptable English words in asset names
+          const acceptableAssetWords = new Set(['volatility', 'vol', 'boom', 'crash', 'gold', 'silver', 'crude', 'oil', 'natural', 'gas', 'copper', 'corn', 'wheat', 'step', 'index', 'bull', 'bear']);
+          const lower = clean.toLowerCase();
+          if (!acceptableAssetWords.has(lower)) return false;
+        }
+      }
       return true;
     }
-    if (["del", "delete"].includes(command)) {
-      return args.length === 1 && !isNaN(args[0]);
-    }
-    if (["alerts"].includes(command)) {
-      return args.length === 0;
-    }
+
+    // Set / alert — ONLY "ASSET at PRICE" or "ASSET PRICE% move" format
+    // Where ASSET must be a proper ticker, not a conversational word
     if (["set", "alert"].includes(command)) {
-      return args.length >= 2 && (args.includes("at") || args.some((a) => !isNaN(parseFloat(a.replace(/,/g, "")))));
+      if (args.length < 2) return false;
+      if (!args.includes("at") && !args.some((a) => !isNaN(parseFloat(a.replace(/,/g, ""))))) return false;
+      const stopWords = new Set(['at', 'above', 'below', 'move', 'either', 'both']);
+      const conversationalWords = new Set(["it", "that", "this", "these", "those", "the", "them", "one", "all", "both", "each", "some", "any", "me", "my", "i", "am", "is", "are", "was", "were", "its", "his", "her", "our", "your", "their", "to", "for", "of", "in", "on", "with", "by", "an", "a"]);
+      for (const arg of args) {
+        if (stopWords.has(arg)) break;
+        if (conversationalWords.has(arg)) return false;
+      }
+      return true;
     }
+
+    // Delete — numbers only OR "all" variations
+    if (["del", "delete"].includes(command)) {
+      if (args.length >= 1 && (args[0].toLowerCase() === 'all' || args[0].toLowerCase() === 'everything')) return true;
+      return args.length >= 1 && args.every(a => !isNaN(a));
+    }
+
     if (["name"].includes(command)) {
       return args.length >= 1 && args.length <= 3;
     }
@@ -252,6 +301,110 @@ _soon as possible._`;
       console.error("Command tracking error:", e.message);
     }
 
+    // 🗣️ CHECK USER STATE — handles multi-turn interactions like confirmations
+    const currentState = userState.get(cleanPhone);
+    
+    // ── CONFIRM_DELETE_ALL state ────────────────────────────────────
+    if (currentState?.type === 'CONFIRM_DELETE_ALL') {
+      console.log(`🗣️ [State] CONFIRM_DELETE_ALL for ${cleanPhone} — message: "${message}"`);
+      userState.delete(cleanPhone);
+      
+      // Check for "yes" / "yea" / "confirm" / "go ahead" / "delete all" patterns
+      const msgLower = message.toLowerCase().trim();
+      const isYes = /^(yes|yea|yeah|yep|yup|sure|ok|okay|confirm|go ahead|do it|proceed|delete all|delete everything|clear all|clear everything|trash all)$/i.test(msgLower);
+      const isNo = /^(no|nope|nah|never|cancel|stop|dont|don't|forget it|skip|back)$/i.test(msgLower);
+      
+      if (isYes) {
+        // User confirmed — proceed with delete all
+        const alerts = await db.getUserAlerts(cleanPhone);
+        if (alerts.length === 0) return `📂 You have no active alerts to delete.`;
+        
+        let deletedCount = 0;
+        for (const alert of alerts) {
+          try {
+            await db.deleteAlert(alert.id);
+            deletedCount++;
+          } catch (e) { /* ignore */ }
+        }
+        return `🗑️ *Deleted ${deletedCount} alert(s)*\n\nAll your alerts have been cleared. Type *Menu* to see what's next!`;
+      }
+      
+      if (isNo) {
+        return `✅ Cancelled. No alerts were deleted.\n\nType *My Alerts* to see your current watchlist.`;
+      }
+      
+      // User typed something else (e.g. "No, delete only 7, 8 and 10")
+      // Try to extract alert numbers from the message and route to delete handler
+      const numbersInMsg = message.match(/\d+/g);
+      if (numbersInMsg && numbersInMsg.length > 0) {
+        console.log(`🗣️ [State] CONFIRM_DELETE_ALL — extracted numbers: ${numbersInMsg.join(', ')}, routing to delete handler`);
+        return await this.handleDeleteAlert(numbersInMsg, cleanPhone, db, priceService, pushName, userState);
+      }
+      
+      // Fall through to Gemini for anything else
+    }
+
+    // ── CONFIRM_SMS_NUMBER state ────────────────────────────────────
+    if (currentState?.type === 'CONFIRM_SMS_NUMBER') {
+      const msgLower = message.toLowerCase().trim();
+      if (msgLower === '1' || msgLower.startsWith('yes') || msgLower.startsWith('use')) {
+        userState.delete(cleanPhone);
+        return `✅ Got it! You'll receive SMS alerts on *+${currentState.smsNumber}*.`;
+      }
+      if (msgLower === '2' || msgLower.startsWith('no') || msgLower === 'change') {
+        // Switch to different number
+        userState.set(cleanPhone, { type: 'AWAITING_SMS_NUMBER' });
+        return `📱 Reply with your phone number (e.g. *08012345678*)\nor type *SKIP* for WhatsApp only.`;
+      }
+      // Fall through to normal routing
+    }
+
+    // ── AWAITING_SMS_NUMBER state ───────────────────────────────────
+    if (currentState?.type === 'AWAITING_SMS_NUMBER') {
+      const msgLower = message.toLowerCase().trim();
+      if (msgLower === 'skip' || msgLower === 'no' || msgLower === 'nope' || msgLower === 'cancel') {
+        userState.delete(cleanPhone);
+        this.smsSkippedThisSession.add(cleanPhone);
+        return `✅ Okay, WhatsApp alerts only. I'll notify you the moment your target hits!`;
+      }
+      // Try to extract a phone number (Nigerian format: 080..., +234..., 234...)
+      const phoneMatch = message.match(/(?:\+?234|0)\s*\d{9,10}/g);
+      if (phoneMatch) {
+        const rawNumber = phoneMatch[0].replace(/[\s\-\(\)]/g, '');
+        // Normalize to international format
+        let normalized = rawNumber.replace(/^0/, '234');
+        if (!normalized.startsWith('+')) normalized = `+${normalized}`;
+        userState.delete(cleanPhone);
+        try {
+          await db.db.collection("users").updateOne(
+            { phone_number: cleanPhone },
+            { $set: { sms_number: normalized } }
+          );
+          return `✅ SMS alerts set to *${normalized}*. You'll get notified on both WhatsApp and SMS! 📱💬`;
+        } catch (e) {
+          return `⚠️ Could not save your SMS number. Please try again or type *SKIP*.`;
+        }
+      }
+      // Try to extract a plain number string
+      const digitsOnly = message.replace(/\D/g, '');
+      if ((digitsOnly.startsWith('234') && digitsOnly.length >= 12) || (digitsOnly.startsWith('0') && digitsOnly.length >= 10)) {
+        let normalized = digitsOnly.startsWith('0') ? `234${digitsOnly.slice(1)}` : digitsOnly;
+        if (!normalized.startsWith('+')) normalized = `+${normalized}`;
+        userState.delete(cleanPhone);
+        try {
+          await db.db.collection("users").updateOne(
+            { phone_number: cleanPhone },
+            { $set: { sms_number: normalized } }
+          );
+          return `✅ SMS alerts set to *${normalized}*. You'll get notified on both WhatsApp and SMS! 📱💬`;
+        } catch (e) {
+          return `⚠️ Could not save your SMS number. Please try again or type *SKIP*.`;
+        }
+      }
+      // Unclear input — re-prompt
+      return `📱 I need a valid Nigerian phone number (e.g. *08012345678*)\nor type *SKIP* for WhatsApp only.`;
+    }
+
     let handler = this.commands[command];
 
     // FIX: Only use the zero-cost fast-path if the message strictly structurally matches a command.
@@ -268,6 +421,9 @@ _soon as possible._`;
     let pendingClarification = userState.get(cleanPhone)?.type === 'AWAITING_GEMINI_CLARIFICATION';
 
     // 🛡️ FALLBACK: Check MongoDB AI context history for last bot question
+    // 🔥 FIX: Only mark as pendingClarification if the user's message is NOT a direct answer
+    // like a ticker/asset name or a direct command. This prevents the clarification loop
+    // where the bot asks "which asset?" and the user says "BTC" but it gets sent to Gemini anyway.
     if (!pendingClarification && this.geminiService) {
       try {
         this._lastContextCheck = this._lastContextCheck || {};
@@ -295,6 +451,17 @@ _soon as possible._`;
               break; // Only check the LAST assistant message
             }
           }
+          // 🔥 FIX: If the user's message is a valid ticker/asset name (e.g. "BTC", "ETH", "GOLD"),
+          // OR a direct command like "price BTC", DON'T treat it as a pending clarification.
+          // The user is answering the bot's question directly, not asking a new conversational question.
+          const answerText = message.trim().toUpperCase();
+          const isDirectAssetAnswer = /^[A-Z][A-Z0-9]{1,9}$/.test(answerText) || // Single ticker like BTC
+                                      /^PRICE\s+/.test(answerText) ||            // Price command
+                                      /^SET\s+/.test(answerText);                // Set command
+          if (isDirectAssetAnswer) {
+            console.log(`🗣️ [Context Fallback] User message "${message}" looks like a direct asset answer — NOT treating as pending clarification`);
+            pendingClarification = false;
+          }
           this._lastContextCheck[cacheKey] = { pending: pendingClarification, ts: now };
         }
       } catch (_) { /* silent fail */ }
@@ -302,37 +469,41 @@ _soon as possible._`;
 
     console.log(`🗣️ [Conversation] ${cleanPhone} | pendingClarification=${pendingClarification} | handler=${handler ? command : 'null'}`);
 
-    if (!handler && !pendingClarification) {
-      // 🎯 DYNAMIC TICKER DETECTION — route any unqualified ticker-like input to price
-      // This is fully dynamic: V75, BOOM1000, CRASH500, JD10, RB100, 1HZ25V, VOL 75, etc.
-      // Pattern: 1+ uppercase letters with optional digits (e.g. V75) OR spaced (e.g. VOL 75)
-      const originalText = message.trim();
-      const tickerPattern = /^[A-Z]{1,8}\d*$/i;           // "V75", "BOOM1000", "JD10"
-      const spacedTickerPattern = /^[A-Z]{1,8}\s+\d{1,6}$/i; // "VOL 75", "BOOM 1000"
-      const anyTicker = /^[A-Z]{1,2}HZ?\d/               // "1HZ25V"
-      
-      // Only auto-route if there's no space (single word) or it matches spaced ticker pattern,
-      // and it doesn't match known greeting/conversational words
-      const conversationalWords = new Set(["bot", "test", "morning", "gm", "evening", "afternoon", "hey", "hello", "hi"]);
-      // 🔴 BLOCKLIST: Known command words that should NEVER be treated as tickers
-      const commandWordBlocklist = new Set(["analyze", "analysis", "opinion", "view", "news", "portfolio", "holdings", "trades", "features", "status", "subscribe", "upgrade", "invite", "redeem", "watchlist", "watch", "unwatch", "menu", "help", "journal"]);
-      const isSingleWord = !originalText.includes(' ');
-      const isLikelyTicker = (isSingleWord && tickerPattern.test(command)) ||
-                             spacedTickerPattern.test(originalText) ||
-                             anyTicker.test(command);
-      
-      if (isLikelyTicker && !conversationalWords.has(command) && !commandWordBlocklist.has(command)) {
-        console.log(`🎯 Dynamic ticker detection: "${originalText}" → routing to price command`);
-        const resp = await this.handleGenericPrice([originalText.toUpperCase()], cleanPhone, db, priceService, pushName, userState);
-        // ✅ Save asset to context
-        if (this.geminiService) this.geminiService.injectBotResponse(cleanPhone, resp, [originalText.toUpperCase()]);
-        return resp;
-      }
+    // 🎯 DYNAMIC TICKER / SINGLE-ASSET DIRECT RESOLUTION
+    // 🔥 FIX: This now runs BEFORE the pendingClarification check AND regardless of handler state.
+    // This ensures direct answers like "BTC" (when asked "which asset?") get routed to price
+    // instead of going through Gemini's unpredictable clarification loop.
+    const originalText = message.trim();
+    const tickerPattern = /^[A-Z]{1,8}\d*$/i;              // "V75", "BOOM1000", "JD10"
+    const spacedTickerPattern = /^[A-Z]{1,8}\s+\d{1,6}$/i; // "VOL 75", "BOOM 1000"
+    const anyTicker = /^[A-Z]{1,2}HZ?\d/;                  // "1HZ25V"
+    
+    // Only auto-route if there's no space (single word) or it matches spaced ticker pattern,
+    // and it doesn't match known greeting/conversational words
+    const greetingWords = new Set(["bot", "test", "morning", "gm", "evening", "afternoon", "hey", "hello", "hi"]);
+    const commandWordBlocklist = new Set(["analyze", "analysis", "opinion", "view", "news", "portfolio", "holdings", "trades", "features", "status", "subscribe", "upgrade", "invite", "redeem", "watchlist", "watch", "unwatch", "menu", "help", "journal", "set", "alerts", "delete", "del"]);
+    const isSingleWord = !originalText.includes(' ');
+    const isLikelyTicker = (isSingleWord && tickerPattern.test(command)) ||
+                           spacedTickerPattern.test(originalText) ||
+                           anyTicker.test(command);
+    
+    // 🔥 FIX: Try direct ticker resolution if:
+    // 1. Message looks like a ticker/asset (BTC, V75, etc.) AND
+    // 2. No handler was found AND
+    // 3. It's not a greeting or command word
+    // This runs EVEN when pendingClarification=true (so "BTC" answers the "which asset?" question directly)
+    if (!handler && isLikelyTicker && !greetingWords.has(command) && !commandWordBlocklist.has(command)) {
+      console.log(`🎯 Direct asset detection: "${originalText}" → routing to price command${pendingClarification ? ' (was pending clarification)' : ''}`);
+      const resp = await this.handleGenericPrice([originalText.toUpperCase()], cleanPhone, db, priceService, pushName, userState);
+      if (this.geminiService) this.geminiService.injectBotResponse(cleanPhone, resp, [originalText.toUpperCase()]);
+      // Clear pending state since we resolved it
+      if (pendingClarification) userState.delete(cleanPhone);
+      return resp;
     }
 
     if (pendingClarification) {
-      console.log(`🗣️ [Conversation] Pending clarification for ${cleanPhone} — sending "${message}" straight to Gemini (bypassing ALL routing)`);
-      userState.delete(cleanPhone); // Clear the in-memory flag too
+      console.log(`🗣️ [Conversation] Pending clarification for ${cleanPhone} — "${message}" (will still try Gemini)`);
+      userState.delete(cleanPhone); // Clear the in-memory flag
     }
 
     if (!handler) {
@@ -366,11 +537,22 @@ _soon as possible._`;
             let geminiAskedQuestion = false;
             for (const refined of refinedArray) {
               if (refined.command === "chat" && refined.args && refined.args[0]) {
-                console.log(`🤖 Gemini chat: "${message}" ->`, refined.args[0]);
-                responses.push(refined.args[0]);
-                // 🗣️ Gemini asked a question — flag the conversation state so the next
-                // reply goes to Gemini instead of being stolen by the ticker detector
-                geminiAskedQuestion = true;
+                const chatText = refined.args[0];
+                console.log(`🤖 Gemini chat: "${message}" ->`, chatText);
+                responses.push(chatText);
+                // 🗣️ ONLY mark as question if the chat actually asks one.
+                // This fixes the infinite clarification loop where every chat response
+                // was treated as a question, even definitive answers like "BTC is $50k".
+                // A question must contain "?" or start with question words.
+                const lowerChat = chatText.toLowerCase();
+                const hasQuestionMark = lowerChat.includes('?');
+                const startsWithQuestionWord = /^(what|which|who|where|when|why|how|are|is|do|does|can|could|would|should|tell me|sure|which one)\b/.test(lowerChat);
+                if (hasQuestionMark || (startsWithQuestionWord && lowerChat.length < 80)) {
+                  geminiAskedQuestion = true;
+                  console.log(`🗣️ [Chat] Gemini's chat response is a question — will flag for clarification`);
+                } else {
+                  console.log(`🗣️ [Chat] Gemini's chat response is a STATEMENT — NOT flagging for clarification`);
+                }
               } else if (this.commands[refined.command]) {
                 console.log(`🔍 [Gemini Debug] Routing: ${JSON.stringify(refined)}`);
                 const res = await this.commands[refined.command](
@@ -385,6 +567,12 @@ _soon as possible._`;
               if (geminiAskedQuestion) {
                 userState.set(cleanPhone, { type: 'AWAITING_GEMINI_CLARIFICATION' });
                 console.log(`🗣️ [Conversation] State set to AWAITING_GEMINI_CLARIFICATION for ${cleanPhone}`);
+              } else {
+                // ✅ Clear any pending clarification state since we gave a definitive answer
+                if (userState.get(cleanPhone)?.type === 'AWAITING_GEMINI_CLARIFICATION') {
+                  userState.delete(cleanPhone);
+                  console.log(`🗣️ [Conversation] Cleared AWAITING_GEMINI_CLARIFICATION for ${cleanPhone} (definitive answer given)`);
+                }
               }
               this.geminiService.injectBotResponse(cleanPhone, finalResp);
               return finalResp;
@@ -420,12 +608,29 @@ _soon as possible._`;
       }
 
       // ✅ Extract asset from args for context tracking (price/analyze/set commands)
+      // 🔥 FIX: Preserve multi-word asset names like "VOLATILITY 100" instead of just "VOLATILITY"
       let contextAssets = [];
       if (['price', 'p', 'analyze', 'analysis', 'view', 'opinion', 'news', 'set', 'alert', 'watch', 'bought', 'sold'].includes(command) && args.length > 0) {
-        // First arg is usually the asset, strip non-alphanumeric
-        const raw = args[0].replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-        if (raw && raw.length >= 1 && raw.length <= 12) {
-          contextAssets = [raw];
+        // For set/alert commands, extract everything before "at"/"above"/"below"
+        if (['set', 'alert'].includes(command)) {
+          const stopWords = new Set(['at', 'above', 'below']);
+          const assetParts = [];
+          for (const arg of args) {
+            if (stopWords.has(arg.toLowerCase())) break;
+            assetParts.push(arg);
+          }
+          if (assetParts.length > 0) {
+            const fullAsset = assetParts.join(' ').replace(/[^a-zA-Z0-9\s]/g, '').toUpperCase().trim();
+            if (fullAsset && fullAsset.length >= 1 && fullAsset.length <= 20) {
+              contextAssets = [fullAsset];
+            }
+          }
+        } else {
+          // For price/analyze/news: join ALL args (multi-word assets like "volatility 100")
+          const fullAsset = args.join(' ').replace(/[^a-zA-Z0-9\s]/g, '').toUpperCase().trim();
+          if (fullAsset && fullAsset.length >= 1 && fullAsset.length <= 20) {
+            contextAssets = [fullAsset];
+          }
         }
       }
       console.log(`🔧 [Context] Direct handler "${command}" → passing assets=${JSON.stringify(contextAssets)} to injectBotResponse`);
@@ -578,6 +783,11 @@ ${usage.isPro ? "" : "🚀 Want unlimited alerts? Type *Subscribe*\n"}
     // 🚨 Rate Limited by Yahoo Finance
     if (info._rateLimited) {
       return `⚠️ *We are receiving too many requests for ${info.symbol} at the moment.*\n\nPlease wait a couple of minutes before checking this specific asset again.`;
+    }
+
+    // ⏳ Deriv synthetic index ticker is temporarily unavailable
+    if (info._derivDown) {
+      return `⚠️ *${info.symbol} price is temporarily unavailable.*\n\nThe Deriv data feed for synthetic indices is currently down. This usually resolves within a few minutes.\n\n💡 *Try:*\n• Check back in a moment\n• Check a different asset like \`Price BTC\` or \`Price GOLD\``;
     }
 
     // ✅ Not publicly traded on NGX
@@ -1447,7 +1657,7 @@ and unlock unlimited alerts! 🚀`;
   }
 
   // ==========================================
-  // 🚀 UPGRADE PRO
+  // 🚀 UPGRADE PRO (Paystack)
   // ==========================================
   async handleUpgradePro(args, phoneNumber, db, priceService, pushName) {
     const user = await db.getUserByPhoneNumber(phoneNumber);
@@ -1469,42 +1679,64 @@ and unlock unlimited alerts! 🚀`;
     }
 
     const name = this.getDisplayName(user, pushName);
-    const link = this.getAdminLink(phoneNumber, name);
 
-    return `${this.getHeader("🚀 Upgrade to Pro")}
+    // Generate Paystack payment link
+    try {
+      const PaystackService = require('./paystackService');
+      const paystack = new PaystackService(db);
+      if (!paystack.isConfigured()) {
+        throw new Error('PAYSTACK_SECRET_KEY not configured');
+      }
+      const { url } = await paystack.initializeTransaction(phoneNumber, 2000);
+
+      return `${this.getHeader("🚀 Upgrade to Pro")}
 
 👋 *Hi ${name}!*
-Here's what you unlock with Pro:
 
-🆓 *Free (Current):*
-━━━━━━━━━━━━━━━━━
-• 3 alerts per 12 hours
-• Basic price checking
-• Standard notifications
+Unlock *unlimited alerts, AI analysis, portfolio tracking & more!*
 
-👑 *Pro Plan:*
+👑 *Pro Plan Benefits:*
 ━━━━━━━━━━━━━━━━━
-✅ *Unlimited* alert slots
 ✅ *Unlimited* alert creation
-✅ Priority notifications (faster!)
-✅ Advanced market analytics
-✅ Portfolio tracking
-✅ Multi-asset alerts
-✅ Priority support
-✅ No cooldown period
+✅ *AI Market Analysis* — Technical analysis on any asset
+✅ *Live News Intel* — AI-summarized headlines
+✅ *Portfolio Tracker* — Live profit & loss
+✅ *Trade Journal* — Auto-track your win rate
+✅ *Smart Alerts* — AI-suggested support & resistance
+✅ *Volatility Alerts* — Two-way percentage alerts
+✅ *Daily Briefs* — Personalized morning intel at 8AM
+✅ *Move Detectors* — Instant pump/dump warnings
+✅ *SMS Notifications* — Text alerts when offline
 
-💰 *Pricing:*
 ━━━━━━━━━━━━━━━━━
-🥉 *Monthly:* ₦2,500/month
-🥈 *Quarterly:* ₦6,000 (save 20%)
-🥇 *Yearly:* ₦20,000 (save 33%)
+💰 *Price:* *₦2,000/month* — one-time payment
 
-🚀 *Ready? Tap to message Admin:*
+🔗 *Pay Now:* ${url}
+
 ━━━━━━━━━━━━━━━━━
-📱 ${link}
+🔒 *Secured by Paystack* — Your payment is safe
+⚡ *Auto-activation:* You'll be upgraded instantly
+📱 A welcome message will arrive the moment payment succeeds
+
+💡 _Your existing alerts and data remain safe._`;
+    } catch (e) {
+      console.error(`⚠️ [Upgrade] Paystack error: ${e.message}`);
+      // Fallback to admin contact if Paystack is not configured
+      const link = this.getAdminLink(phoneNumber, name);
+      return `${this.getHeader("🚀 Upgrade to Pro")}
+
+👋 *Hi ${name}!*
+
+Online payment is temporarily unavailable.
+
+💰 *Price:* *₦2,000/month*
+
+📱 *To upgrade, message the admin:*
 ━━━━━━━━━━━━━━━━━
-🎁 Mention *PRICEPING50* for 10% off
-your first month! 🔥`;
+${link}
+
+We'll activate your Pro access manually!`;
+    }
   }
 
   // ==========================================

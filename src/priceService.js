@@ -577,19 +577,32 @@ class PriceService {
         console.warn(`⚠️ [Deriv] Symbol "${symbol}" is invalid — not in active Deriv symbols list`);
         return null;
       }
-      const price = await derivService.fetchTick(symbol);
-      if (price !== null && price !== undefined) {
-        return {
-          symbol,
-          name: symbol,
-          blockchain: "Synthetic Index (Deriv)",
-          price,
-          currency: "USD",
-          change24h: null,
-          others: ["pricePing"],
-        };
+      try {
+        const price = await derivService.fetchTick(symbol, 8000);
+        if (price !== null && price !== undefined) {
+          return {
+            symbol,
+            name: symbol,
+            blockchain: "Synthetic Index (Deriv)",
+            price,
+            currency: "USD",
+            change24h: null,
+            others: ["pricePing"],
+          };
+        }
+      } catch (e) {
+        console.warn(`⚠️ [Deriv] fetchTick failed for ${symbol}: ${e.message}`);
       }
-      return null;
+      return {
+        symbol,
+        name: symbol,
+        blockchain: "Synthetic Index (Deriv)",
+        price: null,
+        currency: "USD",
+        change24h: null,
+        others: [],
+        _derivDown: true, // Flag for UI
+      };
     }
 
     // ════════════════════════════════════════════════════════
@@ -602,17 +615,21 @@ class PriceService {
         console.warn(`⚠️ [Deriv] Symbol "${symbol}" is invalid — not in active Deriv symbols list`);
         return null;
       }
-      const price = await derivService.fetchTick(symbol);
-      if (price !== null && price !== undefined) {
-        return {
-          symbol,
-          name: symbol,
-          blockchain: "Deriv Asset",
-          price,
-          currency: "USD",
-          change24h: null,
-          others: ["pricePing"],
-        };
+      try {
+        const price = await derivService.fetchTick(symbol, 12000);
+        if (price !== null && price !== undefined) {
+          return {
+            symbol,
+            name: symbol,
+            blockchain: "Deriv Asset",
+            price,
+            currency: "USD",
+            change24h: null,
+            others: ["pricePing"],
+          };
+        }
+      } catch (e) {
+        console.warn(`⚠️ [Deriv] fetchTick failed for ${symbol}: ${e.message}`);
       }
       return null;
     }
