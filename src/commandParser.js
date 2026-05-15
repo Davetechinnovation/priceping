@@ -1719,6 +1719,7 @@ Unlock *unlimited alerts, AI analysis, portfolio tracking & more!*
 🔒 *Secured by Paystack* — Your payment is safe
 ⚡ *Auto-activation:* You'll be upgraded instantly
 📱 A welcome message will arrive the moment payment succeeds
+⚠️ *One-time use:* Link expires after payment or in 24 hours
 
 💡 _Your existing alerts and data remain safe._`;
     } catch (e) {
