@@ -1687,7 +1687,9 @@ and unlock unlimited alerts! 🚀`;
       if (!paystack.isConfigured()) {
         throw new Error('PAYSTACK_SECRET_KEY not configured');
       }
-      const { url } = await paystack.initializeTransaction(phoneNumber, 2000);
+      // Use the REAL phone_number from DB, not the JID-extracted one
+      const realPhone = user?.phone_number || phoneNumber;
+      const { url } = await paystack.initializeTransaction(realPhone, 2000);
 
       return `${this.getHeader("🚀 Upgrade to Pro")}
 

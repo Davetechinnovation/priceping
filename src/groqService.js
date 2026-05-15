@@ -31,8 +31,11 @@ When the user's message is vague, has multiple assets, or uses conversational wo
 1. **lastAssets is empty** → Ask conversationally. E.g. "Which asset did you have in mind? 🤔"
 2. **lastAssets has ONE asset** → Use it directly. E.g. "You mean BTC? Let me check..."
 3. **lastAssets has MULTIPLE assets (2-5)** →
+   - **IMPORTANT: lastAssets[0] is the MOST RECENT asset. Use this for "it", "that", "the asset", "inform me when", "set alert for" etc.**
    - If user says "all of them", "both", "the three" etc. → Generate ONE command per asset.
-   - If user says "it", "that", "the coin" etc. → Use the MOST RECENT asset from lastAssets.
+   - If user says "it", "that", "the coin", "the asset" → ALWAYS use lastAssets[0]. NEVER pick a random one.
+   - If user says "inform me"/"alert me"/"notify me" without naming asset → Use lastAssets[0].
+   - If user gives a number/price without naming asset → The asset is lastAssets[0].
    - If user just says "analyze" or "price" with no hint → ASK: "Which one? I have BTC, ETH and SOL in your recent history."
 4. **User lists multiple assets in their message** (e.g. "BTC, ETH, SOL", "BTC and ETH") →
    - If they ask for ONE action on multiple → Generate ONE command per recognized asset.
@@ -493,8 +496,14 @@ ${knowledgeBase}`.trim();
       ]);
 
       // 🔥 VALID TICKER PATTERN: 2-10 uppercase letters, optionally followed by digits
-      // Examples: BTC, ETH, SOL, AAPL, TSLA, ZENITHBANK, V75, VOLATILITY25, BOOM1000
       const VALID_TICKER_RE = /^[A-Z][A-Z0-9]{1,9}$/;
+
+      // 🔥 NOROVORE GUARD: check if user explicitly named an asset in their message
+      const hasExplicitAssetInMsg = (msg, assets) => {
+        if (!msg) return false;
+        const upper = msg.toUpperCase();
+        return assets.some(a => a && a.length >= 2 && upper.includes(a.toUpperCase()));
+      };
 
       if (Array.isArray(parsed)) {
         parsed = parsed.map(cmd => {
@@ -504,7 +513,7 @@ ${knowledgeBase}`.trim();
             const assetArg = (cmd.args?.[0] || '').toLowerCase().trim();
             const assetUpper = assetArg.toUpperCase();
 
-            // 🚦 Check 1: If asset is a generic reference (it, that, this, etc.), replace with lastAssets
+            // 🚦 Check 1: If asset is a generic reference (it, that, this, etc.), replace with lastAssets[0]
             if (GENERIC_WORDS.has(assetArg)) {
               if (lastAssets.length > 0) {
                 console.log(`🔧 Context fix: "${cmd.args[0]}" → "${lastAssets[0]}" (generic word resolution)`);
@@ -516,19 +525,26 @@ ${knowledgeBase}`.trim();
                 return { command: 'chat', args: ['Which asset would you like to check?'] };
               }
             }
-            // 🚦 Check 2: PREVIOUSLY this was an aggressive hallucination guard that replaced ANY
-            // asset not in lastAssets with lastAssets[0]. This was BROKEN — it prevented users
-            // from asking about new assets! Now we only guard against obvious hallucinated tickers
-            // that DON'T look like real asset names (e.g., single letters, weird combos).
+            // 🚦 Check 2: NOROVORE — if AI picked a non-recent asset from history and user
+            // didn't name any asset, prefer lastAssets[0] (most recent discussed asset).
+            else if (
+              lastAssets.length >= 2 &&
+              VALID_TICKER_RE.test(assetUpper) &&
+              assetUpper !== (lastAssets[0] || '').toUpperCase() &&
+              lastAssets.some(a => a?.toUpperCase() === assetUpper) &&
+              !hasExplicitAssetInMsg(messageText, lastAssets)
+            ) {
+              console.log(`🔧 NOROVORE guard: "${assetUpper}" from history but user didn't name it → using lastAssets[0]="${lastAssets[0]}"`);
+              cmd.args[0] = lastAssets[0];
+            }
+            // 🚦 Check 3: Valid ticker — let through
             else if (assetUpper.length >= 2 && VALID_TICKER_RE.test(assetUpper)) {
-              // ✅ This looks like a legitimate asset ticker — trust the AI and let it through
-              console.log(`🐛 [DEBUG Hallucination Guard SAFE] cmd="${cmd.command}" asset="${assetUpper}" passes ticker validation — NOT replacing`);
+              console.log(`🐛 [DEBUG Hallucination Guard SAFE] cmd="${cmd.command}" asset="${assetUpper}" passes — letting through`);
             } else if (lastAssets.length > 0) {
-              // Asset doesn't look like a valid ticker — fall back to context
               console.log(`🔧 Context fix: "${cmd.args[0]}" (not valid ticker) → "${lastAssets[0]}"`);
               cmd.args[0] = lastAssets[0];
             } else {
-              console.log(`🐛 [DEBUG Hallucination Guard SKIP] cmd="${cmd.command}" asset="${cmd.args[0]}" | lastAssets EMPTY — sending as-is`);
+              console.log(`🐛 [DEBUG Hallucination Guard SKIP] cmd="${cmd.command}" asset="${cmd.args[0]}" | lastAssets EMPTY`);
             }
           }
 
