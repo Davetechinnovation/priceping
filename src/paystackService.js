@@ -33,7 +33,7 @@ class PaystackService {
         email,
         amount: amountInKobo,
         metadata: { phone },
-        callback_url: `${baseUrl}/payment/success?phone=${phone}`,
+        callback_url: `${baseUrl}/payment/success`,
       },
       {
         headers: {

@@ -46,11 +46,28 @@ app.use(morgan("combined"));
 
 // ════════════════════════════════════════════════════════════
 // 🎉 PAYMENT SUCCESS PAGE — Redirects user back to WhatsApp DM
+// Uses the bot's actual linked device number from creds.me.id
+// (same source as the admin dashboard "Linked Device" display)
+// This auto-updates if the admin relinks to a different number.
 // ════════════════════════════════════════════════════════════
+function getBotLinkedPhone() {
+  try {
+    const ws = global.whatsappService;
+    const creds = ws?.sock?.authState?.creds;
+    if (creds?.registered && creds.me?.id) {
+      const id = creds.me.id;
+      const number = id.split("@")[0].split(":")[0].replace(/[^0-9]/g, "");
+      if (number) return number;
+    }
+  } catch (_) {}
+  // Fallback to env
+  return (process.env.WHATSAPP_PHONE_NUMBER || "").replace(/[^0-9]/g, "");
+}
+
 app.get('/payment/success', (req, res) => {
-  const phone = req.query.phone || '';
-  const waLink = `https://wa.me/${phone.replace(/[^0-9]/g, '')}`;
-  
+  const botPhone = getBotLinkedPhone();
+  const waLink = botPhone ? `https://wa.me/${botPhone}` : 'https://wa.me/';
+
   res.send(`
     <!DOCTYPE html>
     <html>
