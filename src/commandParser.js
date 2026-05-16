@@ -40,6 +40,7 @@ class CommandParser {
       watch: this.handleWatch.bind(this),
       watchlist: this.handleWatchlist.bind(this),
       unwatch: this.handleUnwatch.bind(this),
+      add: this.handleWatch.bind(this), // "Add BTC to watchlist" → watch handler
 
       // Referrals (🎁 NEW)
       invite: this.handleInvite.bind(this),
@@ -128,6 +129,16 @@ class CommandParser {
 
     if (text.startsWith("upgrade")) {
       return { command: "upgrade", args: text.split(/\s+/).slice(1) };
+    }
+
+    // 🔥 FIX: Detect "add X to watchlist" pattern and extract the asset
+    // "Add volatility 100 to watchlist" → command="watch", args=["volatility", "100"]
+    // "Add MTNN to watchlist" → command="watch", args=["mtnn"]
+    const addMatch = text.match(/^add\s+(.+?)\s+to\s+watchlist\s*$/i);
+    if (addMatch) {
+      const assetWords = addMatch[1].trim().split(/\s+/);
+      console.log(`🐛 [DEBUG parseMessage] "add to watchlist" pattern: "${text}" → extracted asset="${assetWords.join(' ')}"`);
+      return { command: "watch", args: assetWords };
     }
 
     const words = text.split(/\s+/);
@@ -451,13 +462,14 @@ _soon as possible._`;
               break; // Only check the LAST assistant message
             }
           }
-          // 🔥 FIX: If the user's message is a valid ticker/asset name (e.g. "BTC", "ETH", "GOLD"),
-          // OR a direct command like "price BTC", DON'T treat it as a pending clarification.
-          // The user is answering the bot's question directly, not asking a new conversational question.
+          // 🔥 FIX: If the user's message is a clear asset name (starts with uppercase letter,
+          // 2-10 alphanumeric chars), OR starts with "price"/"set", treat as direct answer.
+          // Conversational words like "thanks", "yes", "okay" come in lowercase via parseMessage
+          // so /^[A-Z]/ naturally filters them out since command is lowercase.
           const answerText = message.trim().toUpperCase();
-          const isDirectAssetAnswer = /^[A-Z][A-Z0-9]{1,9}$/.test(answerText) || // Single ticker like BTC
-                                      /^PRICE\s+/.test(answerText) ||            // Price command
-                                      /^SET\s+/.test(answerText);                // Set command
+          const isDirectAssetAnswer = /^[A-Z][A-Z0-9]{1,9}$/.test(answerText) ||
+                                      /^PRICE\s+/.test(answerText) ||
+                                      /^SET\s+/.test(answerText);
           if (isDirectAssetAnswer) {
             console.log(`🗣️ [Context Fallback] User message "${message}" looks like a direct asset answer — NOT treating as pending clarification`);
             pendingClarification = false;
@@ -469,34 +481,34 @@ _soon as possible._`;
 
     console.log(`🗣️ [Conversation] ${cleanPhone} | pendingClarification=${pendingClarification} | handler=${handler ? command : 'null'}`);
 
-    // 🎯 DYNAMIC TICKER / SINGLE-ASSET DIRECT RESOLUTION
-    // 🔥 FIX: This now runs BEFORE the pendingClarification check AND regardless of handler state.
-    // This ensures direct answers like "BTC" (when asked "which asset?") get routed to price
-    // instead of going through Gemini's unpredictable clarification loop.
+    // 🔥 FIX: If there's no handler and this is a single asset ticker (pure alphanumeric,
+    // 2-10 chars, starts with letter), send it to price lookup. This catches cases where
+    // user replies "BTC" to "which asset?" without needing to hit the AI.
+    // "Thanks", "hello", "yes" etc. all start with lowercase in command, so /^[A-Z]/ doesn't match.
     const originalText = message.trim();
-    const tickerPattern = /^[A-Z]{1,8}\d*$/i;              // "V75", "BOOM1000", "JD10"
-    const spacedTickerPattern = /^[A-Z]{1,8}\s+\d{1,6}$/i; // "VOL 75", "BOOM 1000"
-    const anyTicker = /^[A-Z]{1,2}HZ?\d/;                  // "1HZ25V"
-    
-    // Only auto-route if there's no space (single word) or it matches spaced ticker pattern,
-    // and it doesn't match known greeting/conversational words
-    const greetingWords = new Set(["bot", "test", "morning", "gm", "evening", "afternoon", "hey", "hello", "hi"]);
-    const commandWordBlocklist = new Set(["analyze", "analysis", "opinion", "view", "news", "portfolio", "holdings", "trades", "features", "status", "subscribe", "upgrade", "invite", "redeem", "watchlist", "watch", "unwatch", "menu", "help", "journal", "set", "alerts", "delete", "del"]);
-    const isSingleWord = !originalText.includes(' ');
-    const isLikelyTicker = (isSingleWord && tickerPattern.test(command)) ||
-                           spacedTickerPattern.test(originalText) ||
-                           anyTicker.test(command);
-    
-    // 🔥 FIX: Try direct ticker resolution if:
-    // 1. Message looks like a ticker/asset (BTC, V75, etc.) AND
-    // 2. No handler was found AND
-    // 3. It's not a greeting or command word
-    // This runs EVEN when pendingClarification=true (so "BTC" answers the "which asset?" question directly)
-    if (!handler && isLikelyTicker && !greetingWords.has(command) && !commandWordBlocklist.has(command)) {
+    const isSingleAssetName = /^[A-Z][A-Z0-9]{1,9}$/.test(command) &&
+                              !["hi","hello","hey","halo","hallo","sup","yo","thanks","thank","ok","okay",
+                                "yes","yeah","yep","yup","no","nope","nah","sure","bye","goodbye",
+                                "morning","gm","evening","afternoon","night","gn","bot","test",
+                                "please","pls","sorry","welcome","menu","help","stop","quit","exit",
+                                "i","me","my","we","us","our","you","your","he","him","his",
+                                "she","her","it","its","they","them","their","this","that",
+                                "a","an","the","of","in","on","at","to","for","with","by",
+                                "and","or","but","not","all","both","each","few","more","some",
+                                "one","two","three","four","five","six","seven","eight","nine","ten",
+                                "what","when","where","why","how","who","which","are","am","is",
+                                "was","were","been","have","has","had","do","does","did","can",
+                                "could","will","would","shall","should","may","might","must",
+                                "get","got","make","made","take","took","give","gave","tell",
+                                "told","show","see","know","think","want","need","like","use",
+                                "look","find","come","came","go","went","say","said","talk",
+                                "ask","work","run","move","live","leave","let","put","call",
+                                "try","keep","start","stop","say","said","speak","use","used"].includes(command);
+
+    if (!handler && isSingleAssetName) {
       console.log(`🎯 Direct asset detection: "${originalText}" → routing to price command${pendingClarification ? ' (was pending clarification)' : ''}`);
       const resp = await this.handleGenericPrice([originalText.toUpperCase()], cleanPhone, db, priceService, pushName, userState);
       if (this.geminiService) this.geminiService.injectBotResponse(cleanPhone, resp, [originalText.toUpperCase()]);
-      // Clear pending state since we resolved it
       if (pendingClarification) userState.delete(cleanPhone);
       return resp;
     }
