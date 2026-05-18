@@ -547,15 +547,17 @@ _soon as possible._`;
           if (refinedArray && refinedArray.length > 0) {
             let responses = [];
             let geminiAskedQuestion = false;
+            let contextAssetsFromBatch = [];
             for (const refined of refinedArray) {
+              // ⏳ Throttle: 500ms delay between non-chat commands to avoid Yahoo 429 rate limits
+              if (refined.command !== "chat" && responses.length > 0) {
+                await new Promise(r => setTimeout(r, 500));
+              }
+
               if (refined.command === "chat" && refined.args && refined.args[0]) {
                 const chatText = refined.args[0];
                 console.log(`🤖 Gemini chat: "${message}" ->`, chatText);
                 responses.push(chatText);
-                // 🗣️ ONLY mark as question if the chat actually asks one.
-                // This fixes the infinite clarification loop where every chat response
-                // was treated as a question, even definitive answers like "BTC is $50k".
-                // A question must contain "?" or start with question words.
                 const lowerChat = chatText.toLowerCase();
                 const hasQuestionMark = lowerChat.includes('?');
                 const startsWithQuestionWord = /^(what|which|who|where|when|why|how|are|is|do|does|can|could|would|should|tell me|sure|which one)\b/.test(lowerChat);
@@ -571,22 +573,26 @@ _soon as possible._`;
                   refined.args, cleanPhone, db, priceService, pushName, userState
                 );
                 if (res) responses.push(res);
+                // Collect asset from this command for context
+                if (refined.args?.[0]) {
+                  const asset = refined.args[0].toUpperCase();
+                  if (asset && asset.length >= 1) contextAssetsFromBatch.push(asset);
+                }
               }
             }
             if (responses.length > 0) {
               const finalResp = responses.join('\n\n━━━━━━━━━━━━━━━━━\n\n');
-              // 🗣️ If Gemini just asked a clarifying question, save state so next reply routes to Gemini
               if (geminiAskedQuestion) {
                 userState.set(cleanPhone, { type: 'AWAITING_GEMINI_CLARIFICATION' });
                 console.log(`🗣️ [Conversation] State set to AWAITING_GEMINI_CLARIFICATION for ${cleanPhone}`);
               } else {
-                // ✅ Clear any pending clarification state since we gave a definitive answer
                 if (userState.get(cleanPhone)?.type === 'AWAITING_GEMINI_CLARIFICATION') {
                   userState.delete(cleanPhone);
                   console.log(`🗣️ [Conversation] Cleared AWAITING_GEMINI_CLARIFICATION for ${cleanPhone} (definitive answer given)`);
                 }
               }
-              this.geminiService.injectBotResponse(cleanPhone, finalResp);
+              // Pass collected assets to context
+              this.geminiService.injectBotResponse(cleanPhone, finalResp, contextAssetsFromBatch);
               return finalResp;
             }
           }

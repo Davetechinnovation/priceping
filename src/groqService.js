@@ -530,6 +530,16 @@ ${knowledgeBase}`.trim();
       }
       if (!Array.isArray(parsed) && parsed?.command) parsed = [parsed];
 
+      // 🛟 SALVAGE: Handle string arrays like ["I'm positive!"] or ["string msg"]
+      // where the AI returned a plain text array instead of command objects.
+      if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'string') {
+        const chatText = parsed.join(' ').trim();
+        if (chatText) {
+          console.log(`🛟 [String Array Salvage] Converted to chat command: "${chatText.slice(0, 60)}..."`);
+          parsed = [{ command: "chat", args: [chatText] }];
+        }
+      }
+
       // ── 🔧 STEP 4: Asset Context Safety Net ──────────────────────────
       // 🔥 FIX: Only replace generic placeholder words. NEVER replace a real-looking
       // ticker/asset name because the user might be asking about something new!
@@ -544,6 +554,10 @@ ${knowledgeBase}`.trim();
       // 🔥 VALID TICKER PATTERN: 2-10 uppercase letters, optionally followed by digits
       const VALID_TICKER_RE = /^[A-Z][A-Z0-9]{1,9}$/;
 
+      // 🔥 MULTI-WORD ASSET: If the asset arg contains spaces, it's a multi-word name
+      // like "VOLATILITY 100", "CRUDE OIL", "BOOM 1000" — let it through UNTOUCHED.
+      const isMultiWordAsset = (str) => str.includes(' ');
+
       // 🔥 NOROVORE GUARD: check if user explicitly named an asset in their message
       const hasExplicitAssetInMsg = (msg, assets) => {
         if (!msg) return false;
@@ -552,12 +566,30 @@ ${knowledgeBase}`.trim();
       };
 
       if (Array.isArray(parsed)) {
+        // 🧹 STEP 4a: Deduplicate identical commands (e.g. price BTC appearing twice)
+        const seen = new Set();
+        parsed = parsed.filter(cmd => {
+          const key = `${cmd.command}:${JSON.stringify(cmd.args)}`;
+          if (seen.has(key)) {
+            console.log(`🧹 Dedup: skipping duplicate "${key}"`);
+            return false;
+          }
+          seen.add(key);
+          return true;
+        });
+
         parsed = parsed.map(cmd => {
 
           // Fix generic asset words using last known context
           if (['price', 'analyze', 'news', 'set', 'bought', 'sold'].includes(cmd.command)) {
             const assetArg = (cmd.args?.[0] || '').toLowerCase().trim();
             const assetUpper = assetArg.toUpperCase();
+
+            // 🚦 Check 0: Multi-word asset like "volatility 100" — let through UNTOUCHED
+            if (isMultiWordAsset(assetArg)) {
+              console.log(`🔧 Multi-word asset detected: "${assetArg}" — passing through unchanged`);
+              return cmd;
+            }
 
             // 🚦 Check 1: If asset is a generic reference (it, that, this, etc.), replace with lastAssets[0]
             if (GENERIC_WORDS.has(assetArg)) {
@@ -587,6 +619,8 @@ ${knowledgeBase}`.trim();
             else if (assetUpper.length >= 2 && VALID_TICKER_RE.test(assetUpper)) {
               console.log(`🐛 [DEBUG Hallucination Guard SAFE] cmd="${cmd.command}" asset="${assetUpper}" passes — letting through`);
             } else if (lastAssets.length > 0) {
+              // 🔥 FIX: Only replace if it looks like garbage (single char, purely numeric, etc.)
+              // But NOT multi-word assets (handled above) or obviously valid names
               console.log(`🔧 Context fix: "${cmd.args[0]}" (not valid ticker) → "${lastAssets[0]}"`);
               cmd.args[0] = lastAssets[0];
             } else {
