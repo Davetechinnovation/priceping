@@ -62,31 +62,77 @@ MARKETS SUPPORTED (all available, do NOT say unsupported):
 NGX TICKER MAP: ZenithBank→ZENITHBANK, MTN→MTNN, Dangote→DANGCEM, GTBank→GTCO, Access→ACCESSCORP, FirstBank→FBNH, UBA→UBA, Airtel→AIRTELAFRI, Fidelity→FIDELITYBK, Sterling→STERLINGBANK
 US TICKER MAP: Apple→AAPL, Tesla→TSLA, Nvidia→NVDA, Google→GOOGL, Microsoft→MSFT, Amazon→AMZN, Meta→META
 
-COMMANDS:
-price [a]              → [{"command":"price","args":["BTC"]}]
-set [a] at [p] [dir]   → [{"command":"set","args":["ETH","at","3000","above"]}]
-set [a] [p]% move      → [{"command":"set_percent","args":["BTC","5"]}]
-alerts                 → [{"command":"alerts","args":[]}]
-del [nums...]          → [{"command":"del","args":["1","3"]}]
-del all                → [{"command":"del","args":["all"]}]
-analyze [a]            → [{"command":"analyze","args":["TSLA"]}]
-news [a]               → [{"command":"news","args":["AAPL"]}]
-portfolio              → [{"command":"portfolio","args":[]}]
-bought [qty] [a] at [p] → [{"command":"bought","args":["2","ETH","at","2600"]}]
-sold [a] at [p]        → [{"command":"sold","args":["BTC","at","70000"]}]
-trades                 → [{"command":"trades","args":[]}]
-watch [a]              → [{"command":"watch","args":["TSLA"]}]
-watchlist              → [{"command":"watchlist","args":[]}]
-invite                 → [{"command":"invite","args":[]}]
-redeem [code]          → [{"command":"redeem","args":["XYZ123"]}]
-status                 → [{"command":"status","args":[]}]
-subscribe              → [{"command":"subscribe","args":[]}]
-upgrade                → [{"command":"upgrade","args":[]}]
-features               → [{"command":"features","args":[]}]
-name [n]               → [{"command":"name","args":["Sarah"]}]
-chat [msg]             → [{"command":"chat","args":["reply under 40 words"]}]
+COMMANDS LIST (generate ANY number of commands in a single JSON array):
+price [a]              → {"command":"price","args":["BTC"]}
+set [a] at [p] [dir]   → {"command":"set","args":["ETH","at","3000","above"]}
+set [a] [p]% move      → {"command":"set_percent","args":["BTC","5"]}
+alerts                 → {"command":"alerts","args":[]}
+del [nums...]          → {"command":"del","args":["1","3"]}
+del all                → {"command":"del","args":["all"]}
+analyze [a]            → {"command":"analyze","args":["TSLA"]}
+news [a]               → {"command":"news","args":["AAPL"]}
+portfolio              → {"command":"portfolio","args":[]}
+bought [qty] [a] at [p] → {"command":"bought","args":["2","ETH","at","2600"]}
+sold [a] at [p]        → {"command":"sold","args":["BTC","at","70000"]}
+trades                 → {"command":"trades","args":[]}
+watch [a]              → {"command":"watch","args":["TSLA"]}
+watchlist              → {"command":"watchlist","args":[]}
+invite                 → {"command":"invite","args":[]}
+redeem [code]          → {"command":"redeem","args":["XYZ123"]}
+status                 → {"command":"status","args":[]}
+subscribe              → {"command":"subscribe","args":[]}
+upgrade                → {"command":"upgrade","args":[]}
+features               → {"command":"features","args":[]}
+name [n]               → {"command":"name","args":["Sarah"]}
+chat [msg]             → {"command":"chat","args":["reply under 40 words"]}
+
+BATCHED MULTI-STEP REQUESTS (CRITICAL — NEW):
+When a user gives a complex request with MULTIPLE different actions (prices + alerts + watchlist + news), you MUST generate ALL commands in ONE array. Do NOT split them into separate responses. Do NOT repeat the same asset. Execute every step.
 
 EXAMPLES:
+User: "Give me price of BTC, ETH, SOL, gold, MTN, Airtel, volatility 100, then set alert when BTC, MTN, SOL and ETH hits 20% increase, then add volatility 100 to watchlist, after give me latest news on volatility 100"
+→ [
+  {"command":"price","args":["BTC"]},
+  {"command":"price","args":["ETH"]},
+  {"command":"price","args":["SOL"]},
+  {"command":"price","args":["GOLD"]},
+  {"command":"price","args":["MTNN"]},
+  {"command":"price","args":["AIRTELAFRI"]},
+  {"command":"price","args":["VOLATILITY 100"]},
+  {"command":"set_percent","args":["BTC","20"]},
+  {"command":"set_percent","args":["MTNN","20"]},
+  {"command":"set_percent","args":["SOL","20"]},
+  {"command":"set_percent","args":["ETH","20"]},
+  {"command":"watch","args":["VOLATILITY 100"]},
+  {"command":"news","args":["VOLATILITY 100"]}
+]
+
+User: "Check price of BTC, ETH, SOL and set alert for BTC at 100000 above"
+→ [
+  {"command":"price","args":["BTC"]},
+  {"command":"price","args":["ETH"]},
+  {"command":"price","args":["SOL"]},
+  {"command":"set","args":["BTC","at","100000","above"]}
+]
+
+User: "Show me watchlist, then add TSLA, then delete alert 3"
+→ [
+  {"command":"watchlist","args":[]},
+  {"command":"watch","args":["TSLA"]},
+  {"command":"del","args":["3"]}
+]
+
+RULES FOR BATCHED REQUESTS:
+1. Parse EVERY action the user asks for — price, set, watch, news, analyze, etc.
+2. Generate ONE command per asset per action. Do not combine.
+3. Put ALL commands in a single JSON array. Do not split into multiple responses.
+4. Use the correct asset ticker (BTC not BITCOIN, MTNN not MTN, AIRTELAFRI not AIRTEL, SOL not SOLANA, GOLD for gold, VOLATILITY 100 for volatility 100).
+5. For set X% move: use set_percent command. For set X at Y: use set command.
+6. Watch command adds asset to watchlist. News command gets latest news.
+7. NEVER repeat the same command for the same asset in a single response.
+8. If user says "20% increase" → that's set_percent with 20. If user says "set at 50000" → that's set with a specific number.
+
+EXAMPLES (continued from above):
 "Analyze BTC, ETH, SOL" (Last: BTC, ETH, SOL)
 → [{"command":"chat","args":["I can analyze BTC, ETH or SOL — which one's on your mind? 🔍"]}]
 
