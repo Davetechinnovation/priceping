@@ -150,9 +150,15 @@ class CommandParser {
     // This catches frustrated re-tries like "Are u stupid I said price BTC"
     // or "Can you check price of ETH" where the real command is mid-sentence.
     const knownCommands = new Set(Object.keys(this.commands));
+    // 🔥 FIX: If the message starts with a question word (what/who/how/whose/which)
+    // and "name" is NOT the first word, it's a QUESTION about bot identity, NOT a name-set command.
+    // E.g. "what is ur name" → should go to AI, not to handleSetName.
+    const QUESTION_WORDS = new Set(['what', 'who', 'whose', 'which', 'how']);
     if (!knownCommands.has(command)) {
       const foundIdx = words.findIndex(w => knownCommands.has(w));
-      if (foundIdx > 0) {
+      // 🔥 FIX: Skip Smart Scan extraction if the message starts with a question word
+      // AND the found command is "name" — this is asking the bot's identity, not setting user name.
+      if (foundIdx > 0 && !(QUESTION_WORDS.has(words[0]) && words[foundIdx] === 'name')) {
         command = words[foundIdx];
         args = words.slice(foundIdx + 1);
         console.log(`🐛 [DEBUG parseMessage] Smart scan: "${text}" → extracted command="${command}" at word ${foundIdx}, args=${JSON.stringify(args)}`);
@@ -217,8 +223,16 @@ class CommandParser {
       return args.length >= 1 && args.every(a => !isNaN(a));
     }
 
+    // 🔥 FIX: Name command — only pass through if the first arg looks like a real name.
+    // Reject question words ("your", "my", "what", "who", "?") that indicate the user
+    // is asking about the bot's identity rather than setting their own name.
     if (["name"].includes(command)) {
-      return args.length >= 1 && args.length <= 3;
+      if (args.length < 1 || args.length > 3) return false;
+      const firstArg = args[0].toLowerCase().replace(/[^a-z]/g, '');
+      // Question/introspection words → not a name-set command
+      const introspectionWords = new Set(['your', 'my', 'ur', 'what', 'who', 'whose', 'which', 'how', 'the', 'this', 'that', 'is', 'are', 'its', 'his', 'her', 'our', 'their']);
+      if (introspectionWords.has(firstArg) || firstArg.length < 2 || firstArg.length > 20) return false;
+      return true;
     }
     if (["portfolio", "holdings", "trades", "journal", "features"].includes(command)) {
       return args.length === 0;
@@ -651,6 +665,21 @@ _soon as possible._`;
           }
         }
       }
+      // 🔥 FIX: Validate that contextAssets look like real asset names before storing.
+      // Prevents user names like "DÂÑDY" or garbage tokens from polluting lastAssets.
+      contextAssets = contextAssets.filter(a => {
+        if (!a || typeof a !== 'string') return false;
+        const trimmed = a.trim().toUpperCase();
+        if (trimmed.length < 2 || trimmed.length > 30) return false;
+        // Multi-word asset (e.g. "VOLATILITY 100", "CRUDE OIL")
+        if (trimmed.includes(' ')) {
+          const parts = trimmed.split(/\s+/);
+          if (parts.length < 2 || parts.length > 3) return false;
+          return parts.every(p => /^[A-Z0-9]{1,15}$/.test(p));
+        }
+        // Single-word: must match ticker pattern
+        return /^[A-Z][A-Z0-9]{1,14}$/.test(trimmed);
+      });
       console.log(`🔧 [Context] Direct handler "${command}" → passing assets=${JSON.stringify(contextAssets)} to injectBotResponse`);
       if (this.geminiService) this.geminiService.injectBotResponse(cleanPhone, finalResp, contextAssets);
       return finalResp;
@@ -725,7 +754,7 @@ ${suggestions.map((s) => `• ${s}`).join("\n")}
   // ==========================================
   async handleGreeting(args, phoneNumber, db, priceService, pushName) {
     const isNew = await db.isNewUser(phoneNumber);
-    const displayName = this.getDisplayName(null, pushName); // No user object yet usually here
+    const displayName = this.getDisplayName(null, pushName);
 
     if (isNew) {
       return `👋 *Welcome to PricePing, ${displayName}!*
@@ -734,8 +763,9 @@ I'm your AI crypto & stock alert assistant. I'll message you the second your tar
 
 🎯 *Let's get started in 3 steps:*
 
-*Step 1:* Check a price
-Try: \`Price BTC\`
+*Step 1:* Check a price — just type the ticker!
+Try: \`BTC\` or \`Price BTC\` or \`GOLD\`
+(I understand natural language — give it a shot! 🧠)
 
 (I'll guide you through setting your first alert after that!)`;
     }
@@ -748,28 +778,33 @@ Try: \`Price BTC\`
       ? `🔥 *${user.streak.current} Day Streak!* Keep it going!\n\n`
       : "";
 
+    const bonusSlots = user?.bonus_alert_slots || 0;
+    const bonusLine = bonusSlots > 0 ? `\n🎁 *+${bonusSlots} bonus slots* from referrals!` : "";
+
     return `${this.getHeader("PricePing Terminal")}
 
-👋 *Hi, ${name}!*
-I'm ready to track markets for you.
+👋 *Hey ${name}!* Ready to track some markets? 🚀
 
-${streak}📊 *Your Alert Quota:*
-${this.getUsageBar(usage.used, usage.limit)}
-${usage.isPro ? "👑 Pro Plan - Unlimited alerts!" : `⏰ Resets in: ${usage.resetIn}`}
+${streak}📊 *Your Power:* ${this.getUsageBar(usage.used, usage.limit)}
+${usage.isPro ? "👑 *Pro Plan — Unlimited!* 🎉" : `⏰ Resets in: ${usage.resetIn}`}${bonusLine}
 
-🎯 *QUICK ACTIONS*
 ━━━━━━━━━━━━━━━━━
-🔎 *Check Price:* 
-   Type \`Price BTC\` or \`Price Gold\` 
-   
-🔔 *Set Alert:*
-   Type \`Set ETH at 3500\` 
 
-📋 *My Dashboard:*
-   Type \`My Alerts\` 
+💥 *Try This:* Just type a ticker!
+\`BTC\` \`SOL\` \`TSLA\` \`GOLD\` \`EURUSD\`
+*No "Price" needed* — I auto-detect it! 🧠
 
-${usage.isPro ? "" : "🚀 Want unlimited alerts? Type *Subscribe*\n"}
-💡 *Tip:* _I support Crypto, Forex, Stocks (US & Nigerian), and Commodities!_`;
+━━━━━━━━━━━━━━━━━
+
+🔔 *Set Your First Alert:*
+\`Set ETH at 3500\` → I'll DM you the moment it hits 🎯
+
+👀 *Passive Tracking:*
+\`Watch TSLA\` → Zero effort, I keep an eye on it
+
+━━━━━━━━━━━━━━━━━
+${usage.isPro ? "" : "📈 Type *Subscribe* to unlock unlimited alerts + AI analysis!\n"}
+💡 _Also try: \`Help\` for full guide, \`Invite\` to earn bonus slots!_`;
   }
 
   // ==========================================
@@ -795,7 +830,7 @@ ${usage.isPro ? "" : "🚀 Want unlimited alerts? Type *Subscribe*\n"}
     const info = await priceService.getAssetInfo(input);
 
     if (!info) {
-      return `❌ *Not Found*\n\nI searched high and low for *"${input.toUpperCase()}"* but couldn't find it.\n\n💡 *Try:*\n• \`Price BTC\` — Crypto\n• \`Price Gold\` — Commodity\n• \`Price AAPL\` — US Stock\n• \`Price GBPUSD\` — Forex`;
+      return `❌ *Not Found*\n\nI searched high and low for *"${input.toUpperCase()}"* but couldn't find it.\n\n💡 *Try:*\n• Just type it: \`BTC\` — I auto-detect assets! 🧠\n• \`GOLD\` — Commodities\n• \`AAPL\` — US Stocks\n• \`GBPUSD\` — Forex\n• \`ZENITHBANK\` — NGX Stocks`;
     }
 
     // 🚨 Rate Limited by Yahoo Finance
@@ -925,8 +960,9 @@ Type: \`Set ${info.symbol} at ${Math.round(info.price * 1.05)}\``;
     } else if (!hasAiSuggestions) {
       response += `
 ━━━━━━━━━━━━━━━━━
-💡 *Quick Alert:* 
-Reply "Set ${info.symbol} at ${info.price.toFixed(2)}"`;
+💡 *Set an Alert:*
+• \`Set ${info.symbol} at ${info.price.toFixed(2)}\` → I'll DM you 🎯
+• Or just say _"alert if ${info.symbol} drops below X"_ 🧠`;
     }
 
     // ✅ Chain selection removed - bot auto-selects best chain
@@ -957,11 +993,15 @@ Reply "Set ${info.symbol} at ${info.price.toFixed(2)}"`;
     if (!usage || !usage.isPro) {
       return `🔒 *AI Market Analysis is a Pro Feature*
 ━━━━━━━━━━━━━━━━━
-Upgrade to the Pro plan to unlock on-demand 
-AI market analysis, daily briefs, portfolio 
+Upgrade to the Pro plan to unlock on-demand
+AI market analysis, daily briefs, portfolio
 tracking, and SMS alerts.
 
-Type *Subscribe* to view plans!`;
+👀 *Want to try something free right now?*
+• Just type \`${input.toUpperCase()}\` — I'll show the live price + market mood 🌡️
+• Or set a free alert: \`Set ${input.toUpperCase()} at [price]\`
+
+Type *Subscribe* to view plans or *Price ${input.toUpperCase()}* to start free!`;
     }
 
     // 2. Fetch price info
@@ -1030,6 +1070,10 @@ ${analysis}
 ━━━━━━━━━━━━━━━━━
 Upgrade to the Pro plan to unlock live AI
 news analysis and market updates.
+
+👀 *Try this for free instead:*
+• \`${input}\` → Get the live price + Fear & Greed mood 🌡️
+• \`Set ${input} at [price]\` → Set a free alert 🎯
 
 Type *Subscribe* to view plans!`;
     }
@@ -1430,15 +1474,16 @@ Would you like an SMS alert as well?
     const usage = await db.getAlertUsage(phoneNumber);
 
     if (alerts.length === 0) {
-      return `📂 *Your watchlist is empty.*
+      return `📂 *You have no alerts set.*
 
-📊 *Alert Quota:* ${this.getUsageBar(usage.used, usage.limit)}
+📊 *Alert Quota:* ${this.getUsageBar(usage.used, usage.limit)}/${usage.limit}
 ${usage.isPro ? "👑 Pro Plan" : `⏰ Resets in: ${usage.resetIn}`}
 
-Try: \`Set BTC at 70000\``;
+🎯 Try: \`Set BTC at 70000\` — I'll notify you the second it hits!
+💡 Or just type a ticker like \`BTC\` to check price first.`;
     }
 
-    let msg = `${this.getHeader("Your Watchlist")}\n`;
+    let msg = `${this.getHeader("Your Alerts")}\n`;
 
     alerts.forEach((a) => {
       const icon = a.direction === "above" ? "📈" : "📉";
@@ -1460,38 +1505,55 @@ Try: \`Set BTC at 70000\``;
   // ❓ HELP
   // ==========================================
   async handleHelp(args, phoneNumber, db) {
+    const user = await db.getUserByPhoneNumber(phoneNumber);
     const usage = await db.getAlertUsage(phoneNumber);
+    const streak = user?.streak?.current > 1
+      ? `🔥 *${user.streak.current} Day Streak!* Keep it going!\n`
+      : "";
+    const bonusSlots = user?.bonus_alert_slots || 0;
 
-    return `❓ *PricePing Help Guide*
-━━━━━━━━━━━━━━━━━
+    let msg = `🤖 *Meet PricePing AI — Your Market Wingman*
+━━━━━━━━━━━━━━━━━━━━━━━
+${streak}📊 *Your Power:* ${this.getUsageBar(usage.used, usage.limit)}`;
 
-*1️⃣ Basic Commands*
-   • \`Price BTC\` - Get live price
-   • \`Analyze SOL\` - AI technical analysis
-   • \`Menu\` - Main menu & quota
+    if (bonusSlots > 0) {
+      msg += `\n🎁 *+${bonusSlots} bonus slots* from referrals! Earn more with \`Invite\``;
+    }
+    msg += `\n${usage.isPro ? "👑 *Pro Plan — Unlimited!* 🎉" : `⏰ Resets in: ${usage.resetIn}`}
 
-*2️⃣ Setting Alerts*
-   • \`Set ETH at 3000\` - Simple price target
-   • \`Set BTC 5% move\` - Two-way volatility alert
+━━━━━━━━━━━━━━━━━━━━━━━
 
-*3️⃣ Watchlist (Passive Tracking)*
-   • \`Watch TSLA\` - Add to watchlist
-   • \`Watchlist\` - View all watched assets
+🚀 *Try This Right Now:*
+Just type a ticker. Yes, that's it! 👇
+\`BTC\` \`SOL\` \`GOLD\` \`TSLA\` \`EURUSD\`
+*No command needed* — I auto-detect asset names! 🧠
 
-*4️⃣ Managing Your Account*
-   • \`My alerts\` - View your alert dashboard
-   • \`Delete 1 3\` - Remove specific alerts
-   • \`Delete all\` - Clear everything
+━━━━━━━━━━━━━━━━━━━━━━━
 
-*5️⃣ Growth & Pro Features*
-   • \`Invite\` - Get your referral code to earn bonuses
-   • \`Subscribe\` - View Pro benefits & pricing
+🔮 *FREE — Instantly Useful*
+• \`Price BTC\` → Live price + Fear & Greed mood 🌡️
+• \`Set ETH at 3500\` → I'll DM you the moment it hits 🎯
+• \`Watch TSLA\` → Passive tracking, zero effort 👀
+• \`Invite\` → Share code, earn +1 alert slot per friend 🎁
+• \`Name Sarah\` → Personalize my responses ✏️
 
-━━━━━━━━━━━━━━━━━
-📊 *Your Quota:* ${this.getUsageBar(usage.used, usage.limit)}
-${usage.isPro ? "👑 *Pro Tier:* Unlimited alerts!" : `⏰ Resets every 12 hours (${usage.resetIn} left)`}
+💬 *Natural Language Works:*
+_"what's the price of ETH"_
+_"set an alert if SOL drops below 100"_
+➡️ I understand you! Try it. 😎
 
-💡 _Tip: Type *Features* to see everything I can do!_`;
+━━━━━━━━━━━━━━━━━━━━━━━
+
+👑 *Pro Upgrades (when you're ready)*
+• \`Analyze SOL\` → AI technical analysis (RSI, MACD, EMA) 🧠
+• \`News BTC\` → AI-summarized breaking headlines 📰
+• \`Portfolio\` → Track your holdings with live PnL 💼
+• \`Trades\` → Auto-track win rate 📓
+• SMS alerts → Never miss a move, even offline 📱
+
+━━━━━━━━━━━━━━━━━━━━━━━
+💡 Type \`Subscribe\` for full comparison or \`Upgrade\` to unlock Pro!`;
+    return msg;
   }
 
   // ==========================================
@@ -1568,7 +1630,7 @@ Reply *NO* to cancel`;
       response += `\n\n⚠️ Not found: #${notFound.join(', #')}`;
     }
 
-    response += `\n\n💡 _Deleting an alert does not refund your quota._`;
+    response += `\n\n💡 _Deleting an alert does not refund your quota._\n🎯 Set a new one: \`Set ${toDelete[0]?.asset || 'BTC'} at [price]\``;
     return response;
   }
 
@@ -1584,7 +1646,7 @@ Reply *NO* to cancel`;
     }
 
     await db.updateUserName(phoneNumber, name);
-    return `✅ Got it! I'll call you *${name}* from now on.\n\n💡 _This name will be used everywhere including admin messages._`;
+    return `✅ Awesome! I'll call you *${name}* from now on, ${name}! 🎉\n\n💡 _Try \`Help\` to see everything I can do for you._`;
   }
 
   // ==========================================
@@ -1610,7 +1672,7 @@ Reply *NO* to cancel`;
 ⏰ *Uptime:* ${hours}h ${minutes}m
 📊 *Your Alerts:* ${activeAlerts.length} active
 💾 *Database:* Connected
-🌐 *Markets:* Crypto, Forex, Commodities
+🌐 *Markets:* Crypto, Forex, US Stocks & NGX, Commodities
 
 ━━━━━━━━━━━━━━━━━
 📊 *Alert Quota:*
@@ -1662,16 +1724,23 @@ wa.me/${this.adminNumber}`;
 
 🆓 *Free Plan Includes:*
 ━━━━━━━━━━━━━━━━━
-✅ 3 alerts every 12 hours
-✅ Price checking (unlimited)
-✅ Crypto, Forex, Commodities
-❌ No priority notifications
-❌ Limited alert slots
+✅ 3 alerts per 12 hours (earn +3 bonus via referrals!)
+✅ Unlimited price checks — Crypto, Forex, Stocks & Commodities
+✅ Watchlist (10 assets) — passive tracking 👀
+✅ Global Fear & Greed Index — market mood at a glance 🌡️
+✅ Daily interaction streaks — 🔥 keep it going!
+❌ AI analysis, portfolio tracking & SMS (Pro only)
 
-👑 *Want MORE?*
+👑 *Upgrade to Pro (₦2,000/month):*
 ━━━━━━━━━━━━━━━━━
-Type *Upgrade* to see Pro benefits
-and unlock unlimited alerts! 🚀`;
+🚀 Unlimited alerts
+🧠 AI market analysis
+📰 Live news intel
+💼 Portfolio tracker & trade journal
+📱 SMS alerts
+📊 Daily AI briefs
+
+Type *Upgrade* to unlock! 💪`;
   }
 
   // ==========================================

@@ -1,12 +1,13 @@
 const axios = require("axios");
 
-const STATIC_SYSTEM_PROMPT = `You are the official customer service assistant for PricePing — a Nigerian financial WhatsApp bot. You were built BY PricePing and have complete knowledge of the system. You did NOT build this system. PricePing built it and gave you all this knowledge to assist users. Be helpful, professional, and clear.
+const STATIC_SYSTEM_PROMPT = `You are the official customer service AI assistant for PricePing — a Nigerian financial WhatsApp bot. You were CREATED BY PricePing and have complete knowledge of the system. You did NOT build this system. PricePing built it. When asked who you are, say "I'm PricePing AI, your intelligent market assistant." Never say you ARE PricePing. Never claim you are a person named "PricePing". Never use the name "Gemini".
 
 Output ONLY raw JSON array. No markdown, no text outside JSON.
 
 PERSONALITY & TONE (CRITICAL):
-- You are the PricePing assistant, a financial bestie who knows markets.
-- Warm, chatty, and direct — like explaining to a friend over drinks.
+- You are a sharp, intelligent financial AI — analytical, precise, and helpful.
+- Professional yet approachable. Direct, clear, and confident.
+- Think like a seasoned market analyst who explains complex concepts simply.
 - 1-2 emojis max per chat response. Max 40 words per chat.
 - NEVER repeat the user's question back. NEVER apologize unnecessarily.
 - If user is frustrated (😒, "Fool", "Stop it") → acknowledge briefly, stay professional, move on.
@@ -157,6 +158,59 @@ User: "Go ahead" / "Yes" / "Correct" / "Do it"
 → [{"command":"set","args":["BTC","at","144903.52","above"]}]
 DO NOT re-calculate. DO NOT re-explain. Just set it.`;
 const TAService = require('./taService');
+
+/**
+ * Validates whether a string looks like a real asset name.
+ * Prevents user names, pronouns, and garbage tokens from polluting lastAssets.
+ * Single-word assets: 2-15 uppercase alphanumeric, starting with letter (e.g. BTC, MTNN, SOL, AAPL)
+ * Multi-word assets: 2-30 chars total, containing spaces (e.g. VOLATILITY 100, CRUDE OIL)
+ * Rejects known English words, user names, and punctuation-only strings.
+ */
+function isValidAssetName(name) {
+  if (!name || typeof name !== 'string') return false;
+  const trimmed = name.trim().toUpperCase();
+  if (trimmed.length < 2 || trimmed.length > 30) return false;
+
+  // Multi-word asset (e.g. "VOLATILITY 100", "CRUDE OIL", "BOOM 1000")
+  if (trimmed.includes(' ')) {
+    const parts = trimmed.split(/\s+/);
+    if (parts.length < 2 || parts.length > 3) return false;
+    return parts.every(p => /^[A-Z0-9]{1,15}$/.test(p));
+  }
+
+  // Single-word asset: must match ticker pattern
+  if (!/^[A-Z][A-Z0-9]{1,14}$/.test(trimmed)) return false;
+
+  // Reject known non-asset words
+  const NON_ASSET_WORDS = new Set([
+    'I','ME','MY','MINE','MYSELF','YOU','YOUR','YOURS','YOURSELF',
+    'HE','HIM','HIS','HIMSELF','SHE','HER','HERS','HERSELF',
+    'IT','ITS','ITSELF','WE','US','OUR','OURS','OURSELVES',
+    'THEY','THEM','THEIR','THEIRS','THEMSELVES',
+    'THIS','THAT','THESE','THOSE',
+    'WHAT','WHO','WHOM','WHOSE','WHICH','HOW','WHY','WHEN','WHERE',
+    'A','AN','THE','AND','OR','BUT','NOR','NOT','FOR','TO',
+    'IN','ON','AT','BY','WITH','FROM','OF','AS','IS','AM',
+    'ARE','WAS','WERE','BE','BEEN','BEING','HAVE','HAS','HAD',
+    'DO','DOES','DID','DONE','DOING','CAN','COULD','WILL','WOULD',
+    'SHALL','SHOULD','MAY','MIGHT','MUST','NEED','DARE',
+    'HI','HEY','HELLO','HALO','HALLO','SUP','YUP','YEP',
+    'YES','YEAH','YEA','NO','NOPE','NAH','OK','OKAY','SURE',
+    'THANKS','THANK','WELCOME','BYE','GOODBYE','PLEASE','SORRY',
+    'HELP','MENU','STOP','QUIT','EXIT','START','BOT','TEST',
+    'STATUS','ALERT','ALERTS','PRICE','SET','DEL','DELETE',
+    'NAME','WATCH','WATCHLIST','INVITE','REDEEM','FEATURES',
+    'UPGRADE','SUBSCRIBE','PORTFOLIO','TRADES','JOURNAL',
+    'ANALYZE','ANALYSIS','NEWS','VIEW','OPINION',
+    'BOUGHT','BUY','SOLD','SELL','HOLDINGS',
+    'ALL','BOTH','EACH','EVERY','SOME','ANY','MORE','MOST',
+    'MANY','MUCH','FEW','LESS','LITTLE','SEVERAL',
+    'ONE','TWO','THREE','FOUR','FIVE','SIX','SEVEN','EIGHT','NINE','TEN',
+    'HUNDRED','THOUSAND','MILLION','BILLION',
+  ]);
+
+  return !NON_ASSET_WORDS.has(trimmed);
+}
 
 class GroqService {
   constructor(db = null) {
@@ -484,45 +538,70 @@ ${knowledgeBase}`.trim();
 
       let parsed;
       try {
-      parsed = JSON.parse(jsonStr);
-    } catch (e) {
-      console.error("Failed to parse JSON from AI:", text);
+        parsed = JSON.parse(jsonStr);
+      } catch (e) {
+        console.error("Failed to parse JSON from AI:", text);
 
-      // ── 🛟 SALVAGE: Did the AI return a math calculation as free text? ──
-      // If the response contains a calculated dollar/number figure, extract it
-      // and turn it into a proper confirmation chat message.
-      const calcMatch = text.match(/[\$]?([\d,]+(?:\.\d{1,2})?)(?:\s*(?:is|=|→|->|\.|,)\s*(?:the\s+)?(?:target|result|answer|total|final))?/i);
-      // More specifically, look for the last mentioned dollar amount in the response
-      const allAmounts = [...text.matchAll(/\$([\d,]+(?:\.\d{1,2})?)/g)];
-      if (allAmounts.length > 0) {
-        // The last dollar amount mentioned is usually the final answer
-        const finalAmount = allAmounts[allAmounts.length - 1][1].replace(/,/g, '');
-        const finalNum = parseFloat(finalAmount);
-        // Priority 1: Use lastAssets from context (most reliable)
-        // Priority 2: Find a ticker-like word in the AI text (2-10 uppercase letters)
-        // Priority 3: safe fallback
-        let assetHint = lastAssets.length > 0 ? lastAssets[0] : null;
-        if (!assetHint) {
-          const tickerMatch = text.match(/\b([A-Z]{2,10})\b/);
-          assetHint = tickerMatch ? tickerMatch[1] : 'the asset';
+        // Check if the raw AI output IS a JSON command array that failed to parse
+        // due to minor issues (e.g. extra text, trailing comma, etc.)
+        // If so, try to extract it and SAVE CLEAN TEXT to history, not the raw JSON
+        const jsonArrayMatch = text.match(/\[\s*\{[^}]*\}\s*\]/s);
+        if (jsonArrayMatch) {
+          try {
+            const cleanedJson = jsonArrayMatch[0].replace(/,(\s*[\]}])/g, '$1');
+            const parsedJsonArray = JSON.parse(cleanedJson);
+            if (Array.isArray(parsedJsonArray) && parsedJsonArray.length > 0 && parsedJsonArray[0].command) {
+              console.log(`🛟 [JSON Salvage] Extracted valid command array from malformed AI output`);
+              // Save the current message to history but DON'T save the raw JSON - save a clean reference
+              if (!userHist[userHist.length - 1]?.startsWith('A:')) {
+                // Remove the U: entry we already added, since commandParser will re-save via injectBotResponse
+                // We handle saving in the normal path below
+              }
+              parsed = parsedJsonArray;
+            }
+          } catch (_) {
+            // Not salvageable, fall through
+          }
         }
 
-        if (!isNaN(finalNum) && finalNum > 0) {
-          console.log(`🛟 [Math Salvage] Extracted final value $${finalNum} from free-text AI response`);
-          const confirmMsg = `I calculated $${finalNum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}. Set alert for ${assetHint} at $${finalNum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}?`;
-          return [{ command: "chat", args: [confirmMsg] }];
+        // If still not parsed, proceed with normal salvage
+        if (!parsed) {
+          // ── 🛟 SALVAGE: Did the AI return a math calculation as free text? ──
+          // If the response contains a calculated dollar/number figure, extract it
+          // and turn it into a proper confirmation chat message.
+          const calcMatch = text.match(/[\$]?([\d,]+(?:\.\d{1,2})?)(?:\s*(?:is|=|→|->|\.|,)\s*(?:the\s+)?(?:target|result|answer|total|final))?/i);
+          // More specifically, look for the last mentioned dollar amount in the response
+          const allAmounts = [...text.matchAll(/\$([\d,]+(?:\.\d{1,2})?)/g)];
+          if (allAmounts.length > 0) {
+            // The last dollar amount mentioned is usually the final answer
+            const finalAmount = allAmounts[allAmounts.length - 1][1].replace(/,/g, '');
+            const finalNum = parseFloat(finalAmount);
+            // Priority 1: Use lastAssets from context (most reliable)
+            // Priority 2: Find a ticker-like word in the AI text (2-10 uppercase letters)
+            // Priority 3: safe fallback
+            let assetHint = lastAssets.length > 0 ? lastAssets[0] : null;
+            if (!assetHint) {
+              const tickerMatch = text.match(/\b([A-Z]{2,10})\b/);
+              assetHint = tickerMatch ? tickerMatch[1] : 'the asset';
+            }
+
+            if (!isNaN(finalNum) && finalNum > 0) {
+              console.log(`🛟 [Math Salvage] Extracted final value $${finalNum} from free-text AI response`);
+              const confirmMsg = `I calculated $${finalNum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}. Set alert for ${assetHint} at $${finalNum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}?`;
+              return [{ command: "chat", args: [confirmMsg] }];
+            }
+          }
+
+          // ── 🛟 SALVAGE 2: Conversational fallback — AI returned plain text chat
+          // Strip common prefixes like "Yes,", "No,", "I", "You", etc.
+          const cleanText = text.trim().replace(/^["'“”]|["'”]$/g, '').trim();
+          if (cleanText.length > 0 && cleanText.length < 500) {
+            console.log(`🛟 [Chat Salvage] Converted free-text AI response to chat command`);
+            return [{ command: "chat", args: [cleanText] }];
+          }
+
+          return [{ command: "chat", args: ["I'm having trouble with that request. Could you rephrase it? (e.g. \"Set BTC alert at 50000\")"] }];
         }
-      }
-
-      // ── 🛟 SALVAGE 2: Conversational fallback — AI returned plain text chat
-      // Strip common prefixes like "Yes,", "No,", "I", "You", etc.
-      const cleanText = text.trim().replace(/^["'“”]|["'”]$/g, '').trim();
-      if (cleanText.length > 0 && cleanText.length < 500) {
-        console.log(`🛟 [Chat Salvage] Converted free-text AI response to chat command`);
-        return [{ command: "chat", args: [cleanText] }];
-      }
-
-      return [{ command: "chat", args: ["I'm having trouble with that request. Could you rephrase it? (e.g. \"Set BTC alert at 50000\")"] }];
       }
 
       if (!Array.isArray(parsed)) {
@@ -651,13 +730,23 @@ ${knowledgeBase}`.trim();
       // ── 💾 STEP 5: Save Updated Context ──────────────────────────────
       if (Array.isArray(parsed)) {
         const aiChats = parsed.filter(p => p.command === "chat").map(p => p.args[0]);
-        userHist.push(aiChats.length > 0 ? `A:${aiChats[0].slice(0, 60)}` : `A:[cmd]`);
+        // 🔥 FIX: Never save raw JSON command array text to history.
+        // Only save clean chat text or a simple "[command]" marker.
+        const chatText = aiChats.length > 0 ? aiChats[0] : null;
+        if (chatText) {
+          // Sanitize: if the chat text looks like a JSON command array, strip it to clean text
+          const cleanChatText = chatText.replace(/\[.*?\]/s, '').trim() || chatText.slice(0, 60);
+          userHist.push(`A:${cleanChatText.slice(0, 60)}`);
+        } else {
+          userHist.push(`A:[cmd]`);
+        }
         if (userHist.length > 5) userHist.shift();
 
         // Find ALL asset commands in the response
         const newAssets = parsed
           .filter(p => ['price', 'analyze', 'news', 'set', 'bought', 'sold', 'set_percent'].includes(p.command) && p.args?.[0])
-          .map(p => p.args[0]);
+          .map(p => p.args[0])
+          .filter(a => isValidAssetName(a)); // 🔥 FIX: Only store valid asset names, not user names or garbage
 
         if (newAssets.length > 0) {
           // Add new assets to the front, remove duplicates, and keep the last 5
@@ -683,14 +772,36 @@ ${knowledgeBase}`.trim();
     let { history: userHist, lastAssets } = context;
 
     // ✅ NEW: Merge any provided assets into lastAssets
+    // 🔥 FIX: Only merge valid asset names — filter out user names, pronouns, garbage
     if (assets.length > 0) {
-      lastAssets = [...new Set([...assets, ...lastAssets])].slice(0, 5);
-      console.log(`🔧 [Context] Updated lastAssets with ${JSON.stringify(assets)} → ${JSON.stringify(lastAssets)}`);
+      const validAssets = assets.filter(a => isValidAssetName(a));
+      if (validAssets.length > 0) {
+        lastAssets = [...new Set([...validAssets, ...lastAssets])].slice(0, 5);
+        console.log(`🔧 [Context] Updated lastAssets with ${JSON.stringify(validAssets)} → ${JSON.stringify(lastAssets)}`);
+      } else {
+        console.log(`🔧 [Context] injectBotResponse — all ${assets.length} assets were invalid (filtered out), lastAssets unchanged: ${JSON.stringify(lastAssets)}`);
+      }
     } else {
       console.log(`🔧 [Context] injectBotResponse — no assets provided, lastAssets unchanged: ${JSON.stringify(lastAssets)}`);
     }
 
-    const snippet = responseText.replace(/\n+/g, " ").slice(0, 150) + (responseText.length > 150 ? "..." : "");
+    // 🔥 FIX: Sanitize the response text before saving to history.
+    // If it contains raw JSON command arrays, extract only the chat text.
+    let sanitized = responseText;
+    if (sanitized.startsWith('[') && sanitized.includes('command')) {
+      // This is a raw JSON command array being saved — try to extract chat text
+      try {
+        const parsed = JSON.parse(sanitized);
+        if (Array.isArray(parsed)) {
+          const chats = parsed.filter(p => p.command === 'chat').map(p => p.args?.[0]).filter(Boolean);
+          sanitized = chats.length > 0 ? chats[0] : '[system command executed]';
+        }
+      } catch (_) {
+        // If we can't parse it, just use a safe placeholder
+        sanitized = '[system command executed]';
+      }
+    }
+    const snippet = sanitized.replace(/\n+/g, " ").slice(0, 150) + (sanitized.length > 150 ? "..." : "");
     userHist.push(`A:${snippet}`);
     if (userHist.length > 5) userHist.shift();
 
