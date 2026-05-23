@@ -637,13 +637,6 @@ ${knowledgeBase}`.trim();
       // like "VOLATILITY 100", "CRUDE OIL", "BOOM 1000" — let it through UNTOUCHED.
       const isMultiWordAsset = (str) => str.includes(' ');
 
-      // 🔥 NOROVORE GUARD: check if user explicitly named an asset in their message
-      const hasExplicitAssetInMsg = (msg, assets) => {
-        if (!msg) return false;
-        const upper = msg.toUpperCase();
-        return assets.some(a => a && a.length >= 2 && upper.includes(a.toUpperCase()));
-      };
-
       if (Array.isArray(parsed)) {
         // 🧹 STEP 4a: Deduplicate identical commands (e.g. price BTC appearing twice)
         const seen = new Set();
@@ -682,20 +675,8 @@ ${knowledgeBase}`.trim();
                 return { command: 'chat', args: ['Which asset would you like to check?'] };
               }
             }
-            // 🚦 Check 2: NOROVORE — if AI picked a non-recent asset from history and user
-            // didn't name any asset, prefer lastAssets[0] (most recent discussed asset).
-            else if (
-              lastAssets.length >= 2 &&
-              VALID_TICKER_RE.test(assetUpper) &&
-              assetUpper !== (lastAssets[0] || '').toUpperCase() &&
-              lastAssets.some(a => a?.toUpperCase() === assetUpper) &&
-              !hasExplicitAssetInMsg(messageText, lastAssets)
-            ) {
-              console.log(`🔧 NOROVORE guard: "${assetUpper}" from history but user didn't name it → using lastAssets[0]="${lastAssets[0]}"`);
-              cmd.args[0] = lastAssets[0];
-            }
-            // 🚦 Check 3: Valid ticker — let through
-            else if (assetUpper.length >= 2 && VALID_TICKER_RE.test(assetUpper)) {
+            // 🚦 Check 2: Valid ticker — let the AI's decision through
+            if (assetUpper.length >= 2 && VALID_TICKER_RE.test(assetUpper)) {
               console.log(`🐛 [DEBUG Hallucination Guard SAFE] cmd="${cmd.command}" asset="${assetUpper}" passes — letting through`);
             } else if (lastAssets.length > 0) {
               // 🔥 FIX: Only replace if it looks like garbage (single char, purely numeric, etc.)
