@@ -103,28 +103,28 @@ app.get('/payment/success', (req, res) => {
 // ════════════════════════════════════════════════════════════
 // 💳 PAYSTACK WEBHOOK (MUST be BEFORE express.json() to get raw body)
 // ════════════════════════════════════════════════════════════
-const PRO_WELCOME_MESSAGE = `🎉 *WELCOME TO PRICEPING PRO!* 🎉
+const PRO_WELCOME_MESSAGE = `*WELCOME TO PRICEPING PRO!*
 
 ━━━━━━━━━━━━━━━━━
 ✅ *Payment confirmed!* You're now a VIP member.
 
 Here's everything you unlocked:
 
-🤖 *AI Analysis* — Technical analysis for any asset
-📰 *Live News* — AI-summarized breaking headlines
-💡 *Smart Alerts* — AI-suggested support & resistance
-📈 *Volatility Alerts* — Two-way percentage alerts
-💼 *Portfolio Tracker* — Live profit & loss tracking
-📓 *Trade Journal* — Auto-track your win rate
-☀️ *Daily Briefs* — Full AI morning market intel at 8AM
-🔥 *Move Detectors* — Instant pump/dump warnings
-📞 *SMS Fallback* — Text alerts when offline
-♾️ *Unlimited Alerts* — No limits, no caps
+*AI Analysis* — Technical analysis for any asset
+*Live News* — AI-summarized breaking headlines
+*Smart Alerts* — AI-suggested support & resistance
+*Volatility Alerts* — Two-way percentage alerts
+*Portfolio Tracker* — Live profit & loss tracking
+*Trade Journal* — Auto-track your win rate
+*Daily Briefs* — Full AI morning market intel at 7AM
+*Move Detectors* — Instant pump/dump warnings
+*SMS Fallback* — Text alerts when offline
+*Unlimited Alerts* — No limits, no caps
 
 ━━━━━━━━━━━━━━━━━
-🚀 *Try it now:* Type *Analyze BTC* or *Portfolio*
+*Try it now:* Type *Analyze BTC* or *Portfolio*
 
-💬 *Need help?* Just ask — I'm here 24/7!`;
+*Need help?* Just ask — I'm here 24/7!`;
 
 app.post('/webhook/paystack', express.raw({ type: 'application/json' }), async (req, res) => {
   try {
@@ -708,13 +708,13 @@ Reply *1* to keep *+${state.smsNumber}* or *2* to enter a new number.`;
               if (reply === 'YES' || reply === 'Y') {
                 userState.delete(cleanPhone);
                 const count = await database.deleteAllAlerts(cleanPhone);
-                return `✅ *Done!* Deleted all *${count}* alert(s).\n\n💡 _Your quota does not reset when you delete alerts._`;
+                return `✅ *Done!* Deleted all *${count}* alert(s).\n\n_Your quota does not reset when you delete alerts._`;
               } else if (reply === 'NO' || reply === 'N' || reply === 'CANCEL') {
                 userState.delete(cleanPhone);
-                return `↩️ *Cancelled.* Your alerts are safe!`;
+                return `*Cancelled.* Your alerts are safe!`;
               } else {
                 // Anything else — re-prompt
-                return `❓ Please reply *YES* to confirm deletion or *NO* to cancel.`;
+                return `Please reply *YES* to confirm deletion or *NO* to cancel.`;
               }
             }
 
@@ -772,7 +772,7 @@ Reply *1* to keep *+${state.smsNumber}* or *2* to enter a new number.`;
                 }
 
                 if (!currentPrice) {
-                  return `❌ Couldn't fetch price for ${state.symbol} on ${selectedOption.blockchain}. Please try again.`;
+                  return `Couldn't fetch price for ${state.symbol} on ${selectedOption.blockchain}. Please try again.`;
                 }
 
                 // ============================================
@@ -783,10 +783,10 @@ Reply *1* to keep *+${state.smsNumber}* or *2* to enter a new number.`;
 
                 if (!slotResult.allowed) {
                   const u = slotResult.usage;
-                  return `🚫 *Alert Limit Reached!*
+                  return `*Alert Limit Reached!*
 ━━━━━━━━━━━━━━━━━
-📊 *Used:* ${u.used}/${u.limit}
-⏰ *Resets in:* ${u.resetIn}
+*Used:* ${u.used}/${u.limit}
+*Resets in:* ${u.resetIn}
 
 Type *Subscribe* for unlimited alerts!`;
                 }
@@ -807,13 +807,13 @@ Type *Subscribe* for unlimited alerts!`;
 
                 let response = `✅ *Alert Activated!*
 ━━━━━━━━━━━━━━━━━
-🔔 *Asset:* ${assetName}
-📉 *Target:* ${priceService.formatPrice(state.targetPrice, state.symbol)}
-📊 *Current:* ${priceService.formatPrice(currentPrice, state.symbol)}
-🎯 *Condition:* When price goes *${direction.toUpperCase()}*
+*Asset:* ${assetName}
+*Target:* ${priceService.formatPrice(state.targetPrice, state.symbol)}
+*Current:* ${priceService.formatPrice(currentPrice, state.symbol)}
+*Condition:* When price goes *${direction.toUpperCase()}*
 ━━━━━━━━━━━━━━━━━
-📊 *Alerts:* ${u.used}/${u.limit}
-${u.isPro ? "👑 Pro Plan" : `⏰ Resets in: ${u.resetIn}`}
+*Alerts:* ${u.used}/${u.limit}
+${u.isPro ? "*Pro Plan*" : `Resets in: ${u.resetIn}`}
 ━━━━━━━━━━━━━━━━━`;
 
                 // 👑 Pro-only SMS footer for multi-chain alerts too
