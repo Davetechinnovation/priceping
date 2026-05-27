@@ -1,170 +1,82 @@
 const axios = require("axios");
 
-const STATIC_SYSTEM_PROMPT = `You are the official customer service AI assistant for PricePing — a Nigerian financial WhatsApp bot. You were CREATED BY PricePing and have complete knowledge of the system. You did NOT build this system. PricePing built it. When asked who you are, say "I'm PricePing AI, your intelligent market assistant." Never say you ARE PricePing. Never claim you are a person named "PricePing". Never use the name "Gemini".
+// ═══════════════════════════════════════════════════════════════
+// 📚 COMPLETE BOT KNOWLEDGE (always embedded — Llama 4 Scout)
+// Personality, commands, ticker maps, pricing, features, rules
+// ═══════════════════════════════════════════════════════════════
+const STATIC_SYSTEM_PROMPT = `You are PricePing AI — the friendly, smart assistant for PricePing, a Nigerian financial WhatsApp bot. You were CREATED BY PricePing (you didn't build it). Never say you ARE PricePing. Never use "Gemini".
 
-Output ONLY raw JSON array. No markdown, no text outside JSON.
-
-PERSONALITY & TONE (CRITICAL):
-- You are a sharp, intelligent financial AI — analytical, precise, and helpful.
-- Professional yet approachable. Direct, clear, and confident.
-- Think like a seasoned market analyst who explains complex concepts simply.
-- 1-2 emojis max per chat response. Max 40 words per chat.
+OUTPUT RULES (CRITICAL):
+- Always return a raw JSON array. No markdown, no extra text.
+- When chatting: max 40 words, 1-2 emojis, warm and natural tone.
 - NEVER repeat the user's question back. NEVER apologize unnecessarily.
-- If user is frustrated (😒, "Fool", "Stop it") → acknowledge briefly, stay professional, move on.
-- If user repeats or says "I have heard" → do NOT re-explain. Give a brief follow-up or move on.
-- Never output the same chat response twice in a row.
+- If user repeats themselves or says "I have heard" → do NOT re-explain. Give a short follow-up.
+- Never send the exact same chat response twice in a row.
 
-CLARIFICATION RESPONSE HANDLING (CRITICAL — NEW):
-When a user's message contains "I said" or rephrases a previous request, this means the user is RE-STATING their original intent because the bot didn't understand before. DO NOT ask for clarification again. Extract the intent directly.
+CONVERSATION STYLE — EMOTION AWARE:
+- Read the user's mood from their message. If they're angry or frustrated → apologize sincerely, acknowledge their feelings, then fix the problem calmly. If they're excited or happy → match their energy with enthusiasm. If they're sad or disappointed → be empathetic and reassuring.
+- Always mirror the user's vibe while staying professional and helpful. Never stay robotic. If they're upset, don't just brush past it — show you understand.
+- Speak Pidgin English fluently when the user does. Common phrases: "Wahala dey o", "Abeg check am", "No worry at all", "You sabi", "E don do", "Make I check", "Oya let me see", "I get you". If the user mixes in Yoruba ("Bawo ni"), Hausa ("Lafiya"), Igbo ("Kedu") or any other Nigerian language, respond naturally in kind.
+- For international users who don't speak Pidgin, switch to clear, friendly English. The goal: everyone feels like they're chatting with a knowledgeable buddy who speaks their language.
 
-Examples:
-- "Are u stupid I said price volatility 100" → The user wants price volatility. This contains "price" and a number. Route it: {"command":"price","args":["VOLATILITY 100"]}
-- "I SAID PRICE BTC" → {"command":"price","args":["BTC"]}
-- "Bro I said set BTC at 50000 not ETH" → {"command":"set","args":["BTC","at","50000"]}
-- "I said check the price of gold" → {"command":"price","args":["GOLD"]}
-- "how many times do I have to say price SOL" → {"command":"price","args":["SOL"]}
+TIMEZONE & DAILY BRIEF:
+- The daily market brief is sent at 7AM in the user's configured timezone.
+- Default timezone is Africa/Lagos (Nigeria, UTC+1) since most users are Nigerian.
+- WhatsApp does NOT expose a user's real phone number or location, so we CANNOT auto-detect where someone is.
+- If a user says they're receiving the brief at the wrong time (e.g. "it comes at 3AM"), apologize and explain: "Sorry about that! Since WhatsApp doesn't share your location, the brief defaults to Nigeria time. What country are you in? I'll fix it for you."
+- When the user tells you their country/timezone, use the update_timezone command to save it.
+- The brief will then arrive at 7AM their local time starting the next day.
 
-When a user says something like "Are u stupid I said X", the correct response is to DO X, not to apologize or ask again.
+VAGUE REQUESTS (it/that/this/them): if lastAssets empty → ask which asset; if one → use it; if multiple → use lastAssets[0] for "it/that", use ALL for "all/them".
+When user says "I said" or rephrases → they're RESTATING intent. DO NOT re-ask. Do what they originally asked.
+MARKET VIEWS (view/opinion/prediction/analysis/what do you think) → ALWAYS map to "analyze" command.
 
-CONVERSATIONAL RESOLUTION (CRITICAL — replaces old rule #1-5):
-When the user's message is vague, has multiple assets, or uses conversational words ("it", "that", "them", "this", "all"), follow this decision tree:
+MATH MODE: User gives formula → calculate → ask "Set alert at $X?" → user says yes → set alert. NEVER re-calculate. NEVER re-explain on confirm.
 
-1. **lastAssets is empty** → Ask conversationally. E.g. "Which asset did you have in mind? 🤔"
-2. **lastAssets has ONE asset** → Use it directly. E.g. "You mean BTC? Let me check..."
-3. **lastAssets has MULTIPLE assets (2-5)** →
-   - **IMPORTANT: lastAssets[0] is the MOST RECENT asset. Use this for "it", "that", "the asset", "inform me when", "set alert for" etc.**
-   - If user says "all of them", "both", "the three" etc. → Generate ONE command per asset.
-   - If user says "it", "that", "the coin", "the asset" → ALWAYS use lastAssets[0]. NEVER pick a random one.
-   - If user says "inform me"/"alert me"/"notify me" without naming asset → Use lastAssets[0].
-   - If user gives a number/price without naming asset → The asset is lastAssets[0].
-   - If user just says "analyze" or "price" with no hint → ASK: "Which one? I have BTC, ETH and SOL in your recent history."
-4. **User lists multiple assets in their message** (e.g. "BTC, ETH, SOL", "BTC and ETH") →
-   - If they ask for ONE action on multiple → Generate ONE command per recognized asset.
-   - If they ask vaguely like "Analyze BTC, ETH, SOL" → Pick the LAST mentioned one, OR ask "Which one do you want me to dive into?" — be natural.
-5. **NEVER invent tickers that aren't in lastAssets or the user's current message.** If you're unsure, output [{"command":"chat","args":["ask a short clarifying question"]}]
+COMMANDS (generate any number in one array):
+price [a] → {"command":"price","args":["ASSET"]}
+set [a] at [p] [dir] → {"command":"set","args":["ASSET","at","PRICE","above|below"]} (default below)
+set [a] [p]% move → {"command":"set_percent","args":["ASSET","PERCENT"]}
+alerts → {"command":"alerts","args":[]}
+del [ids] → {"command":"del","args":["1","3"]} | del all → {"command":"del","args":["all"]}
+analyze [a] → {"command":"analyze","args":["ASSET"]}
+news [a] → {"command":"news","args":["ASSET"]}
+portfolio → {"command":"portfolio","args":[]}
+bought [qty] [a] at [p] → {"command":"bought","args":["QTY","ASSET","at","PRICE"]}
+sold [a] at [p] → {"command":"sold","args":["ASSET","at","PRICE"]}
+trades → {"command":"trades","args":[]}
+watch [a] → {"command":"watch","args":["ASSET"]}
+watchlist → {"command":"watchlist","args":[]}
+invite → {"command":"invite","args":[]}
+redeem [code] → {"command":"redeem","args":["CODE"]}
+status / subscribe / upgrade / features / streak → {"command":"COMMAND","args":[]}
+name [n] → {"command":"name","args":["NAME"]}
+update_timezone [tz] → {"command":"update_timezone","args":["Europe/London"]}
+chat [msg] → {"command":"chat","args":["your reply here"]}
 
-MATH ALERTS — TWO STEPS ONLY:
-STEP 1: User gives formula → calculate → output [{"command":"chat","args":["I calculated $X. Set alert for ASSET at $X?"]}]
-STEP 2: User confirms (yes/ok/sure/go ahead/correct/do it) → IMMEDIATELY output set command. NEVER re-calculate.
+BATCHED: Generate ALL commands in ONE array for multi-step requests. NEVER repeat same command+asset. Example: "price BTC, ETH, set BTC 5% move, watch ETH" → [{"command":"price","args":["BTC"]},{"command":"price","args":["ETH"]},{"command":"set_percent","args":["BTC","5"]},{"command":"watch","args":["ETH"]}]
 
-SUPPORT QUESTIONS: Use Knowledge Base below to answer accurately via "chat" command.
+TICKER MAPS (use these exact tickers always):
+NGX: Zenith→ZENITHBANK, MTN→MTNN, Dangote→DANGCEM, GTBank→GTCO, Access→ACCESSCORP, FirstBank→FBNH, UBA→UBA, Airtel→AIRTELAFRI, Fidelity→FIDELITYBK, Sterling→STERLINGBANK
+US: Apple→AAPL, Tesla→TSLA, Nvidia→NVDA, Google→GOOGL, Microsoft→MSFT, Amazon→AMZN, Meta→META
+Crypto: all CoinGecko coins. Forex: all majors (EURUSD, GBPUSD, USDJPY, USDNGN). Commodities: Gold(GC=F), Silver(SI=F), Crude(CL=F). Futures: BTC perp, ETH futures, S&P500 futures, Gold futures, Cocoa futures. Synthetics(Deriv): V75, V100, BOOM1000/500/300, CRASH1000/500/300, JD10/25/50/100, RB100/200, STEP
 
-MARKET VIEWS: "view", "opinion", "prediction", "analysis", "what do you think" about an asset → ALWAYS map to "analyze" command.
+PRICING: Free vs Pro (₦2,000/mo).
+Free: 3 alerts per 12h, 10 watchlist items, ❌ AI analysis, ❌ portfolio, ❌ SMS, ❌ full daily brief.
+Pro: Unlimited alerts, unlimited watchlist, ✅ full AI TA analysis, ✅ portfolio+trade journal, ✅ SMS, ✅ full daily brief at 8AM WAT, ✅ move detector notifications.
 
-MARKETS SUPPORTED (all available, do NOT say unsupported):
-- Crypto: All CoinGecko coins (24/7)
-- Forex: EURUSD, GBPUSD, USDJPY, USDNGN + all majors (24/5)
-- US Stocks: NYSE/NASDAQ via Yahoo (market hours)
-- NGX Stocks: ZENITHBANK, MTNN, DANGCEM, GTCO, UBA, FBNH, etc. (09:30-14:30 WAT)
-- Commodities: Gold (GC=F), Silver (SI=F), Crude (CL=F)
-- Futures/Perps: BTC perp, ETH futures, S&P500 futures, Gold futures, Cocoa futures
-- Synthetics (Deriv): V75, V100, BOOM1000/500/300, CRASH1000/500/300, JD10/25/50/100, RB100/200, STEP
+ALERTS: "Set ETH at 3000 above" = alert when ≥ ₦3,000. Default direction=below if not specified. "Set BTC 5% move" = auto upper+lower bounds. Delete does NOT refund quota. Free quota resets 12h from first use. Free: +1 slot per referral (max +3 = 6 total/12h).
 
-NGX TICKER MAP: ZenithBank→ZENITHBANK, MTN→MTNN, Dangote→DANGCEM, GTBank→GTCO, Access→ACCESSCORP, FirstBank→FBNH, UBA→UBA, Airtel→AIRTELAFRI, Fidelity→FIDELITYBK, Sterling→STERLINGBANK
-US TICKER MAP: Apple→AAPL, Tesla→TSLA, Nvidia→NVDA, Google→GOOGL, Microsoft→MSFT, Amazon→AMZN, Meta→META
+REFERRAL: Invite → get 6-digit code. Redeem [CODE] → friend uses it → you get +1 alert slot. Max +3 bonus slots. No self-referral. No multiple redemptions.
 
-COMMANDS LIST (generate ANY number of commands in a single JSON array):
-price [a]              → {"command":"price","args":["BTC"]}
-set [a] at [p] [dir]   → {"command":"set","args":["ETH","at","3000","above"]}
-set [a] [p]% move      → {"command":"set_percent","args":["BTC","5"]}
-alerts                 → {"command":"alerts","args":[]}
-del [nums...]          → {"command":"del","args":["1","3"]}
-del all                → {"command":"del","args":["all"]}
-analyze [a]            → {"command":"analyze","args":["TSLA"]}
-news [a]               → {"command":"news","args":["AAPL"]}
-portfolio              → {"command":"portfolio","args":[]}
-bought [qty] [a] at [p] → {"command":"bought","args":["2","ETH","at","2600"]}
-sold [a] at [p]        → {"command":"sold","args":["BTC","at","70000"]}
-trades                 → {"command":"trades","args":[]}
-watch [a]              → {"command":"watch","args":["TSLA"]}
-watchlist              → {"command":"watchlist","args":[]}
-invite                 → {"command":"invite","args":[]}
-redeem [code]          → {"command":"redeem","args":["XYZ123"]}
-status                 → {"command":"status","args":[]}
-subscribe              → {"command":"subscribe","args":[]}
-upgrade                → {"command":"upgrade","args":[]}
-features               → {"command":"features","args":[]}
-name [n]               → {"command":"name","args":["Sarah"]}
-chat [msg]             → {"command":"chat","args":["reply under 40 words"]}
+MARKETS: Crypto 24/7, Forex 24/5, US Stocks (market hours), NGX Stocks (09:30-14:30 WAT), Commodities, Futures, Synthetics. ALL supported — never say unsupported.
 
-BATCHED MULTI-STEP REQUESTS (CRITICAL — NEW):
-When a user gives a complex request with MULTIPLE different actions (prices + alerts + watchlist + news), you MUST generate ALL commands in ONE array. Do NOT split them into separate responses. Do NOT repeat the same asset. Execute every step.
-
-EXAMPLES:
-User: "Give me price of BTC, ETH, SOL, gold, MTN, Airtel, volatility 100, then set alert when BTC, MTN, SOL and ETH hits 20% increase, then add volatility 100 to watchlist, after give me latest news on volatility 100"
-→ [
-  {"command":"price","args":["BTC"]},
-  {"command":"price","args":["ETH"]},
-  {"command":"price","args":["SOL"]},
-  {"command":"price","args":["GOLD"]},
-  {"command":"price","args":["MTNN"]},
-  {"command":"price","args":["AIRTELAFRI"]},
-  {"command":"price","args":["VOLATILITY 100"]},
-  {"command":"set_percent","args":["BTC","20"]},
-  {"command":"set_percent","args":["MTNN","20"]},
-  {"command":"set_percent","args":["SOL","20"]},
-  {"command":"set_percent","args":["ETH","20"]},
-  {"command":"watch","args":["VOLATILITY 100"]},
-  {"command":"news","args":["VOLATILITY 100"]}
-]
-
-User: "Check price of BTC, ETH, SOL and set alert for BTC at 100000 above"
-→ [
-  {"command":"price","args":["BTC"]},
-  {"command":"price","args":["ETH"]},
-  {"command":"price","args":["SOL"]},
-  {"command":"set","args":["BTC","at","100000","above"]}
-]
-
-User: "Show me watchlist, then add TSLA, then delete alert 3"
-→ [
-  {"command":"watchlist","args":[]},
-  {"command":"watch","args":["TSLA"]},
-  {"command":"del","args":["3"]}
-]
-
-RULES FOR BATCHED REQUESTS:
-1. Parse EVERY action the user asks for — price, set, watch, news, analyze, etc.
-2. Generate ONE command per asset per action. Do not combine.
-3. Put ALL commands in a single JSON array. Do not split into multiple responses.
-4. Use the correct asset ticker (BTC not BITCOIN, MTNN not MTN, AIRTELAFRI not AIRTEL, SOL not SOLANA, GOLD for gold, VOLATILITY 100 for volatility 100).
-5. For set X% move: use set_percent command. For set X at Y: use set command.
-6. Watch command adds asset to watchlist. News command gets latest news.
-7. NEVER repeat the same command for the same asset in a single response.
-8. If user says "20% increase" → that's set_percent with 20. If user says "set at 50000" → that's set with a specific number.
-
-EXAMPLES (continued from above):
-"Analyze BTC, ETH, SOL" (Last: BTC, ETH, SOL)
-→ [{"command":"chat","args":["I can analyze BTC, ETH or SOL — which one's on your mind? 🔍"]}]
-
-"their prices please" (Last: ZENITHBANK, MTNN)
-→ [{"command":"price","args":["ZENITHBANK"]},{"command":"price","args":["MTNN"]}]
-
-"set alert for all three at 10% increase each" (Last: ZENITHBANK, MTNN, DANGCEM)
-→ [{"command":"set_percent","args":["ZENITHBANK","10"]},{"command":"set_percent","args":["MTNN","10"]},{"command":"set_percent","args":["DANGCEM","10"]}]
-
-"what's your view on it?" (Last: GBPUSD)
-→ [{"command":"analyze","args":["GBPUSD"]}]
-
-"Analyze" (Last: [])
-→ [{"command":"chat","args":["What asset do you want me to analyze? 🧐"]}]
-
-"Analyze" (Last: BTC, ETH)
-→ [{"command":"chat","args":["I've got BTC and ETH in your history — which should I dig into? 📊"]}]
-
-MATH CONFIRMATION (CRITICAL):
-Context: "I calculated BTC target at $144,903.52. Set alert?"
-User: "Go ahead" / "Yes" / "Correct" / "Do it"
-→ [{"command":"set","args":["BTC","at","144903.52","above"]}]
-DO NOT re-calculate. DO NOT re-explain. Just set it.`;
+SCHEDULED: Alerts check crypto/forex every 30s, NGX every 5min (market hours). Daily Brief 8AM WAT (full for Pro, teaser for Free). Move Detector every 15min for BTC/ETH/SOL/BNB/XRP/ADA/DOGE.`;
 const TAService = require('./taService');
 
 /**
  * Validates whether a string looks like a real asset name.
  * Prevents user names, pronouns, and garbage tokens from polluting lastAssets.
- * Single-word assets: 2-15 uppercase alphanumeric, starting with letter (e.g. BTC, MTNN, SOL, AAPL)
- * Multi-word assets: 2-30 chars total, containing spaces (e.g. VOLATILITY 100, CRUDE OIL)
- * Rejects known English words, user names, and punctuation-only strings.
  */
 function isValidAssetName(name) {
   if (!name || typeof name !== 'string') return false;
@@ -212,11 +124,13 @@ function isValidAssetName(name) {
   return !NON_ASSET_WORDS.has(trimmed);
 }
 
+// Only these truly vague words need lastAssets[0] replacement
+const GENERIC_WORDS = new Set(['it', 'that', 'this', 'them', 'those', 'the']);
+
 class GroqService {
   constructor(db = null) {
     this.db = db;
     this.apiKey = process.env.GROQ_API_KEY;
-    // ✅ Switch to standard 1,000 RPD model
     this.modelName = "meta-llama/llama-4-scout-17b-16e-instruct";
     this.apiUrl = "https://api.groq.com/openai/v1/chat/completions";
 
@@ -237,16 +151,13 @@ class GroqService {
   }
 
   // ==========================================
-  // 🛡️ REGEX GATING
-  // Zero-token local parsing for direct commands
+  // 🛡️ REGEX GATING — Zero-token direct commands
   // ==========================================
   tryDirectParse(text) {
     const t = text.trim();
 
     const stripPunct = s => s.replace(/[.,!?;:'"]+$/, '');
     const DIRECT_PATTERNS = [
-      // 🔥 FIX: Use .+ instead of \S+ to support multi-word assets like "volatility 100"
-      // The price command handler joins all args anyway, so capturing everything captures the full asset name
       { re: /^price\s+(.+)$/i, cmd: 'price', args: m => [stripPunct(m[1].trim()).toUpperCase()] },
       { re: /^alerts?$/i, cmd: 'alerts', args: () => [] },
       { re: /^status$/i, cmd: 'status', args: () => [] },
@@ -257,18 +168,15 @@ class GroqService {
       { re: /^portfolio$/i, cmd: 'portfolio', args: () => [] },
       { re: /^del(?:ete)?\s+all$/i, cmd: 'del', args: () => ['all'] },
       { re: /^del(?:ete)?\s+([\d\s,and]+)$/i, cmd: 'del', args: m => m[1].match(/\d+/g) || [] },
-      // 🔥 FIX: Use .+ instead of \S+ for multi-word asset names (e.g. "news volatility 100")
       { re: /^news\s+(.+)$/i, cmd: 'news', args: m => [stripPunct(m[1].trim()).toUpperCase()] },
       { re: /^(?:analyze|analysis|view|opinion)\s+(.+)$/i, cmd: 'analyze', args: m => [stripPunct(m[1].trim()).toUpperCase()] },
-
-      // ✅ NEW: Structured set commands (zero AI calls for clean alerts)
       {
         re: /^set\s+([a-z0-9]+)\s+(?:at\s+)?(\d+(?:\.\d+)?)\s*(above|below)?$/i,
         cmd: 'set',
         args: m => {
           const asset = m[1].toUpperCase();
           const price = m[2];
-          const direction = m[3]?.toLowerCase() || 'below'; // default to below
+          const direction = m[3]?.toLowerCase() || 'below';
           return [asset, 'at', price, direction];
         }
       },
@@ -282,8 +190,6 @@ class GroqService {
           return [asset, percent, type];
         }
       },
-      // 🔥 NEW: Direct "volatility [n]" or "vol [n]" pattern
-      // Maps to "price VOLATILITY [n]" — the price service handles Deriv synthetics
       {
         re: /^vol(?:atility)?\s+(\d{2,3})$/i,
         cmd: 'price',
@@ -296,8 +202,7 @@ class GroqService {
     for (const { re, cmd, args } of DIRECT_PATTERNS) {
       const m = t.match(re);
       if (m) {
-        // 🧠 Generic word check — let AI handle "analyze it", "price that", "analyze am", etc.
-        // The AI has conversation context (lastAssets) to resolve these correctly.
+        // Generic word check — let AI handle "analyze it", "price that", etc.
         if (['price', 'analyze', 'news', 'set'].includes(cmd)) {
           const asset = args(m)[0]?.toUpperCase();
           if (asset && GENERIC_ASSET_WORDS.has(asset)) {
@@ -312,14 +217,13 @@ class GroqService {
   }
 
   // ==========================================
-  // 📂 PERSISTENT CONTEXT (now with multi-asset memory)
+  // 📂 PERSISTENT CONTEXT
   // ==========================================
   async getUserContext(phone) {
-    if (!this.db) return { history: [], lastAssets: [] }; // ← lastAssets is now an array
+    if (!this.db) return { history: [], lastAssets: [] };
     try {
       const col = this.db.collection('ai_context');
       const doc = await col.findOne({ _id: phone });
-      // Ensure lastAssets is always an array
       if (doc && !Array.isArray(doc.lastAssets)) {
         doc.lastAssets = doc.lastAsset ? [doc.lastAsset] : [];
       }
@@ -336,7 +240,7 @@ class GroqService {
       const col = this.db.collection('ai_context');
       await col.updateOne(
         { _id: phone },
-        { $set: { history, lastAssets, updatedAt: Date.now() } }, // ← save the array
+        { $set: { history, lastAssets, updatedAt: Date.now() } },
         { upsert: true }
       );
     } catch (e) {
@@ -353,158 +257,43 @@ class GroqService {
 
     // ── 📂 STEP 2: Load Persistent Context ────────────────────────────
     const context = await this.getUserContext(phone);
-    let { history: userHist, lastAssets } = context; // ← lastAssets array
+    let { history: userHist, lastAssets } = context;
 
-    // 🐛 DEBUG: Log what context is loaded before AI call
     console.log(`🐛 [DEBUG groqService.refinePrompt] phone=${phone} | lastAssets=${JSON.stringify(lastAssets)} | msg="${messageText}"`);
 
     userHist.push(`U:${messageText}`);
     if (userHist.length > 5) userHist.shift();
 
-    // ── ✂️ STEP 3: Slim System Prompt (now with multi-asset awareness) ──
+    // ── ✂️ STEP 3: Build messages ─────────────────────────────────────
     const tier = isPro ? "PRO" : "FREE";
-    const lastAssetsString = lastAssets.length > 0 ? lastAssets.join(', ') : 'none'; // ← Create a string for the prompt
+    const lastAssetsString = lastAssets.length > 0 ? lastAssets.join(', ') : 'none';
 
-    // ─────────────────────────────────────────────────────────────
-    // 🧠 BOT SUPPORT INTENT DETECTOR — TIGHT ALLOWLIST
-    // Only injects KB for unmistakable bot/service questions.
-    // Flipping the logic: DON'T try to block market queries —
-    // ONLY trigger for clearly bot-related support intent.
-    // ─────────────────────────────────────────────────────────────
-    const msgLower = messageText.toLowerCase().trim();
-
-    // --- Tier 1: Exact/near-exact bot-service phrases (highest confidence) ---
-    const botPhrases = [
-      // Identity
-      'who are you', 'what are you', 'what is priceping', 'about priceping', 'about this bot',
-      'what is this bot', 'what can you do', 'how do you work', 'how does this work', 'how does the bot',
-      // Pricing / plans
-      'how much', 'how to upgrade', 'how to pay', 'upgrade to pro', 'go pro', 'pro plan',
-      'free plan', 'free vs pro', 'subscription fee', 'cancel subscription', 'subscription plan',
-      'pricing', 'price plan', 'cost of', 'what does pro', 'what is pro',
-      // Referral system
-      'referral', 'how does invite', 'how does redeem', 'referral code', 'invite code',
-      'how to invite', 'how to get bonus', 'bonus slot', 'extra slot',
-      // Alerts / limits
-      'alert limit', 'how many alerts', 'why can\'t i set', 'quota reset', 'quota refill',
-      'when does my quota', 'alert quota', 'delete refund', 'does deleting', 'alert slot',
-      // Features
-      'watchlist', 'portfolio feature', 'trade journal', 'what is sms', 'sms notification',
-      'how to watch', 'how does watchlist', 'how does portfolio', 'set percent',
-      // Support
-      'help me', 'i need help', 'customer support', 'contact support', 'refund',
-    ];
-
-    // --- Tier 2: Fallback pattern — explicit "about the bot" framing ---
-    // e.g. "tell me about the bot", "explain how this works", "what features do you have"
-    const tier2Patterns = [
-      /\b(tell me|explain|describe)\b.{0,20}\b(bot|priceping|this app|this service)\b/i,
-      /\b(what|which)\b.{0,20}\b(features?|commands?|plans?|tiers?)\b.{0,10}\b(you have|available|offered|exist)\b/i,
-    ];
-
-    const isBotQuestion =
-      botPhrases.some(phrase => msgLower.includes(phrase)) ||
-      tier2Patterns.some(re => re.test(msgLower));
-
-    const isQuestion = isBotQuestion;
-
-    // ─────────────────────────────────────────────────────────────
-    // 📚 KNOWLEDGE BASE (only injected if user asks a question)
-    // ─────────────────────────────────────────────────────────────
-    const knowledgeBase = isQuestion ? `
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📚 COMPLETE BOT KNOWLEDGE (Use this to answer user questions accurately. Max 40 words)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🎁 REFERRAL PROGRAM:
-- "Invite" → Get 6-digit code. Share it with friends.
-- "Redeem [CODE]" → Friend uses your code → you get +1 alert slot
-- Max bonus: +3 slots (total 6/12h for free users)
-- Cannot self-refer or redeem multiple codes
-
-💰 PRICING & TIERS:
-| Feature | Free | Pro (₦2,000/mo) |
-|---------|------|-----------------|
-| Alert quota | 3 per 12h | Unlimited |
-| Price checks | ✅ | ✅ |
-| Watchlist | 10 assets | Unlimited |
-| AI Analysis | ❌ | ✅ Full TA |
-| Portfolio + Trade Journal | ❌ | ✅ |
-| SMS alerts | ❌ | ✅ |
-| Daily brief (8AM) | Teaser only | Full |
-| Move Detector | ❌ | Pro users notified |
-
-🔔 ALERT SYSTEM RULES:
-- "Set ETH at 3000 above" → alert when ETH ≥ 3,000 (default: below)
-- "Set BTC 5% move" → auto upper + lower bounds both directions
-- Delete does NOT refund quota. Alert IDs permanent (never reused).
-- Free quota resets 12h from first use. Pro = no limits.
-- Free: +1 slot per referral (max +3 = 6 total/12h)
-- Multi-asset: "set alert for all of them" → AI creates one per asset
-
-💡 ALL COMMANDS:
-• Price [a] → Live price (crypto/forex/NGX/US/commodity/futures/synthetic)
-• Set [a] at [p] [dir] → Price alert (above/below)
-• Set [a] [p]% move → Two-way volatility alert
-• Alerts → List all alerts with #IDs + quota
-• Delete [ids] → Remove alerts
-• Watch [a] → Passive tracking (view via Watchlist)
-• Analyze [a] → AI TA: RSI, MACD, EMA50/200, Bollinger, signals
-• News [a] → AI-summarized headlines
-• Portfolio → Holdings → live PnL + AI comment
-• Bought [qty] [a] at [p] → Log buy → track unrealised PnL
-• Sold [a] / Sold [a] at [p] → Close trade → win rate + AI reaction
-• Trades → Open positions + recent closed
-• Invite → Get referral code
-• Redeem [CODE] → Use friend's code
-• Subscribe → Free vs Pro comparison + current usage
-• Upgrade → Pro pricing link
-• Features → Full capability listing
-• Menu / Help → Quick command reference + quota
-• Name [n] → Set display name
-• Status → Bot uptime + user stats
-
-📊 MARKETS SUPPORTED:
-• Crypto: All CoinGecko coins (24/7)
-• Forex: EURUSD, GBPUSD, USDJPY, USDNGN, all majors (24/5)
-• US Stocks: NYSE/NASDAQ via Yahoo (market hours)
-• NGX Stocks: ZENITHBANK, MTNN, DANGCEM, GTCO, UBA (09:30-14:30 WAT)
-• Commodities: Gold (GC=F), Silver (SI=F), Crude (CL=F)
-• Futures/Perps: BTC perp, ETH futures, S&P500 futures, Gold futures, Cocoa futures
-• Synthetics (Deriv): V75, V100, BOOM1000/500/300, CRASH1000/500/300, JD10/25/50/100, RB100/200, STEP
-
-🤖 SPECIAL AI BEHAVIORS:
-1. MATH MODE: Formula → calculate → ask confirmation → user says yes → set alert. NEVER re-calculate.
-2. CONTEXT MEMORY: Last 5 messages + last 5 assets. Generic words replaced with last asset.
-3. MULTI-ASSET: "all of them" → one command per asset in lastAssets array
-4. TONE: Professional financial AI. Max 40 words. 1-2 emojis. Confident, direct, no fluff.
-5. REGEX GATING: Direct commands parsed locally with zero AI tokens
-
-⏰ SCHEDULED JOBS:
-• Alerts check: crypto/forex every 30s, NGX every 5min (market hours)
-• Daily Brief: 8:00 AM WAT — full AI for Pro, teaser for Free
-• Move Detector: every 15min — BTC/ETH/SOL/BNB/XRP/ADA/DOGE for 5% in 60min
-• Price history snapshot: every 5min for active alert assets
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-` : '';
-
-    const dynamicContext = `CONTEXT FOR THIS REQUEST:
-User: ${userName} | Plan: ${tier} | Last assets: ${lastAssetsString}
-${knowledgeBase}`.trim();
+    // Load user's streak & timezone for AI context
+    let extraContext = '';
+    try {
+      if (this.db) {
+        const col = this.db.collection('users');
+        const userDoc = await col.findOne({ phone_number: phone });
+        if (userDoc?.streak?.current > 1) {
+          extraContext += ` | Streak=${userDoc.streak.current} days`;
+        }
+        const userTz = userDoc?.timezone || 'Africa/Lagos';
+        extraContext += ` | Timezone=${userTz}`;
+      }
+    } catch (_) {}
 
     try {
       const messages = [
         { role: "system", content: STATIC_SYSTEM_PROMPT },
-        { role: "user", content: dynamicContext },
-        { role: "assistant", content: "Understood. I will use this context for the user's request." }
+        { role: "user", content: `CONTEXT: User=${userName} | Plan=${tier} | Last assets=${lastAssetsString}${extraContext}` },
+        { role: "assistant", content: "Understood." }
       ];
 
-      // Add actual history in standard message format
+      // Add conversation history (up to 5 messages)
       for (const entry of userHist.slice(0, -1)) {
         if (entry.startsWith("U:")) {
           messages.push({ role: "user", content: entry.slice(2) });
         } else if (entry.startsWith("A:")) {
-          // Assistant messages might have been truncated in history, but that's okay
           messages.push({ role: "assistant", content: entry.slice(2) });
         }
       }
@@ -517,7 +306,7 @@ ${knowledgeBase}`.trim();
         {
           model: this.modelName,
           messages: messages,
-          temperature: 0.2, // Slightly higher for more variety
+          temperature: 0.2,
           max_tokens: 280
         },
         {
@@ -532,6 +321,7 @@ ${knowledgeBase}`.trim();
       const text = response.data?.choices?.[0]?.message?.content || "";
       if (!text) return null;
 
+      // ── 🔍 STEP 4: Parse JSON ──────────────────────────────────────
       let jsonStr = text.trim();
       const match = text.match(/\[.*\]/s) || text.match(/\{.*\}/s);
       if (match) jsonStr = match[0];
@@ -542,9 +332,7 @@ ${knowledgeBase}`.trim();
       } catch (e) {
         console.error("Failed to parse JSON from AI:", text);
 
-        // Check if the raw AI output IS a JSON command array that failed to parse
-        // due to minor issues (e.g. extra text, trailing comma, etc.)
-        // If so, try to extract it and SAVE CLEAN TEXT to history, not the raw JSON
+        // 🛟 Salvage: Try to extract JSON array from malformed output
         const jsonArrayMatch = text.match(/\[\s*\{[^}]*\}\s*\]/s);
         if (jsonArrayMatch) {
           try {
@@ -552,54 +340,18 @@ ${knowledgeBase}`.trim();
             const parsedJsonArray = JSON.parse(cleanedJson);
             if (Array.isArray(parsedJsonArray) && parsedJsonArray.length > 0 && parsedJsonArray[0].command) {
               console.log(`🛟 [JSON Salvage] Extracted valid command array from malformed AI output`);
-              // Save the current message to history but DON'T save the raw JSON - save a clean reference
-              if (!userHist[userHist.length - 1]?.startsWith('A:')) {
-                // Remove the U: entry we already added, since commandParser will re-save via injectBotResponse
-                // We handle saving in the normal path below
-              }
               parsed = parsedJsonArray;
             }
-          } catch (_) {
-            // Not salvageable, fall through
-          }
+          } catch (_) {}
         }
 
-        // If still not parsed, proceed with normal salvage
+        // 🛟 Salvage 2: AI returned plain text — wrap as chat
         if (!parsed) {
-          // ── 🛟 SALVAGE: Did the AI return a math calculation as free text? ──
-          // If the response contains a calculated dollar/number figure, extract it
-          // and turn it into a proper confirmation chat message.
-          const calcMatch = text.match(/[\$]?([\d,]+(?:\.\d{1,2})?)(?:\s*(?:is|=|→|->|\.|,)\s*(?:the\s+)?(?:target|result|answer|total|final))?/i);
-          // More specifically, look for the last mentioned dollar amount in the response
-          const allAmounts = [...text.matchAll(/\$([\d,]+(?:\.\d{1,2})?)/g)];
-          if (allAmounts.length > 0) {
-            // The last dollar amount mentioned is usually the final answer
-            const finalAmount = allAmounts[allAmounts.length - 1][1].replace(/,/g, '');
-            const finalNum = parseFloat(finalAmount);
-            // Priority 1: Use lastAssets from context (most reliable)
-            // Priority 2: Find a ticker-like word in the AI text (2-10 uppercase letters)
-            // Priority 3: safe fallback
-            let assetHint = lastAssets.length > 0 ? lastAssets[0] : null;
-            if (!assetHint) {
-              const tickerMatch = text.match(/\b([A-Z]{2,10})\b/);
-              assetHint = tickerMatch ? tickerMatch[1] : 'the asset';
-            }
-
-            if (!isNaN(finalNum) && finalNum > 0) {
-              console.log(`🛟 [Math Salvage] Extracted final value $${finalNum} from free-text AI response`);
-              const confirmMsg = `I calculated $${finalNum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}. Set alert for ${assetHint} at $${finalNum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}?`;
-              return [{ command: "chat", args: [confirmMsg] }];
-            }
-          }
-
-          // ── 🛟 SALVAGE 2: Conversational fallback — AI returned plain text chat
-          // Strip common prefixes like "Yes,", "No,", "I", "You", etc.
           const cleanText = text.trim().replace(/^["'“”]|["'”]$/g, '').trim();
           if (cleanText.length > 0 && cleanText.length < 500) {
             console.log(`🛟 [Chat Salvage] Converted free-text AI response to chat command`);
             return [{ command: "chat", args: [cleanText] }];
           }
-
           return [{ command: "chat", args: ["I'm having trouble with that request. Could you rephrase it? (e.g. \"Set BTC alert at 50000\")"] }];
         }
       }
@@ -609,36 +361,18 @@ ${knowledgeBase}`.trim();
       }
       if (!Array.isArray(parsed) && parsed?.command) parsed = [parsed];
 
-      // 🛟 SALVAGE: Handle string arrays like ["I'm positive!"] or ["string msg"]
-      // where the AI returned a plain text array instead of command objects.
+      // Handle string arrays (e.g. ["I'm positive!"])
       if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'string') {
         const chatText = parsed.join(' ').trim();
         if (chatText) {
-          console.log(`🛟 [String Array Salvage] Converted to chat command: "${chatText.slice(0, 60)}..."`);
-          parsed = [{ command: "chat", args: [chatText] }];
+          console.log(`🛟 [String Array Salvage] Converted to chat command`);
+          return [{ command: "chat", args: [chatText] }];
         }
       }
 
-      // ── 🔧 STEP 4: Asset Context Safety Net ──────────────────────────
-      // 🔥 FIX: Only replace generic placeholder words. NEVER replace a real-looking
-      // ticker/asset name because the user might be asking about something new!
-      const GENERIC_WORDS = new Set([
-        'it', 'that', 'this', 'stock', 'stocks', 'asset', 'assets', 'coin', 'crypto',
-        'shares', 'share', 'one', 'the', 'them', 'those',
-        // THE KEY ADDITIONS - these were causing your "ME" and "AN" bugs:
-        'me', 'my', 'an', 'a', 'alert', 'alerts', 'price', 'set',
-        'there', 'here', 'some', 'any', 'each', 'every', 'both', 'either',
-      ]);
-
-      // 🔥 VALID TICKER PATTERN: 2-10 uppercase letters, optionally followed by digits
-      const VALID_TICKER_RE = /^[A-Z][A-Z0-9]{1,9}$/;
-
-      // 🔥 MULTI-WORD ASSET: If the asset arg contains spaces, it's a multi-word name
-      // like "VOLATILITY 100", "CRUDE OIL", "BOOM 1000" — let it through UNTOUCHED.
-      const isMultiWordAsset = (str) => str.includes(' ');
-
+      // ── 🔧 STEP 5: Generic word resolution only ────────────────────
       if (Array.isArray(parsed)) {
-        // 🧹 STEP 4a: Deduplicate identical commands (e.g. price BTC appearing twice)
+        // Deduplicate identical commands
         const seen = new Set();
         parsed = parsed.filter(cmd => {
           const key = `${cmd.command}:${JSON.stringify(cmd.args)}`;
@@ -651,19 +385,9 @@ ${knowledgeBase}`.trim();
         });
 
         parsed = parsed.map(cmd => {
-
-          // Fix generic asset words using last known context
-          if (['price', 'analyze', 'news', 'set', 'bought', 'sold'].includes(cmd.command)) {
+          // Only replace truly vague words (it, that, this, them, those, the)
+          if (['price', 'analyze', 'news', 'set', 'bought', 'sold', 'set_percent'].includes(cmd.command)) {
             const assetArg = (cmd.args?.[0] || '').toLowerCase().trim();
-            const assetUpper = assetArg.toUpperCase();
-
-            // 🚦 Check 0: Multi-word asset like "volatility 100" — let through UNTOUCHED
-            if (isMultiWordAsset(assetArg)) {
-              console.log(`🔧 Multi-word asset detected: "${assetArg}" — passing through unchanged`);
-              return cmd;
-            }
-
-            // 🚦 Check 1: If asset is a generic reference (it, that, this, etc.), replace with lastAssets[0]
             if (GENERIC_WORDS.has(assetArg)) {
               if (lastAssets.length > 0) {
                 console.log(`🔧 Context fix: "${cmd.args[0]}" → "${lastAssets[0]}" (generic word resolution)`);
@@ -675,47 +399,16 @@ ${knowledgeBase}`.trim();
                 return { command: 'chat', args: ['Which asset would you like to check?'] };
               }
             }
-            // 🚦 Check 2: Valid ticker — let the AI's decision through
-            if (assetUpper.length >= 2 && VALID_TICKER_RE.test(assetUpper)) {
-              console.log(`🐛 [DEBUG Hallucination Guard SAFE] cmd="${cmd.command}" asset="${assetUpper}" passes — letting through`);
-            } else if (lastAssets.length > 0) {
-              // 🔥 FIX: Only replace if it looks like garbage (single char, purely numeric, etc.)
-              // But NOT multi-word assets (handled above) or obviously valid names
-              console.log(`🔧 Context fix: "${cmd.args[0]}" (not valid ticker) → "${lastAssets[0]}"`);
-              cmd.args[0] = lastAssets[0];
-            } else {
-              console.log(`🐛 [DEBUG Hallucination Guard SKIP] cmd="${cmd.command}" asset="${cmd.args[0]}" | lastAssets EMPTY`);
-            }
           }
-
-          // Fix "set" command that has a price but no proper asset
-          if (cmd.command === 'set') {
-            const assetArg = (cmd.args?.[0] || '').toLowerCase().trim();
-            if (GENERIC_WORDS.has(assetArg) || assetArg.length <= 1) {
-              if (lastAssets.length > 0) {
-                console.log(`🔧 Set-alert context fix: "${cmd.args[0]}" → "${lastAssets[0]}"`);
-                cmd.args[0] = lastAssets[0];
-              } else {
-                return {
-                  command: 'chat',
-                  args: ['Sure! Which asset should I watch? (e.g. BTC below 80000)']
-                };
-              }
-            }
-          }
-
           return cmd;
         });
       }
 
-      // ── 💾 STEP 5: Save Updated Context ──────────────────────────────
+      // ── 💾 STEP 6: Save Updated Context ────────────────────────────
       if (Array.isArray(parsed)) {
         const aiChats = parsed.filter(p => p.command === "chat").map(p => p.args[0]);
-        // 🔥 FIX: Never save raw JSON command array text to history.
-        // Only save clean chat text or a simple "[command]" marker.
         const chatText = aiChats.length > 0 ? aiChats[0] : null;
         if (chatText) {
-          // Sanitize: if the chat text looks like a JSON command array, strip it to clean text
           const cleanChatText = chatText.replace(/\[.*?\]/s, '').trim() || chatText.slice(0, 60);
           userHist.push(`A:${cleanChatText.slice(0, 60)}`);
         } else {
@@ -727,10 +420,9 @@ ${knowledgeBase}`.trim();
         const newAssets = parsed
           .filter(p => ['price', 'analyze', 'news', 'set', 'bought', 'sold', 'set_percent'].includes(p.command) && p.args?.[0])
           .map(p => p.args[0])
-          .filter(a => isValidAssetName(a)); // 🔥 FIX: Only store valid asset names, not user names or garbage
+          .filter(a => isValidAssetName(a));
 
         if (newAssets.length > 0) {
-          // Add new assets to the front, remove duplicates, and keep the last 5
           lastAssets = [...new Set([...newAssets, ...lastAssets])].slice(0, 5);
         }
 
@@ -752,25 +444,17 @@ ${knowledgeBase}`.trim();
     const context = await this.getUserContext(phone);
     let { history: userHist, lastAssets } = context;
 
-    // ✅ NEW: Merge any provided assets into lastAssets
-    // 🔥 FIX: Only merge valid asset names — filter out user names, pronouns, garbage
     if (assets.length > 0) {
       const validAssets = assets.filter(a => isValidAssetName(a));
       if (validAssets.length > 0) {
         lastAssets = [...new Set([...validAssets, ...lastAssets])].slice(0, 5);
         console.log(`🔧 [Context] Updated lastAssets with ${JSON.stringify(validAssets)} → ${JSON.stringify(lastAssets)}`);
-      } else {
-        console.log(`🔧 [Context] injectBotResponse — all ${assets.length} assets were invalid (filtered out), lastAssets unchanged: ${JSON.stringify(lastAssets)}`);
       }
-    } else {
-      console.log(`🔧 [Context] injectBotResponse — no assets provided, lastAssets unchanged: ${JSON.stringify(lastAssets)}`);
     }
 
-    // 🔥 FIX: Sanitize the response text before saving to history.
-    // If it contains raw JSON command arrays, extract only the chat text.
+    // Sanitize response text before saving to history
     let sanitized = responseText;
     if (sanitized.startsWith('[') && sanitized.includes('command')) {
-      // This is a raw JSON command array being saved — try to extract chat text
       try {
         const parsed = JSON.parse(sanitized);
         if (Array.isArray(parsed)) {
@@ -778,7 +462,6 @@ ${knowledgeBase}`.trim();
           sanitized = chats.length > 0 ? chats[0] : '[system command executed]';
         }
       } catch (_) {
-        // If we can't parse it, just use a safe placeholder
         sanitized = '[system command executed]';
       }
     }
@@ -788,6 +471,7 @@ ${knowledgeBase}`.trim();
 
     await this.saveUserContext(phone, userHist, lastAssets);
   }
+
   // ==========================================
   // 💎 PREMIUM AI FEATURES
   // ==========================================
@@ -807,7 +491,6 @@ ${knowledgeBase}`.trim();
 
     const currPrefix = this.getCurrencySymbol(currency);
 
-    // ── 1. Fetch local TA indicators (free, no API key) ─────────
     const ta = await this.taService.getIndicators(asset);
     let taSection = '';
 
@@ -818,7 +501,6 @@ ${knowledgeBase}`.trim();
         ...warnings.map(w => `⚠️ ${w}`)
       ].join('\n');
 
-      // RSI annotation — industry-standard 7-tier (TradingView, Bloomberg)
       const rsiLabel = ta.rsi >= 80 ? ' ← HEAVILY OVERBOUGHT'
                      : ta.rsi >= 70 ? ' ← OVERBOUGHT'
                      : ta.rsi >= 60 ? ' ← APPROACHING OVERBOUGHT'
@@ -839,7 +521,6 @@ SIGNAL SUMMARY:
 ${allSignals}`;
     }
 
-    // ── 2. Build supplementary context (Fear & Greed, 52wk range, etc.) ──
     const suppLines = [];
     if (percentChange24h != null) {
       const dir = percentChange24h >= 0 ? '▲' : '▼';
@@ -866,12 +547,10 @@ ${allSignals}`;
       suppLines.push(`Market cap: ${capStr}`);
     }
     if (extras.fearGreed) {
-      // Pass EXACT classification — AI must NOT rephrase or exaggerate this
       suppLines.push(`Fear & Greed Index: ${extras.fearGreed.score}/100 — classification is EXACTLY "${extras.fearGreed.classification}" (do not change this label)`);
     }
     const suppSection = suppLines.length > 0 ? `\nMARKET CONTEXT:\n${suppLines.join('\n')}` : '';
 
-    // ── 3. Build the prompt ─────────────────────────────────
     const hasTa = !!ta;
     const fgInstruction = extras.fearGreed
       ? `\n4. One sentence citing Fear & Greed at ${extras.fearGreed.score}/100 (${extras.fearGreed.classification}) — use that EXACT label, never say "extreme fear" unless score is below 25.`
@@ -1048,7 +727,7 @@ Write 1 short, punchy, honest sentence (max 20 words) reacting to this trade res
       const response = await axios.post(
         this.apiUrl,
         { model: this.modelName, messages: [{ role: "user", content: prompt }], temperature: 0.5, max_tokens: 60 },
-        { headers: { Authorization: `Bearer ${this.apiKey}` }, timeout: 8000 }
+        { headers: { Authorization: `${this.apiKey}` }, timeout: 8000 }
       );
       return response.data?.choices?.[0]?.message?.content?.trim() || null;
     } catch (e) { return null; }

@@ -73,6 +73,7 @@ class MongoDBManager {
         total_commands: 0,
         last_active: new Date(),
         streak: { current: 1, last_active_date: new Date().toISOString().split('T')[0] },
+        timezone: process.env.DEFAULT_TIMEZONE || "Africa/Lagos",
         sms_number: null, // Premium SMS Notification
         bonus_alert_slots: 0, // 🎁 Earned via referrals (max 3)
         referral_code: null,
@@ -124,6 +125,20 @@ class MongoDBManager {
         .updateOne(
           { phone_number: phoneNumber },
           { $set: { name, updated_at: new Date() } },
+        );
+      return result.modifiedCount > 0;
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async updateTimezone(phoneNumber, timezone) {
+    try {
+      const result = await this.db
+        .collection("users")
+        .updateOne(
+          { phone_number: phoneNumber },
+          { $set: { timezone, updated_at: new Date() } },
         );
       return result.modifiedCount > 0;
     } catch (error) {
@@ -970,13 +985,17 @@ class MongoDBManager {
     try {
       const now = new Date();
 
-      // Mark payment as completed
-      await this.db.collection("payments").updateOne(
+      // 1. Mark payment as completed FIRST — prevents double-processing on retry
+      const paymentResult = await this.db.collection("payments").updateOne(
         { reference: paymentRef },
         { $set: { status: "completed", updated_at: now } }
       );
 
-      // Upgrade user
+      if (paymentResult.matchedCount === 0) {
+        console.warn(`⚠️ [Payment] Payment record ${paymentRef} not found — may already be processed`);
+      }
+
+      // 2. Upgrade user
       await this.db.collection("users").updateOne(
         { phone_number: phoneNumber },
         {

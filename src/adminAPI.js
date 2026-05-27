@@ -93,9 +93,27 @@ function getResetIn(periodStart) {
 }
 
 // ══════════════════════════════════════════
+// ── Admin Auth Middleware ────────────────────────────
+const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
+function requireAdminAuth(req, res, next) {
+  if (!ADMIN_API_KEY) {
+    // No key configured — allow in dev mode with warning
+    console.warn('⚠️ [Admin] ADMIN_API_KEY not set — admin routes are UNPROTECTED');
+    return next();
+  }
+  const key = req.headers['x-api-key'];
+  if (!key || key !== ADMIN_API_KEY) {
+    return res.status(401).json({ error: 'Unauthorized. Provide x-api-key header.' });
+  }
+  next();
+}
+
 // ADMIN API FACTORY
 // ══════════════════════════════════════════
 function createAdminAPI(app, memoryMonitor) {
+  // ── Protect ALL /api/admin routes ──────────────
+  app.use('/api/admin', requireAdminAuth);
+
   // ── Response time & heartbeat tracking ──
   const _responseTimes = [];
   let _lastHeartbeat = null;

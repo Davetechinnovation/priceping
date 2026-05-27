@@ -861,15 +861,53 @@ ${u.isPro ? "👑 Pro Plan" : `⏰ Resets in: ${u.resetIn}`}
     alertMonitor.start();
 
     // ==========================================
-    // ☀️ DAILY MORNING BRIEF (8:00 AM WAT = 7:00 AM UTC)
+    // ☀️ TIMEZONE-AWARE DAILY BRIEF
+    // Sends at 7AM each user's local time
     // ==========================================
     const geminiService = new GroqService(database.db);
     const TOP_COINS = ['BTC', 'ETH', 'SOL', 'AAPL', 'ZENITHBANK', 'DANGCEM', 'MTNN', 'GTCO'];
+    // Track which users got their brief on which day (UTC date string)
+    const briefSentToday = new Set();
 
-    cron.schedule('0 7 * * *', async () => {
-      console.log('☀️ [Daily Brief] Sending morning brief to ALL active users (Pro + Free teaser)...');
+    cron.schedule('0 * * * *', async () => {
       try {
-        // 1. Fetch top coin prices
+        const now = new Date();
+        const currentUtcHour = now.getUTCHours();
+        const todayStr = now.toISOString().split('T')[0];
+
+        // Get ALL active users
+        const activeUsers = await database.getActiveUsers(7);
+        if (activeUsers.length === 0) {
+          return;
+        }
+
+        // Filter users whose local time is 7AM and who haven't received today's brief
+        const eligibleUsers = activeUsers.filter(user => {
+          const tz = user.timezone || 'Africa/Lagos';
+          try {
+            // Calculate what hour it is in the user's timezone
+            const localTime = new Date(now.toLocaleString('en-US', { timeZone: tz }));
+            const localHour = localTime.getHours();
+            return localHour === 7 && !briefSentToday.has(`${user.phone_number}:${todayStr}`);
+          } catch (_) {
+            // Invalid timezone — fall back to UTC hour check
+            return currentUtcHour === 6 && !briefSentToday.has(`${user.phone_number}:${todayStr}`);
+          }
+        });
+
+        if (eligibleUsers.length === 0) {
+          // Clear old tracking entries (keep only today's)
+          if (briefSentToday.size > 1000) {
+            for (const key of briefSentToday) {
+              if (!key.endsWith(todayStr)) briefSentToday.delete(key);
+            }
+          }
+          return;
+        }
+
+        console.log(`☀️ [Daily Brief] ${eligibleUsers.length} users are at 7AM local time — generating brief...`);
+
+        // Fetch top coin prices (once for all)
         const marketData = [];
         for (const sym of TOP_COINS) {
           try {
@@ -877,28 +915,23 @@ ${u.isPro ? "👑 Pro Plan" : `⏰ Resets in: ${u.resetIn}`}
             if (info) marketData.push({ symbol: sym, price: info.price, currency: info.currency, change24h: info.change24h });
           } catch (_) {}
         }
-
         if (marketData.length === 0) return;
 
-        // 2. Get ALL active users (used in last 7 days)
-        const activeUsers = await database.getActiveUsers(7);
-        if (activeUsers.length === 0) {
-          console.log('☀️ [Daily Brief] No active users found, skipping.');
-          return;
-        }
-
-        // 3. Generate ONE AI brief (cached — all users share it)
+        // Generate ONE AI brief (cached)
         const baseBrief = await geminiService.generateDailyBrief(marketData, '{{NAME}}');
-        const today = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
 
-        // 4. Send personalised message to each user
-        for (const user of activeUsers) {
+        for (const user of eligibleUsers) {
           try {
             const name = user.name || 'Trader';
             const jid = user.whatsapp_number;
             const isPro = user.subscription_type === 'pro';
             const userAlerts = await database.getUserAlerts(user.phone_number);
             const activeAlerts = userAlerts.filter(a => a.status === 'active');
+
+            // Build date string in user's local timezone
+            const tz = user.timezone || 'Africa/Lagos';
+            const localDate = new Date(now.toLocaleString('en-US', { timeZone: tz }));
+            const todayLocal = localDate.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
 
             const priceLines = marketData
               .map(m => {
@@ -909,12 +942,11 @@ ${u.isPro ? "👑 Pro Plan" : `⏰ Resets in: ${u.resetIn}`}
 
             let msg = `☀️ *Good Morning, ${name}!*
 
-📊 *Daily Market Brief — ${today}*
+📊 *Daily Market Brief — ${todayLocal}*
 ━━━━━━━━━━━━━━━━━
 ${priceLines}`;
 
             if (isPro) {
-              // ✅ PRO: Full AI insight + alerts
               let alertLine = '';
               if (activeAlerts.length > 0) {
                 alertLine = `\n\n📋 *Your Alerts:* ${activeAlerts.length} active\n` +
@@ -933,12 +965,9 @@ ${aiInsight || 'Markets are moving — check your alerts!'}
 _Reply with any coin name for full analysis._`;
 
             } else {
-              // 🔒 FREE: Teaser version with upgrade CTA
               const aiInsight = baseBrief ? baseBrief.replace('{{NAME}}', name) : '';
-              
-              // Truncate the AI insight to first 120 characters
-              const teaserInsight = aiInsight.length > 120 
-                ? aiInsight.substring(0, 120) + '...' 
+              const teaserInsight = aiInsight.length > 120
+                ? aiInsight.substring(0, 120) + '...'
                 : aiInsight;
 
               msg += `
@@ -957,7 +986,6 @@ For just *₦2,000/month*, unlock:
 
 Type *Upgrade* now! 🚀`;
 
-              // ✅ LOG CONVERSION EVENT
               try {
                 await database.db.collection('conversion_events').insertOne({
                   phone_number: user.phone_number,
@@ -970,21 +998,22 @@ Type *Upgrade* now! 🚀`;
             }
 
             await whatsappService.sendMessage(jid, msg);
-            // Small delay to avoid flooding
+            // Mark as sent for today
+            briefSentToday.add(`${user.phone_number}:${todayStr}`);
             await new Promise(r => setTimeout(r, 1200));
           } catch (e) {
             console.error(`☀️ [Daily Brief] Failed for ${user.phone_number}:`, e.message);
           }
         }
         
-        const proCount = activeUsers.filter(u => u.subscription_type === 'pro').length;
-        console.log(`☀️ [Daily Brief] Sent to ${activeUsers.length} users (${proCount} Pro, ${activeUsers.length - proCount} Free).`);
+        const proCount = eligibleUsers.filter(u => u.subscription_type === 'pro').length;
+        console.log(`☀️ [Daily Brief] Sent to ${eligibleUsers.length} users (${proCount} Pro, ${eligibleUsers.length - proCount} Free).`);
       } catch (e) {
         console.error('☀️ [Daily Brief] Error:', e.message);
       }
-    }, { timezone: 'Africa/Lagos' });
+    });
 
-    console.log('☀️ Daily brief scheduled at 8:00 AM WAT (Africa/Lagos)');
+    console.log('☀️ Daily brief scheduled hourly — users receive at 7AM their local timezone');
 
     // ==========================================
     // 🔥 SIGNIFICANT MOVE DETECTOR (every 15 min)
