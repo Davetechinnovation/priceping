@@ -93,17 +93,15 @@ function getResetIn(periodStart) {
 }
 
 // ══════════════════════════════════════════
-// ── Admin Auth Middleware ────────────────────────────
+// ── Admin Auth Middleware — REQUIRED for all /api/admin routes ──
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
 function requireAdminAuth(req, res, next) {
   if (!ADMIN_API_KEY) {
-    // No key configured — allow in dev mode with warning
-    console.warn('⚠️ [Admin] ADMIN_API_KEY not set — admin routes are UNPROTECTED');
-    return next();
+    return res.status(500).json({ error: 'Admin API not configured: ADMIN_API_KEY missing from .env' });
   }
   const key = req.headers['x-api-key'];
   if (!key || key !== ADMIN_API_KEY) {
-    return res.status(401).json({ error: 'Unauthorized. Provide x-api-key header.' });
+    return res.status(401).json({ error: 'Unauthorized. Invalid or missing x-api-key header.' });
   }
   next();
 }
