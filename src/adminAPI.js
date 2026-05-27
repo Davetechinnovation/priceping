@@ -93,24 +93,153 @@ function getResetIn(periodStart) {
 }
 
 // ══════════════════════════════════════════
-// ── Admin Auth Middleware — REQUIRED for all /api/admin routes ──
-const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
+// ── 6-digit Admin PIN Auth — stored in MongoDB, default 198012 ──
+
+const DEFAULT_ADMIN_PIN = '198012';
+
+async function getAdminPin(db) {
+  try {
+    if (!db?.db) return DEFAULT_ADMIN_PIN;
+    const config = await db.db.collection('admin_config').findOne({ _id: 'admin_pin' });
+    return config?.pin || DEFAULT_ADMIN_PIN;
+  } catch (_) {
+    return DEFAULT_ADMIN_PIN;
+  }
+}
+
+async function setAdminPin(db, newPin) {
+  if (!db?.db) return false;
+  try {
+    await db.db.collection('admin_config').updateOne(
+      { _id: 'admin_pin' },
+      { $set: { pin: newPin, updated_at: new Date() } },
+      { upsert: true }
+    );
+    return true;
+  } catch (_) { return false; }
+}
+
+// Temporary reset codes: map of resetCode -> { phone, expiresAt }
+const pendingResets = new Map();
+
 function requireAdminAuth(req, res, next) {
-  if (!ADMIN_API_KEY) {
-    return res.status(500).json({ error: 'Admin API not configured: ADMIN_API_KEY missing from .env' });
+  const pin = req.headers['x-admin-pin'];
+  if (!pin || pin.length !== 6 || !/^\d{6}$/.test(pin)) {
+    return res.status(401).json({ error: 'Invalid or missing admin PIN.' });
   }
-  const key = req.headers['x-api-key'];
-  if (!key || key !== ADMIN_API_KEY) {
-    return res.status(401).json({ error: 'Unauthorized. Invalid or missing x-api-key header.' });
-  }
+  // Store pin so route handlers can verify
+  req.adminPin = pin;
   next();
 }
 
 // ADMIN API FACTORY
 // ══════════════════════════════════════════
 function createAdminAPI(app, memoryMonitor) {
-  // ── Protect ALL /api/admin routes ──────────────
+  const database = global.database;
+  const whatsappService = global.whatsappService;
+
+  // ── Public auth endpoints (no PIN required) ─────
+  // These run BEFORE the PIN check since you need them when locked out
+
+  // ── POST /api/admin/auth/request-reset ──────────
+  // Sends a 6-digit reset code to the bot's own WhatsApp number
+  app.post('/api/admin/auth/request-reset', async (req, res) => {
+    try {
+      // Get the bot's own JID (its own WhatsApp number)
+      const myJid = whatsappService?.myJid;
+      if (!myJid) {
+        return res.status(503).json({ error: 'Bot WhatsApp not connected.' });
+      }
+
+      // Generate 6-digit reset code
+      const resetCode = Math.floor(100000 + Math.random() * 900000).toString();
+      const expiresAt = Date.now() + 10 * 60 * 1000; // 10 min expiry
+
+      // Store pending reset
+      pendingResets.set(resetCode, { phone: myJid, expiresAt, used: false });
+
+      // Send code to the bot's own WhatsApp
+      await whatsappService.sock.sendMessage(myJid, {
+        text: `🔐 *Admin PIN Reset Request*
+
+A reset was requested for your admin dashboard.
+
+*Reset Code:* ${resetCode}
+*Expires in:* 10 minutes
+
+Reply with the new 6-digit PIN you want to use.
+Example: *198013`
+      });
+
+      console.log(`🔐 [Admin] Reset code sent to bot's WhatsApp: ${myJid}`);
+      res.json({ success: true, message: 'Reset code sent to bot WhatsApp. Check your messages.' });
+    } catch (e) {
+      console.error('🔐 [Admin] Reset request error:', e.message);
+      res.status(500).json({ error: 'Failed to send reset code.' });
+    }
+  });
+
+  // ── POST /api/admin/auth/confirm-reset ──────────
+  // User received the code on WhatsApp, now sends back the code + new PIN
+  app.post('/api/admin/auth/confirm-reset', async (req, res) => {
+    try {
+      const { resetCode, newPin } = req.body;
+
+      if (!resetCode || !newPin) {
+        return res.status(400).json({ error: 'Missing resetCode or newPin.' });
+      }
+      if (!/^\d{6}$/.test(resetCode)) {
+        return res.status(400).json({ error: 'Reset code must be 6 digits.' });
+      }
+      if (!/^\d{6}$/.test(newPin)) {
+        return res.status(400).json({ error: 'New PIN must be 6 digits.' });
+      }
+
+      const pending = pendingResets.get(resetCode);
+      if (!pending || pending.used) {
+        return res.status(400).json({ error: 'Invalid or already used reset code.' });
+      }
+      if (Date.now() > pending.expiresAt) {
+        pendingResets.delete(resetCode);
+        return res.status(400).json({ error: 'Reset code expired. Request a new one.' });
+      }
+
+      // Mark used and save new PIN
+      pending.used = true;
+      await setAdminPin(database, newPin);
+      pendingResets.delete(resetCode);
+
+      // Notify via bot WhatsApp that PIN changed
+      try {
+        if (whatsappService?.myJid) {
+          await whatsappService.sock.sendMessage(whatsappService.myJid, {
+            text: `✅ *Admin PIN Updated Successfully!*
+
+Your new admin dashboard PIN is: *${newPin}*
+
+Use this to log in to the admin dashboard.`
+          });
+        }
+      } catch (_) {}
+
+      console.log(`🔐 [Admin] PIN changed successfully`);
+      res.json({ success: true, message: 'PIN updated successfully.' });
+    } catch (e) {
+      console.error('🔐 [Admin] Confirm reset error:', e.message);
+      res.status(500).json({ error: 'Failed to confirm reset.' });
+    }
+  });
+
+  // ── Protect all other /api/admin routes with PIN ──
+  // Everything BELOW this point requires a valid admin PIN
   app.use('/api/admin', requireAdminAuth);
+  app.use('/api/admin', async (req, res, next) => {
+    const storedPin = await getAdminPin(database);
+    if (req.adminPin !== storedPin) {
+      return res.status(401).json({ error: 'Incorrect admin PIN.' });
+    }
+    next();
+  });
 
   // ── Response time & heartbeat tracking ──
   const _responseTimes = [];
